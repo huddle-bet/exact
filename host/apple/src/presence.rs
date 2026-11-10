@@ -43,9 +43,18 @@ struct Leaving {
     end: Option<f64>,
 }
 
+/// A route with an exit row. It stays mounted while another route covers it,
+/// so no exit receipt reaches it: its exit plays on the live node instead.
+#[derive(Debug)]
+struct Cover {
+    key: NodeKey,
+    animations: exact_motion::Animations,
+}
+
 /// What the host keeps for exits and layout transitions.
 #[derive(Debug, Default)]
 pub(crate) struct Presence {
+    covers: Vec<Cover>,
     leaving: Vec<Leaving>,
     /// Views whose destroy waits for a leaving view's end.
     held: IdSet<ViewId>,
@@ -111,6 +120,77 @@ impl<D: DataSource> Host<D> {
                 played: false,
                 end: None,
             });
+        }
+    }
+
+    /// Note the routes a receipt created or touched that declare an exit row,
+    /// and forget those it destroyed.
+    pub(super) fn track_covers(&mut self, receipt: &CommitReceipt) {
+        for key in &receipt.destroyed {
+            self.presence.covers.retain(|c| c.key != *key);
+        }
+        let keys: Vec<NodeKey> = receipt
+            .created
+            .iter()
+            .chain(&receipt.touched)
+            .copied()
+            .collect();
+        self.track_cover_keys(&keys);
+    }
+
+    pub(super) fn track_cover_keys(&mut self, keys: &[NodeKey]) {
+        let kernel = self.runner.kernel();
+        for key in keys {
+            let Some(node) = kernel.node_by_key(*key) else {
+                continue;
+            };
+            let exit = &node.style.rare.exit_animation;
+            self.presence.covers.retain(|c| c.key != *key);
+            if node.props.str(PropId::NavigationKey).is_some() && !exit.0.is_empty() {
+                self.presence.covers.push(Cover {
+                    key: *key,
+                    animations: exit.clone(),
+                });
+            }
+        }
+    }
+
+    /// Play a route's exit when a push covers it, and stop it when the route
+    /// is shown again. A route a tab hides is not covered.
+    pub(super) fn sync_cover_exits(&mut self) {
+        for i in 0..self.presence.covers.len() {
+            let (key, animations) = {
+                let c = &self.presence.covers[i];
+                (c.key, c.animations.clone())
+            };
+            let Some(&view) = self.keys.get(&key) else {
+                continue;
+            };
+            let kernel = self.runner.kernel();
+            let parent = kernel.node(view).and_then(|n| n.parent);
+            let covered =
+                self.runner.inactive(view) && !parent.is_some_and(|p| self.runner.inactive(p));
+            let node = motion_node(key);
+            let playing = self.engine.exit_playing(node, &animations);
+            if covered && !playing {
+                let played = self.engine.play_exit(node, &animations);
+                debug_assert!(played.is_ok(), "the kernel validated the row");
+                let mut sync = MotionSync::default();
+                sync.animations.push((node, animations));
+                let runner = &self.runner;
+                svg_lower::eligibility(
+                    runner.kernel(),
+                    &mut self.engine,
+                    &sync,
+                    self.svg.box_motion,
+                    &|v| !runner.handlers_of(v).is_empty(),
+                );
+                self.svg.cover(view);
+            } else if !covered && playing {
+                self.engine.cancel_exit(node, &animations);
+                self.engine.set_node_sampled(node, false);
+                self.svg.cover(view);
+            }
         }
     }
 

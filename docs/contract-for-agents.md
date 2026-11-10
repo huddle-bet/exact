@@ -2832,7 +2832,7 @@ they do not admit arbitrary frame callbacks or a second app-state graph.
 
 A route's `-exact-exit-animation` plays when the route is removed, and on the web also when a push
 covers it (it stays mounted): the route stays shown, inert, until the keyframes end and then hides;
-showing it again cancels them. Apple hosts, whose stacks are native, hide a covered route at once.
+showing it again cancels them. Apple hosts play it as Core Animation specs on the covered view and take them off when the route is shown again; Linux hides a covered route at once.
 
 For drawing and pointer-tracking, `pointerdown`, `pointermove` and `pointerup`
 hand an action that takes it a `PointerEvent` (`offsetX`/`offsetY` from the

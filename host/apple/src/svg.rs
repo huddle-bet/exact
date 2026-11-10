@@ -121,6 +121,11 @@ impl SvgState {
     }
 
     /// An SVG element's `svg`, marking its scene dirty; `None` for any other node.
+    /// A route's cover exit started or stopped: its box specs are made again.
+    pub(crate) fn cover(&mut self, id: ViewId) {
+        self.boxes.insert(id);
+    }
+
     pub(crate) fn element(&mut self, kernel: &Kernel, id: ViewId) -> Option<ViewId> {
         let node = kernel.node(id)?;
         if node.node_type == NodeType::Svg {

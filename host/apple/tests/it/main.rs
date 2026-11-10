@@ -7,6 +7,7 @@ mod canvas_defer;
 mod content_box;
 mod content_region;
 mod controls;
+mod cover_exit;
 mod development;
 mod entry;
 mod fit_content;
