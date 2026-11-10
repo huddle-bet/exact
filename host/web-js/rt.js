@@ -861,9 +861,11 @@ export const OnHooks = {};
 // An image's `load` and `error` as HTML `<img>` fires them, once per source, the error with its message (glue.js `imageEvents`); a symbol fires neither. A tinted raster paints
 // through its CSS mask (element.rs `host_css`), a CORS fetch: from an origin that sends no CORS headers it paints nothing, so a CORS probe of the source decides. An adopted page's image may have settled before this attached.
 const IMAGE_ERROR = "the image did not load", CORS_ERROR = "a tinted image from another origin needs CORS (Access-Control-Allow-Origin)", Probes = new Map(), srcOf = e => e.$why != null ? `why:${e.$why}` : e.currentSrc; // `$why`: a package picture's refusal (pictures.js), which an image's `error` says
+const NO_PIXELS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // an iframe's `load` record: it has no pixels
+const loadRecord = e => (inflight.n++, import("./image-ink.js").then(m => m.imageLoadRecord(e), () => [e.naturalWidth, e.naturalHeight, ...NO_PIXELS.slice(2)]).finally(() => inflight.n--)); // the image's `ImageLoadEvent` (image-ink.js)
 function imageEvent(e, kind, f) {
   const probe = src => Probes.get(src) ?? (inflight.n++, Probes.set(src, new Promise(ok => { Object.assign(new Image(), { crossOrigin: "anonymous", onload: () => ok(true), onerror: () => ok(false) }).src = src; }).finally(() => inflight.n--)).get(src));
-  const settle = failed => { const src = srcOf(e); if (!e.isConnected || e.hasAttribute("data-symbol-path") || e.$settled?.[kind] === src) return; (failed || !getComputedStyle(e).maskImage?.includes("url(") || /^(data|blob):/.test(src) || new URL(src, location.href).origin === location.origin ? Promise.resolve(!failed) : probe(src)).then(ok => { if (srcOf(e) !== src || !e.isConnected || (e.$settled ??= {})[kind] === src) return; e.$settled[kind] = src; if (ok ? kind === "load" : kind === "error") ok ? f() : f(failed ? (e.$why ?? IMAGE_ERROR) : CORS_ERROR); }); };
+  const settle = failed => { const src = srcOf(e); if (!e.isConnected || e.hasAttribute("data-symbol-path") || e.$settled?.[kind] === src) return; (failed || !getComputedStyle(e).maskImage?.includes("url(") || /^(data|blob):/.test(src) || new URL(src, location.href).origin === location.origin ? Promise.resolve(!failed) : probe(src)).then(ok => { if (srcOf(e) !== src || !e.isConnected || (e.$settled ??= {})[kind] === src) return; e.$settled[kind] = src; if (ok ? kind === "load" : kind === "error") ok ? loadRecord(e).then(r => { if (srcOf(e) === src && e.isConnected) f(r); }) : f(failed ? (e.$why ?? IMAGE_ERROR) : CORS_ERROR); }); };
   e.addEventListener("load", () => settle(false)); e.addEventListener("error", () => settle(true)); if (e.complete && e.getAttribute("src")) setTimeout(() => e.complete && settle(!e.naturalWidth));
 }
 export function on(e, kind, f, bind) {
@@ -878,7 +880,7 @@ export function on(e, kind, f, bind) {
   if (e.exactNative) { l("exact-native", ev => { if (ev.detail.kind === kind) f(...(ev.detail.value == null ? [] : [ev.detail.value])); }); if (kind === "message") return; }
   if (e.localName === "img" && (kind === "load" || kind === "error")) return imageEvent(e, kind, f);
   if (e.localName === "iframe" && kind === "error") return l(kind, ev => f(ev.detail ?? "iframe did not load"));
-  return bind ? bind(e, kind, f, l) : l(kind, kind === "pictureinpictureerror" ? ev => f(ev.detail) : () => f()); // picture-in-picture.js: the failure's reason
+  return bind ? bind(e, kind, f, l) : l(kind, kind === "pictureinpictureerror" ? ev => f(ev.detail) : kind === "load" ? () => f(NO_PIXELS) : () => f()); // picture-in-picture.js: the failure's reason
 }
 // Each event family's binder, passed to `on` by the generated module only where its plan binds that family
 // (emit.rs `binder`), so a plan carries only the families it hears; any other event is a plain listener.
