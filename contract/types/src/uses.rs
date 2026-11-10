@@ -86,7 +86,15 @@ fn provisional_scope(c: &Component, types: &Types, routes: bool) -> Scope {
         resources: c
             .resources
             .iter()
-            .map(|r| resolve(Some(&r.shape)))
+            .map(|r| {
+                let t = resolve(Some(&r.shape));
+                // A `for` resource is a list of its shape, as in `component.rs`.
+                if r.each.is_some() && t != Ty::Unknown {
+                    Ty::List(Box::new(t))
+                } else {
+                    t
+                }
+            })
             .collect(),
         mutations: c
             .mutations

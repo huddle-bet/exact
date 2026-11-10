@@ -1463,3 +1463,19 @@ fn refusals_from_the_app_diaries_name_the_fix() {
         assert!(message.contains(says), "{call}: {message}");
     }
 }
+
+#[test]
+fn a_refused_build_types_a_for_resource_as_a_list_at_its_call_sites() {
+    let app = App::new("for-resource-call-site");
+    // `details` holds one `Item` for each id, so it fits the `Item[]` prop.
+    // The only mistake is `item.nmae` inside `Row`, a child of the root.
+    let root = app.write(
+        "app.contract",
+        "shape Item\n  name: string\ncomponent App\n  resource ids = ids() as shape string[]\n  resource details = detail(id) for id in ids key=id as shape Item\n  view\n    Row(items=details)\ncomponent Row\n  props\n    items: Item[]\n  view\n    for item in items key=item.name\n      text item.nmae\n",
+    );
+    let error = contract::compile_path(&root).unwrap_err();
+    assert_eq!(error.id, "type-unknown-field", "{error}");
+    let errors = diagnostics(&app.run(&[root.to_str().unwrap(), "--json"]), 1);
+    let ids: Vec<&str> = errors.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["type-unknown-field"], "{errors:#?}");
+}
