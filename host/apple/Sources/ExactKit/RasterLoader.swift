@@ -1261,7 +1261,10 @@ final class RasterLoader {
                 guard let view, generation.map({ $0 == view.loadGeneration }) ?? true,
                       let session = view.presenter?.session, view.presenter?.views[view.id] === view,
                       view.handlers.contains(failure == nil ? "load" : "error") else { return }
+                // The pixels' record is read here, on the main turn that dispatches it, from the picture the view shows.
+                let ink = view.raster.map { ImageInk.payload($0.image.image, natural: $0.image.naturalSize) }
                 session.apply(failure.map { session.runtime.media(view.id, event: "error", payload: $0, now: session.now()) }
+                              ?? ink.map { session.runtime.load(view.id, image: $0, now: session.now()) }
                               ?? session.runtime.load(view.id, now: session.now()))
             }
         }
