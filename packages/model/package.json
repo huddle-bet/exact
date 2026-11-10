@@ -1,0 +1,11 @@
+{
+  "name": "@exact/model",
+  "version": "1.0.0",
+  "private": true,
+  "description": "exact-model, a lit glTF model as a package view: SceneKit on Apple, WebGL2 on the web.",
+  "exports": {
+    ".": "./exact.json",
+    "./apple": "./apple/exact.json",
+    "./web": "./web/exact.json"
+  }
+}

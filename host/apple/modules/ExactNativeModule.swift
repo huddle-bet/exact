@@ -568,6 +568,10 @@ final class ExactHatches {
     let arrangementFn: ArrangementFn?
     /// One of 184 or more: a module's service query (ExactServices.swift).
     let serviceFn: ServiceFn?
+    /// One of 192 or more: an app asset's bytes by its path, handed to `sink` before the call returns.
+    typealias AssetSinkFn = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32) -> Void
+    typealias AssetFn = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?, AssetSinkFn?) -> Void
+    let assetFn: AssetFn?
     #if os(iOS) || os(tvOS)
     /// One of 112 or more: a held tab's navigation controller, built (`ExactTab.controller`).
     typealias StackFn = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
@@ -626,6 +630,24 @@ final class ExactHatches {
             ? table.load(fromByteOffset: 168, as: UnsafeRawPointer?.self).map { unsafeBitCast($0, to: ArrangementFn.self) } : nil
         serviceFn = table.load(as: UInt32.self) >= 184
             ? table.load(fromByteOffset: 176, as: UnsafeRawPointer?.self).map { unsafeBitCast($0, to: ServiceFn.self) } : nil
+        assetFn = table.load(as: UInt32.self) >= 192
+            ? table.load(fromByteOffset: 184, as: UnsafeRawPointer?.self).map { unsafeBitCast($0, to: AssetFn.self) } : nil
+    }
+
+    /// The app asset at `path`, from the host's resolver; nil where the host has none or the app lacks the file.
+    func asset(_ path: String) -> Data? {
+        guard let assetFn else { return nil }
+        final class Box { var data: Data? }
+        let box = Box()
+        let name = Array(path.utf8)
+        let sink: AssetSinkFn = { context, bytes, length in
+            guard let context, let bytes else { return }
+            Unmanaged<Box>.fromOpaque(context).takeUnretainedValue().data = Data(bytes: bytes, count: Int(length))
+        }
+        withExtendedLifetime(box) {
+            name.withUnsafeBufferPointer { assetFn(host, $0.baseAddress, UInt32($0.count), Unmanaged.passUnretained(box).toOpaque(), sink) }
+        }
+        return box.data
     }
 
     /// A package picture changed (0) or revoked (1): the host's raster loader acts on it.

@@ -33,6 +33,7 @@
         "@exact/local-auth": "workspace:*",
         "@exact/local-network": "workspace:*",
         "@exact/maps": "workspace:*",
+        "@exact/model": "workspace:*",
         "@exact/media-capture": "workspace:*",
         "@exact/motion": "workspace:*",
         "@exact/nfc": "workspace:*",
@@ -209,6 +210,10 @@
     },
     "packages/maps": {
       "name": "@exact/maps",
+      "version": "1.0.0",
+    },
+    "packages/model": {
+      "name": "@exact/model",
       "version": "1.0.0",
     },
     "packages/media-capture": {
@@ -392,6 +397,8 @@
     "@exact/login-item": ["@exact/login-item@workspace:packages/login-item"],
 
     "@exact/maps": ["@exact/maps@workspace:packages/maps"],
+
+    "@exact/model": ["@exact/model@workspace:packages/model"],
 
     "@exact/media-capture": ["@exact/media-capture@workspace:packages/media-capture"],
 

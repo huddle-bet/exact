@@ -120,6 +120,7 @@ mod menus;
 mod midi;
 mod migrate;
 mod miswiring;
+mod model_view;
 mod module_alarms;
 mod module_clipboard;
 mod module_events;

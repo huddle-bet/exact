@@ -1,0 +1,30 @@
+{
+  "kind": "implementation",
+  "implements": "@exact/model@^1.0",
+  "platform": "apple",
+  "targets": [
+    "ios",
+    "macos"
+  ],
+  "shapes": {},
+  "options": {},
+  "names": [],
+  "views": [
+    "exact-model"
+  ],
+  "hatches": [],
+  "sources": {
+    "swift": [
+      "Model.swift",
+      "ModelGLB.swift",
+      "ModelLight.swift",
+      "ModelMotion.swift"
+    ]
+  },
+  "artifacts": [],
+  "class": "ModelModule",
+  "frameworks": {
+    "SceneKit": { "ios": "17.0", "macos": "14.0" },
+    "CoreMotion": { "ios": "17.0" }
+  }
+}

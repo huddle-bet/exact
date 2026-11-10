@@ -107,6 +107,7 @@ public final class ExactPackageContext {
     private let invokeFn: (String, String, [String: Any], @escaping ([String: Any]) -> Void) -> Void
     private let emitFn: (String, [Any]) -> Void
     private let stateFn: ([String: Any]) -> Void
+    private let assetFn: (String) -> Data?
     private let activationFn: (String, [Any], String?) -> [AnyHashable: Any]
     private let wakeFn: (String, [Any], String, @escaping (String) -> Void) -> Void
     private let expireWakeFn: (String) -> Void
@@ -146,13 +147,14 @@ public final class ExactPackageContext {
                 },
                 regions: ExactRegions = ExactRegions { _, _ in nil },
                 expireWake: @escaping (String) -> Void = { _ in },
-                state: @escaping ([String: Any]) -> Void = { _ in }) {
+                state: @escaping ([String: Any]) -> Void = { _ in },
+                asset: @escaping (String) -> Data? = { _ in nil }) {
         self.agent = agent; self.session = session; self.hostSession = hostSession
         changedFn = changed; logFn = log; nowFn = now
         self.tracks = tracks; fileFn = file; self.audioSession = audioSession; pictureFn = picture
         self.surfaces = surfaces; orientationFn = orientation; viewFn = view; invokeFn = invoke
         emitFn = emit; activationFn = activation; wakeFn = wake; self.wakes = wakes; self.transfers = transfers
-        self.pads = pads; afterFn = after; self.regions = regions; expireWakeFn = expireWake; stateFn = state
+        self.pads = pads; afterFn = after; self.regions = regions; expireWakeFn = expireWake; stateFn = state; assetFn = asset
     }
 
     /// `body` once, `ms` later on the session's clock: the agent's under the
@@ -230,6 +232,11 @@ public final class ExactPackageContext {
     /// the session's own directories, a scratch tree under the agent.
     /// Admission has checked the path against the calling source's grants.
     public func file(_ path: String) -> URL? { fileFn(path) }
+
+    /// The bytes of an app asset by its path (`assets/phone.glb`), as the session's resolver holds it: the
+    /// binary's bundle, or the over-the-air generation that is running. Nil when the app has no such file or
+    /// the host has no resolver for it. Main thread.
+    public func asset(_ path: String) -> Data? { assetFn(path) }
 
     /// Under the agent, what the implementation discloses of its own objects
     /// for `state.extensions`: listed as its `implementation`, each field
