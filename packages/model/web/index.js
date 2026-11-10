@@ -10,15 +10,19 @@
 //   through a spring (`tiltGain`, `tiltMaxDeg`, `tiltStiffness`, `tiltDamping`, `tiltRecenter`).
 //   iOS Safari asks for the motion permission at the first touch.
 // - `sway` (degrees) swings the model gently with period `swayMs`.
+// - `screenNode` names a node (the phone's screen): each frame it moves, the view sends `screen` with the CSS
+//   that lays a `screenWidth` by `screenHeight` box over it (see ../README.md). `leanTo` and `leanBy` lean the aimed
+//   pose toward another, as a drag does, on a quicker spring.
 // - `textures` replace the picture on named nodes; `hiddenNodes` leaves named nodes out; `sheen`
 //   draws moving light bands over the nodes that show a picture.
 // - `load` runs once the model has drawn; `failed` runs with the reason when the model, the light
 //   or a picture cannot be read or WebGL2 is missing.
-import { parseGLB, bounds } from './glb.js';
+import { parseGLB, bounds, rectOf } from './glb.js';
+import { readAsset } from './asset.js';
 import { parseKTX, studioLight } from './ktx.js';
 import { ModelRenderer } from './render.js';
 import {
-  DEG, TILT_DEFAULTS, cameraDistance, kelvinToLinear, lightDirection, newTilt, poseMatrix, sheenAlong, sheenCoord, springStep, sprung, swayAt, tiltStep,
+  DEG, TILT_DEFAULTS, cameraDistance, kelvinToLinear, leanGoal, leanResponse, lightDirection, newTilt, poseMatrix, screenPlacement, sheenAlong, springStep, sprung, swayAt, tiltStep,
 } from './motion.js';
 
 const num = (text, fallback) => { const v = text == null || text === '' ? NaN : Number(text); return Number.isFinite(v) ? v : fallback; };
@@ -76,9 +80,15 @@ class ExactModel {
       scale: num(p.modelScale, 1), x: num(p.offsetX, 0), y: num(p.offsetY, 0),
     };
     this.response = Math.max(0, num(p.response, 0));
-    const moved = Object.keys(aim).some(k => aim[k] !== this.goal[k]);
-    this.goal = aim;
-    if (this.response === 0 || first) { Object.assign(this.pose, aim); Object.assign(this.velocity, { yaw: 0, pitch: 0, roll: 0, scale: 0, x: 0, y: 0 }); }
+    this.aim = aim;
+    this.lean = Math.max(0, Math.min(1, num(p.leanBy, 0)));
+    let toward = null;
+    try { const t = JSON.parse(p.leanTo || 'null'); if (t && typeof t === 'object') toward = { yaw: t.yaw * DEG, pitch: t.pitch * DEG, roll: t.roll * DEG, scale: t.scale, x: t.offsetX, y: t.offsetY }; } catch { /* no lean */ }
+    const aimed = this.lean > 0 && toward ? leanGoal(aim, toward, this.lean) : aim;
+    const moved = Object.keys(aimed).some(k => aimed[k] !== this.goal[k]);
+    this.goal = aimed;
+    this.speed = leanResponse(this.response, this.lean);
+    if (this.response === 0 || first) { Object.assign(this.pose, aimed); Object.assign(this.velocity, { yaw: 0, pitch: 0, roll: 0, scale: 0, x: 0, y: 0 }); }
     else if (moved) this.unsettled = true;
     this.tiltMix = Math.max(0, Math.min(1, num(p.tilt, 0)));
     this.tiltCfg = {
@@ -97,11 +107,7 @@ class ExactModel {
     this.loaded = false; this.told = false; this.drawnAfterLoad = 0;
     try {
       if (!source) throw new Error('`source` names no model');
-      const get = async what => {
-        const res = await fetch(new URL(what, this.element.ownerDocument.baseURI));
-        if (!res.ok) throw new Error(`${what}: HTTP ${res.status}`);
-        return res.arrayBuffer();
-      };
+      const get = what => readAsset(this.implementation, this.element.ownerDocument.baseURI, what);
       const [glb, ktx] = await Promise.all([get(source), environment ? get(environment) : null]);
       if (ticket !== this.ticket) return;
       const doc = parseGLB(glb);
@@ -131,9 +137,8 @@ class ExactModel {
     for (const name of [...r.overrides.keys()]) if (!wanted.some(t => t.node === name)) r.clearPicture(name);
     await Promise.all(wanted.map(async t => {
       try {
-        const res = await fetch(new URL(t.source, this.element.ownerDocument.baseURI));
-        if (!res.ok) throw new Error(`${t.source}: HTTP ${res.status}`);
-        const bitmap = await createImageBitmap(await res.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none', imageOrientation: 'none' });
+        const bytes = await readAsset(this.implementation, this.element.ownerDocument.baseURI, t.source);
+        const bitmap = await createImageBitmap(new Blob([bytes]), { premultiplyAlpha: 'none', colorSpaceConversion: 'none', imageOrientation: 'none' });
         if (this.sources.textures !== key) return;
         r.setPicture(t.node, bitmap);
         bitmap.close?.();
@@ -182,9 +187,9 @@ class ExactModel {
     if (this.unsettled) {
       let off = false;
       for (const k of Object.keys(goal)) {
-        [pose[k], v[k]] = springStep(pose[k], v[k], goal[k], this.response, dt);
+        [pose[k], v[k]] = springStep(pose[k], v[k], goal[k], this.speed, dt);
         const limit = k === 'yaw' || k === 'pitch' || k === 'roll' ? 0.012 : k === 'scale' ? 0.006 : 0.0005;
-        if (!sprung(pose[k], v[k], goal[k], this.response, limit)) off = true;
+        if (!sprung(pose[k], v[k], goal[k], this.speed, limit)) off = true;
       }
       if (!off) { Object.assign(pose, goal); Object.assign(v, { yaw: 0, pitch: 0, roll: 0, scale: 0, x: 0, y: 0 }); this.unsettled = false; this.events.emit('settled', []); }
     }
@@ -211,8 +216,22 @@ class ExactModel {
     };
     this.renderer.draw(scene);
     this.drawn = { yaw, pitch };
+    this.reportScreen(scene);
     if (!this.told && ++this.drawnAfterLoad >= 2) { this.told = true; this.events.load(); }
     if (this.animating() || !this.told) this.wake();
+  }
+
+  reportScreen(scene) {
+    const name = this.props.screenNode;
+    if (!name) return;
+    if (this.rectFor !== name) { this.rectFor = name; this.rect = rectOf(this.renderer.doc, name); }
+    if (!this.rect) return;
+    const r = this.element.getBoundingClientRect(), p = this.props;
+    const w = num(p.screenWidth, 420), h = num(p.screenHeight, 912);
+    const placed = screenPlacement({ pose: scene.pose, rect: this.rect, fov: scene.fov, distance: scene.distance, viewW: r.width, viewH: r.height, w, h });
+    const { height, ...payload } = placed;
+    const text = JSON.stringify(payload);
+    if (text !== this.reported) { this.reported = text; this.events.emit('screen', [payload]); }
   }
 
   destroy() {
@@ -231,9 +250,10 @@ class ExactModel {
 export const roster = { 'exact-model': { view: ExactModel } };
 
 /** The session's models for `state.extensions`: whether each has drawn and the pose it showed last. */
-export function implementation() {
+export function implementation(context) {
   const models = new Map();
   return {
+    asset: context?.asset,
     made(view, model) { models.set(view, model); },
     gone(view) { models.delete(view); },
     state() {

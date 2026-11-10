@@ -10,9 +10,11 @@
 //   Core Motion (iOS), `sway` swings it gently. The numbers are ModelMotion.swift's.
 // - `textures` replace the picture of named nodes, `hiddenNodes` leaves nodes out, `sheen` draws
 //   moving light bands over the nodes that show a picture (a surface shader modifier).
-// - A bundled `source` is read from the app's `assets` in the bundle (or EXACT_ASSETS under the
-//   agent); an `app:/` path from the session's files; an http(s) URL is fetched. A file only an
-//   over-the-air generation holds is not reachable from a package.
+// - An asset path (`assets/phone.glb`) is read through the host's asset reader (`context.asset`: the
+//   running generation's file, else the bundle's), else from the bundle or EXACT_ASSETS under the agent;
+//   an `app:/` path from the session's files; an http(s) URL is fetched.
+// - `screenNode` makes the view send `screen` with the CSS that lays a box over that node (see
+//   ../README.md); `leanTo` and `leanBy` lean the aimed pose toward another, as a drag does.
 // - Light units: a light's `intensity` is irradiance in the scene's own units (white diffuse shows
 //   intensity / pi); SceneKit's lumens are taken as 1000 for a radiance of 1, so a light is set at
 //   intensity * 1000 / pi, and `ambient` scales the environment as it is.
@@ -70,6 +72,10 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
     private var props: [String: String] = [:]
     private var pose = [Double](repeating: 0, count: 6), velocity = [Double](repeating: 0, count: 6)
     private var goal = [Double](repeating: 0, count: 6)   // yaw, pitch, roll (radians), scale, x, y
+    private var speed = 0.0
+    private var screenRect: ModelMotion.Rect?
+    private var screenFor = ""
+    private var reported: [String: Any]?
     private var response = 0.0
     private var unsettled = false
     private var tilt = ModelMotion.Tilt(), tiltMix = 0.0, tiltConfig = ModelMotion.TiltConfig()
@@ -129,9 +135,17 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         let aim = [number(next["yaw"]) ?? 0, number(next["pitch"]) ?? 0, number(next["roll"]) ?? 0].map { $0 * ModelMotion.deg }
             + [number(next["modelScale"]) ?? 1, number(next["offsetX"]) ?? 0, number(next["offsetY"]) ?? 0]
         response = max(0, number(next["response"]) ?? 0)
-        let moved = aim != goal
-        goal = aim
-        if response == 0 || first { pose = aim; velocity = [Double](repeating: 0, count: 6) } else if moved { unsettled = true }
+        let lean = max(0, min(1, number(next["leanBy"]) ?? 0))
+        var toward: [Double]?
+        if let text = next["leanTo"], let data = text.data(using: .utf8), let t = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            func v(_ k: String) -> Double { (t[k] as? NSNumber)?.doubleValue ?? 0 }
+            toward = [v("yaw") * ModelMotion.deg, v("pitch") * ModelMotion.deg, v("roll") * ModelMotion.deg, v("scale"), v("offsetX"), v("offsetY")]
+        }
+        let aimed = lean > 0 && toward != nil ? ModelMotion.leanGoal(aim, toward, lean) : aim
+        speed = ModelMotion.leanResponse(response, lean)
+        let moved = aimed != goal
+        goal = aimed
+        if response == 0 || first { pose = aimed; velocity = [Double](repeating: 0, count: 6) } else if moved { unsettled = true }
         tiltMix = max(0, min(1, number(next["tilt"]) ?? 0))
         tiltConfig = ModelMotion.TiltConfig(
             gain: number(next["tiltGain"]) ?? 0.5, maxDeg: number(next["tiltMaxDeg"]) ?? 6, stiffness: number(next["tiltStiffness"]) ?? 70,
@@ -161,6 +175,10 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
             URLSession.shared.dataTask(with: url) { data, _, error in
                 DispatchQueue.main.async { then(data.map { .success($0) } ?? .failure(error ?? ModelRefusal("\(path): no data"))) }
             }.resume()
+            return
+        }
+        if !path.hasPrefix("app:/"), let bytes = context.asset(path) {
+            then(.success(bytes))
             return
         }
         var roots: [URL] = []
@@ -409,7 +427,10 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         scn.isPlaying = animating && loaded
     }
 
-    private func applyPose(sway: Double, leanPitch: Double, leanYaw: Double) {
+    private var lens = (fov: 24.0, distance: 0.5)
+
+    @discardableResult
+    private func applyPose(sway: Double, leanPitch: Double, leanYaw: Double) -> (yaw: Double, pitch: Double) {
         let yaw = pose[0] + leanYaw + sway * swayDeg * ModelMotion.deg
         let pitch = pose[1] + leanPitch - 0.4 * sway * swayDeg * ModelMotion.deg
         let qy = simd_quatf(angle: Float(yaw), axis: SIMD3(0, 1, 0)), qx = simd_quatf(angle: Float(pitch), axis: SIMD3(1, 0, 0)), qz = simd_quatf(angle: Float(pose[2]), axis: SIMD3(0, 0, 1))
@@ -420,6 +441,7 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         camera.camera?.fieldOfView = CGFloat(fov)
         let distance = ModelMotion.cameraDistance(distance: number(props["distance"]), fit: number(props["viewFill"]) ?? 0.74, fov: fov, half: bounds.half, front: bounds.front)
         camera.simdPosition = SIMD3(0, 0, Float(distance))
+        lens = (fov, distance)
         let bands = sheen.prefix(3).map { s in
             SCNVector4(Float(s.width), Float(s.peak), Float((number(props["sheenRest"]) ?? 0) + s.at + (number(props["sheenYaw"]) ?? 0) * (yaw - goal[0]) + (number(props["sheenPitch"]) ?? 0) * (pitch - goal[1])), 0)
         }
@@ -430,6 +452,23 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
             d.material.setValue(Float(wu), forKey: "sheenWu")
             d.material.setValue(Float(number(props["sheenStrength"]) ?? 1), forKey: "sheenWeight")
         }
+        return (yaw, pitch)
+    }
+
+    /// Sends `screen` when the CSS that lays a box over `screenNode` changed (web/motion.js `screenPlacement`).
+    private func reportScreen(yaw: Double, pitch: Double) {
+        guard let name = props["screenNode"], !name.isEmpty, let doc else { return }
+        if screenFor != name { screenFor = name; screenRect = doc.rectOf(name) }
+        guard let rect = screenRect, scn.bounds.width > 0 else { return }
+        let matrix = ModelMotion.poseMatrix(pitch: pitch, yaw: yaw, roll: pose[2], scale: pose[3], x: pose[4], y: pose[5])
+        let placed = ModelMotion.screenPlacement(
+            pose: matrix, rect: rect, fov: lens.fov, distance: lens.distance, viewW: Double(scn.bounds.width), viewH: Double(scn.bounds.height),
+            w: number(props["screenWidth"]) ?? 420)
+        if reported.map({ NSDictionary(dictionary: $0).isEqual(to: placed.json) }) != true {
+            reported = placed.json
+            let body = placed.json
+            DispatchQueue.main.async { self.events.emit("screen", [body]) }
+        }
     }
 
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
@@ -439,9 +478,9 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         if unsettled {
             var off = false
             for k in 0..<6 {
-                (pose[k], velocity[k]) = ModelMotion.springStep(pose[k], velocity[k], goal: goal[k], responseMs: response, dt: dt)
+                (pose[k], velocity[k]) = ModelMotion.springStep(pose[k], velocity[k], goal: goal[k], responseMs: speed, dt: dt)
                 let limit = k < 3 ? 0.012 : k == 3 ? 0.006 : 0.0005
-                if !ModelMotion.sprung(pose[k], velocity[k], goal: goal[k], responseMs: response, limit: limit) { off = true }
+                if !ModelMotion.sprung(pose[k], velocity[k], goal: goal[k], responseMs: speed, limit: limit) { off = true }
             }
             if !off {
                 pose = goal; velocity = [Double](repeating: 0, count: 6); unsettled = false
@@ -455,7 +494,8 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         } else { tilt.ready = false }
         let start = swayFrom ?? { swayFrom = time; return time }()
         let sway = swayDeg != 0 ? ModelMotion.swayAt((time - start) * 1000, periodMs: swayMs) : 0
-        applyPose(sway: sway, leanPitch: leanPitch, leanYaw: leanYaw)
+        let shown = applyPose(sway: sway, leanPitch: leanPitch, leanYaw: leanYaw)
+        reportScreen(yaw: shown.yaw, pitch: shown.pitch)
     }
 
     func renderer(_ renderer: SCNSceneRenderer, didRenderScene scene: SCNScene, atTime time: TimeInterval) {

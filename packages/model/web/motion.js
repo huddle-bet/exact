@@ -113,3 +113,69 @@ export function sheenAlpha(t, width, peak) {
 export function sheenAlong(at, rest, travelYaw, travelPitch, yaw, pitch) {
   return at + rest + travelYaw * yaw + travelPitch * pitch;
 }
+
+export const LEAN_TIGHTEN = 3;
+export const POSE_KEYS = ['yaw', 'pitch', 'roll', 'scale', 'x', 'y'];
+
+/** The pose a drag leans toward: the aimed pose moved `t` (0..1) of the way to `toward`. While `t` is
+ * above zero the spring is `LEAN_TIGHTEN` times quicker, so the model follows the finger. */
+export function leanGoal(goal, toward, t) {
+  const k = Math.max(0, Math.min(1, t));
+  const out = {};
+  for (const key of POSE_KEYS) out[key] = goal[key] + ((toward?.[key] ?? goal[key]) - goal[key]) * k;
+  return out;
+}
+export const leanResponse = (response, t) => (t > 0 ? response / LEAN_TIGHTEN : response);
+
+/** Axis and angle (degrees) of a rotation matrix given by rows. */
+export function axisAngle(m) {
+  const tr = m[0] + m[4] + m[8];
+  const angle = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2)));
+  if (angle < 1e-9) return { axis: [0, 0, 1], deg: 0 };
+  let axis;
+  if (Math.PI - angle < 1e-6) {
+    const i = [m[0], m[4], m[8]].indexOf(Math.max(m[0], m[4], m[8]));
+    const col = [m[i], m[3 + i], m[6 + i]];
+    col[i] += 1;
+    const n = Math.hypot(...col);
+    axis = col.map(v => v / n);
+  } else {
+    const v = [m[7] - m[5], m[2] - m[6], m[3] - m[1]];
+    const n = Math.hypot(...v);
+    axis = v.map(x => x / n);
+  }
+  return { axis, deg: angle / DEG };
+}
+
+/** Where a flat rectangle of the model (`rect`: its centre `c` and half width and height, facing +z,
+ * before the pose) is on screen, as the CSS a box of `w` by `h` points needs to cover it: a parent with
+ * `perspective`, and the box with `translate`, `rotate` (axis and angle) and `scale`, centred in the
+ * parent. `pose` is the column-major pose matrix, the camera sits at (0, 0, distance) looking down -z, and the
+ * view is `viewW` by `viewH` px. `quad` is the rectangle's corners in view px, top left, top right,
+ * bottom right, bottom left. */
+export function screenPlacement({ pose, rect, fov, distance, viewW, viewH, w, h }) {
+  const at = (x, y, z) => [0, 1, 2].map(k => pose[k] * x + pose[4 + k] * y + pose[8 + k] * z + pose[12 + k]);
+  const s = Math.hypot(pose[0], pose[1], pose[2]);
+  const c = at(...rect.c);
+  const f = viewH / 2 / Math.tan((fov * DEG) / 2);
+  const depth = distance - c[2];
+  const k = f / depth;
+  // The pose's rotation, as CSS sees it: y is down, so conjugate by diag(1, -1, 1).
+  const r = [0, 1, 2].flatMap(row => [0, 1, 2].map(col => pose[col * 4 + row] / s));
+  const flip = [1, -1, 1, -1, 1, -1, 1, -1, 1];
+  const rc = r.map((v, i) => v * flip[i]);
+  const { axis, deg } = axisAngle(rc);
+  const project = p => [viewW / 2 + (p[0] * f) / (distance - p[2]), viewH / 2 - (p[1] * f) / (distance - p[2])];
+  const [hw, hh] = [rect.hw, rect.hh];
+  const quad = [[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]].flatMap(([x, y]) => project(at(rect.c[0] + x, rect.c[1] + y, rect.c[2])));
+  const normal = [pose[8] / s, pose[9] / s, pose[10] / s];
+  const facing = normal[0] * -c[0] + normal[1] * -c[1] + normal[2] * (distance - c[2]) > 0;
+  const n = v => Math.round(v * 1e4) / 1e4, n6 = v => Math.round(v * 1e6) / 1e6;
+  return {
+    perspective: n(f),
+    translate: `${n(c[0] * k)}px ${n(-c[1] * k)}px 0px`,
+    rotate: `${axis.map(n6).join(' ')} ${n6(deg)}deg`,
+    scale: (s * 2 * hw * k) / w,
+    facing, quad: quad.map(n), height: (s * 2 * hh * k) / h,
+  };
+}

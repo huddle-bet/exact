@@ -7,8 +7,8 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { kelvinToLinear, lightDirection, newTilt, springStep, swayAt, tiltStep, cameraDistance, sheenCoord, sheenAlpha } from "../web/motion.js";
-import { bounds, parseGLB, readAccessor, drawables } from "../web/glb.js";
+import { leanGoal, poseMatrix, screenPlacement, kelvinToLinear, lightDirection, newTilt, springStep, swayAt, tiltStep, cameraDistance, sheenCoord, sheenAlpha } from "../web/motion.js";
+import { bounds, parseGLB, readAccessor, drawables, rectOf } from "../web/glb.js";
 import { packR11G11B10, parseKTX } from "../web/ktx.js";
 
 const here = dirname(fileURLToPath(import.meta.url)), apple = resolve(here, "../apple");
@@ -43,6 +43,14 @@ test.skipIf(!swiftc)("Apple's motion numbers equal the web's", () => {
   close(apple.sheen, [sheenCoord(0.3, 0.6, -0.6, 420, 912), sheenAlpha(0.52, 0.12, 0.06)]);
   expect(apple.pack).toEqual([packR11G11B10(0.5, 1, 2), 0, packR11G11B10(60000, 1, 1)]);
   expect(apple.studio).toEqual({ size: 32, levels: 4 });
+  const rect = { c: [-0.0028, 0, 0.00566], hw: 0.03482, hh: 0.07573 };
+  const { height, ...web } = screenPlacement({ pose: poseMatrix(-0.05, 0.28, 0.1, 0.99, 0.004, -0.01), rect, fov: 24, distance: 0.503, viewW: 420, viewH: 700, w: 420, h: 912 });
+  expect(apple.placement.translate).toBe(web.translate);
+  expect(apple.placement.rotate).toBe(web.rotate);
+  expect(apple.placement.facing).toBe(web.facing);
+  close([apple.placement.perspective, apple.placement.scale, ...apple.placement.quad], [web.perspective, web.scale, ...web.quad], 3);
+  const l = leanGoal({ yaw: 0.2, pitch: 0, roll: 0, scale: 1, x: 0, y: 0 }, { yaw: -0.4, pitch: -0.1, roll: 0, scale: 0.6, x: 0.01, y: 0 }, 0.5);
+  close(apple.lean, [l.yaw, l.pitch, l.roll, l.scale, l.x, l.y]);
 });
 
 test.skipIf(!swiftc || !glbPath || !ktxPath)("Apple reads the glb and the ktx as the web does", () => {
@@ -52,6 +60,8 @@ test.skipIf(!swiftc || !glbPath || !ktxPath)("Apple reads the glb and the ktx as
   expect(apple.glb.drawables).toBe(d.length);
   close(apple.glb.min, b.min, 6);
   close(apple.glb.max, b.max, 6);
+  const r = rectOf(doc, "tppzCQmnlKcHIpP");
+  close(apple.rect, [...r.c, r.hw, r.hh], 6);
   expect(apple.glb.chain).toEqual(d.at(-1).chain);
   const pos = readAccessor(doc, doc.json.meshes[d[0].mesh].primitives[d[0].primitive].attributes.POSITION).array;
   close(apple.glb.firstVertex, Array.from(pos.slice(0, 3)), 7);

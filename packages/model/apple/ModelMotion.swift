@@ -86,4 +86,86 @@ enum ModelMotion {
     static func sheenAlpha(_ t: Double, width: Double, peak: Double) -> Double {
         peak * max(0, 1 - abs(t - 0.5) / (width / 2))
     }
+
+    static let leanTighten = 3.0
+
+    /// The pose a drag leans toward: the aimed pose (yaw, pitch, roll, scale, x, y) moved `t` of the way to `toward`.
+    static func leanGoal(_ goal: [Double], _ toward: [Double]?, _ t: Double) -> [Double] {
+        let k = max(0, min(1, t))
+        return goal.indices.map { goal[$0] + ((toward?[$0] ?? goal[$0]) - goal[$0]) * k }
+    }
+
+    static func leanResponse(_ response: Double, _ t: Double) -> Double { t > 0 ? response / leanTighten : response }
+
+    /// translate(x, y, 0) * Rz(roll) * Rx(pitch) * Ry(yaw) * scale(s), column-major.
+    static func poseMatrix(pitch: Double, yaw: Double, roll: Double, scale s: Double, x: Double, y: Double) -> [Double] {
+        let (cy, sy, cp, sp, cr, sr) = (cos(yaw), sin(yaw), cos(pitch), sin(pitch), cos(roll), sin(roll))
+        let a = [cy, sp * sy, -cp * sy, 0, 0, cp, sp, 0, sy, -sp * cy, cp * cy, 0]
+        var out = [Double](repeating: 0, count: 16)
+        for c in 0..<3 {
+            let (px, py, pz) = (a[c * 4], a[c * 4 + 1], a[c * 4 + 2])
+            out[c * 4] = (cr * px - sr * py) * s
+            out[c * 4 + 1] = (sr * px + cr * py) * s
+            out[c * 4 + 2] = pz * s
+        }
+        out[12] = x; out[13] = y; out[15] = 1
+        return out
+    }
+
+    /// Axis and angle (degrees) of a rotation matrix given by rows.
+    static func axisAngle(_ m: [Double]) -> (axis: [Double], deg: Double) {
+        let tr = m[0] + m[4] + m[8]
+        let angle = acos(max(-1, min(1, (tr - 1) / 2)))
+        if angle < 1e-9 { return ([0, 0, 1], 0) }
+        var axis: [Double]
+        if Double.pi - angle < 1e-6 {
+            let i = [m[0], m[4], m[8]].firstIndex(of: max(m[0], m[4], m[8]))!
+            var col = [m[i], m[3 + i], m[6 + i]]
+            col[i] += 1
+            let n = (col[0] * col[0] + col[1] * col[1] + col[2] * col[2]).squareRoot()
+            axis = col.map { $0 / n }
+        } else {
+            let v = [m[7] - m[5], m[2] - m[6], m[3] - m[1]]
+            let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).squareRoot()
+            axis = v.map { $0 / n }
+        }
+        return (axis, angle / deg)
+    }
+
+    struct Rect { var c: [Double]; var hw: Double; var hh: Double }
+
+    struct Placement: Equatable {
+        var perspective: Double, translate: String, rotate: String, scale: Double, facing: Bool, quad: [Double]
+        var json: [String: Any] { ["perspective": perspective, "translate": translate, "rotate": rotate, "scale": scale, "facing": facing, "quad": quad] }
+    }
+
+    /// Where a flat rectangle of the model is on screen, as the CSS a box of `w` by `h` points needs to cover it
+    /// (web/motion.js `screenPlacement`, whose notes say how).
+    static func screenPlacement(pose: [Double], rect: Rect, fov: Double, distance: Double, viewW: Double, viewH: Double, w: Double) -> Placement {
+        func at(_ x: Double, _ y: Double, _ z: Double) -> [Double] { (0..<3).map { pose[$0] * x + pose[4 + $0] * y + pose[8 + $0] * z + pose[12 + $0] } }
+        let s = (pose[0] * pose[0] + pose[1] * pose[1] + pose[2] * pose[2]).squareRoot()
+        let c = at(rect.c[0], rect.c[1], rect.c[2])
+        let f = viewH / 2 / tan(fov * deg / 2)
+        let k = f / (distance - c[2])
+        let flip: [Double] = [1, -1, 1, -1, 1, -1, 1, -1, 1]
+        var rc = [Double](repeating: 0, count: 9)
+        for row in 0..<3 { for col in 0..<3 { rc[row * 3 + col] = pose[col * 4 + row] / s * flip[row * 3 + col] } }
+        let (axis, angle) = axisAngle(rc)
+        func project(_ p: [Double]) -> [Double] { [viewW / 2 + p[0] * f / (distance - p[2]), viewH / 2 - p[1] * f / (distance - p[2])] }
+        let corners = [(-rect.hw, rect.hh), (rect.hw, rect.hh), (rect.hw, -rect.hh), (-rect.hw, -rect.hh)]
+        let quad = corners.flatMap { project(at(rect.c[0] + $0.0, rect.c[1] + $0.1, rect.c[2])) }
+        let normal = [pose[8] / s, pose[9] / s, pose[10] / s]
+        let facing = normal[0] * -c[0] + normal[1] * -c[1] + normal[2] * (distance - c[2]) > 0
+        func n(_ v: Double) -> Double { (v * 1e4).rounded() / 1e4 }
+        func text(_ v: Double, _ places: Int) -> String {
+            var t = String(format: "%.\(places)f", v)
+            while t.contains("."), t.hasSuffix("0") { t.removeLast() }
+            if t.hasSuffix(".") { t.removeLast() }
+            return t == "-0" ? "0" : t
+        }
+        return Placement(
+            perspective: n(f), translate: "\(text(c[0] * k, 4))px \(text(-c[1] * k, 4))px 0px",
+            rotate: "\(axis.map { text($0, 6) }.joined(separator: " ")) \(text(angle, 6))deg",
+            scale: s * 2 * rect.hw * k / w, facing: facing, quad: quad.map(n))
+    }
 }

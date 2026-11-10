@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 const INTERFACE: &str = include_str!("../../../../packages/model/exact.json");
 
-const APP: &str = r#"use ModelLight, ModelTexture, ModelSheen from "@exact/model"
+const APP: &str = r#"use ModelLight, ModelTexture, ModelSheen, ModelScreen, ModelPose from "@exact/model"
 
 component App
   state yaw = 16
@@ -20,15 +20,18 @@ component App
   derive pictures = [ModelTexture(node="Screen", source="assets/home.jpg")]
   derive bands = [ModelSheen(at=0, width=0.12, peak=0.06)]
   derive hidden = ["ScreenApp"]
+  derive next = ModelPose(yaw=-9, pitch=-2, roll=0, scale=1, offsetX=0, offsetY=0)
   action ready
     status = "drawn"
   action broke(why: string)
     status = why
+  action placed(s: ModelScreen)
+    status = s.rotate
   action arrived
     settled = settled + 1
   view
     column
-      exact-model testId="phone" source="assets/phone.glb" environment="assets/studio.ktx" ambient=0.768 lights=lights fov=24 distance=0.503 viewFill=0.74 yaw=yaw pitch=-2 roll=0 modelScale=1 offsetX=0 offsetY=0 response=850 sway=2.5 swayMs=5200 tilt=1 tiltGain=0.5 tiltMaxDeg=6 tiltStiffness=70 tiltDamping=15 tiltRecenter=0.02 textures=pictures hiddenNodes=hidden sheen=bands sheenStrength=1.05 sheenRest=-0.6 sheenYaw=4 sheenPitch=3 load=ready failed=broke settled=arrived width=300 height=600
+      exact-model testId="phone" source="assets/phone.glb" environment="assets/studio.ktx" ambient=0.768 lights=lights fov=24 distance=0.503 viewFill=0.74 yaw=yaw pitch=-2 roll=0 modelScale=1 offsetX=0 offsetY=0 response=850 sway=2.5 swayMs=5200 tilt=1 tiltGain=0.5 tiltMaxDeg=6 tiltStiffness=70 tiltDamping=15 tiltRecenter=0.02 textures=pictures hiddenNodes=hidden sheen=bands sheenStrength=1.05 sheenRest=-0.6 sheenYaw=4 sheenPitch=3 load=ready failed=broke settled=arrived screen=placed screenNode="Screen" screenWidth=420 screenHeight=912 leanTo=next leanBy=0.3 width=300 height=600
 "#;
 
 struct App(PathBuf);
@@ -166,4 +169,74 @@ fn load_failed_and_settled_run_their_handlers() {
     let sent = json!({ "exact:event": "settled", "args": [] });
     r.dispatch(id, Event::Message(sent.to_string())).unwrap();
     assert_eq!(r.slot("settled"), Some(&Value::Number(1.0)));
+}
+
+const LIVE: &str = r#"use ModelScreen from "@exact/model"
+
+component App
+  state perspective = 0
+  state translate = "0px 0px 0px"
+  state rotate = "0deg"
+  state scale = 1
+  state facing = false
+  action placed(s: ModelScreen)
+    perspective = s.perspective
+    translate = s.translate
+    rotate = s.rotate
+    scale = s.scale
+    facing = s.facing
+  view
+    column width=420 height=700 position="relative"
+      exact-model testId="phone" source="assets/phone.glb" screenNode="Screen" screen=placed width=420 height=700
+      column testId="stage" position="absolute" left=0 top=0 width=420 height=700 perspective=perspective
+        column testId="live" position="absolute" left=0 top=0 width=420 height=912 translate=translate rotate=rotate scale=scale display=(facing ? "flex" : "none")
+          text "live"
+"#;
+
+fn live(r: &Runner<NoData>) -> (f32, [f32; 2], f32, f32, f32) {
+    let key = r.kernel().find_by_test_id("live")[0];
+    let node = r.kernel().node_by_key(key).unwrap();
+    let parent = r
+        .kernel()
+        .node_by_key(r.kernel().find_by_test_id("stage")[0])
+        .unwrap();
+    (
+        parent.style.perspective,
+        [node.style.translate.x, node.style.translate.y],
+        node.style.translate_z,
+        node.style.rotate,
+        node.style.scale,
+    )
+}
+
+/// The view sends the CSS that lays a box over the model's screen as the model moves. A child bound to it
+/// takes its perspective, translate, rotate and scale from each event, the way the app's live screen
+/// follows RN's projected quad. A `screen` event that did not reach the child's rows leaves the live
+/// screen where the first pose put it.
+#[test]
+fn a_child_follows_the_screen_the_view_reports() {
+    let mut r = boot(&App::new("live", LIVE));
+    assert_eq!(live(&r).0, 0.0);
+    let key = r.kernel().find_by_test_id("phone")[0];
+    let id = r.kernel().node_by_key(key).unwrap().id;
+    let send = |r: &mut Runner<NoData>, screen: serde_json::Value| {
+        let sent = json!({ "exact:event": "screen", "args": [screen] });
+        r.dispatch(id, Event::Message(sent.to_string())).unwrap();
+    };
+    send(
+        &mut r,
+        json!({ "perspective": 1900.5, "translate": "12px -30px 0px", "rotate": "0 1 0 16deg", "scale": 0.42, "facing": true, "quad": [0, 0, 0, 0, 0, 0, 0, 0] }),
+    );
+    let (perspective, [x, y], z, turn, scale) = live(&r);
+    assert_eq!(
+        (perspective, x, y, z, scale),
+        (1900.5, 12.0, -30.0, 0.0, 0.42)
+    );
+    assert_eq!(turn, 16.0);
+    send(
+        &mut r,
+        json!({ "perspective": 1900.5, "translate": "-8px 4px 0px", "rotate": "0 1 0 -9deg", "scale": 0.4, "facing": true, "quad": [0, 0, 0, 0, 0, 0, 0, 0] }),
+    );
+    let (_, [x, y], _, turn, scale) = live(&r);
+    assert_eq!((x, y, turn, scale), (-8.0, 4.0, -9.0, 0.4));
 }

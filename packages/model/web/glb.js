@@ -99,3 +99,23 @@ export function bounds(doc) {
   }
   return { min, max };
 }
+
+/** The flat rectangle of the surfaces under node `name`, before any pose: the centre of their bounds,
+ * and the half width (x) and half height (y), the rectangle facing +z. Null when no surface is named so. */
+export function rectOf(doc, name) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const d of drawables(doc)) {
+    if (!d.chain.includes(name)) continue;
+    const a = doc.json.accessors[doc.json.meshes[d.mesh].primitives[d.primitive].attributes.POSITION];
+    if (!a.min || !a.max) continue;
+    for (let corner = 0; corner < 8; corner++) {
+      const p = [corner & 1 ? a.max[0] : a.min[0], corner & 2 ? a.max[1] : a.min[1], corner & 4 ? a.max[2] : a.min[2]];
+      for (let k = 0; k < 3; k++) {
+        const v = d.world[k] * p[0] + d.world[4 + k] * p[1] + d.world[8 + k] * p[2] + d.world[12 + k];
+        min[k] = Math.min(min[k], v); max[k] = Math.max(max[k], v);
+      }
+    }
+  }
+  if (!Number.isFinite(min[0])) return null;
+  return { c: [0, 1, 2].map(k => (min[k] + max[k]) / 2), hw: (max[0] - min[0]) / 2, hh: (max[1] - min[1]) / 2 };
+}

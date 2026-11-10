@@ -155,4 +155,23 @@ struct GLB {
         }
         return (lo, hi)
     }
+
+    /// The flat rectangle of the surfaces under node `name`, before any pose: the centre of their bounds, and the
+    /// half width (x) and half height (y), facing +z. Nil when no surface is named so.
+    func rectOf(_ name: String) -> ModelMotion.Rect? {
+        var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+        for d in drawables() where d.chain.contains(name) {
+            guard let pos = (primitive(d)["attributes"] as? [String: Int])?["POSITION"] else { continue }
+            let a = accessors[pos]
+            guard let mn = (a["min"] as? [NSNumber])?.map(\.floatValue), let mx = (a["max"] as? [NSNumber])?.map(\.floatValue), mn.count == 3, mx.count == 3 else { continue }
+            for corner in 0..<8 {
+                let p = SIMD4<Float>(corner & 1 != 0 ? mx[0] : mn[0], corner & 2 != 0 ? mx[1] : mn[1], corner & 4 != 0 ? mx[2] : mn[2], 1)
+                let w = d.world * p
+                lo = simd_min(lo, SIMD3(w.x, w.y, w.z)); hi = simd_max(hi, SIMD3(w.x, w.y, w.z))
+            }
+        }
+        guard lo.x.isFinite else { return nil }
+        let c = (lo + hi) / 2
+        return ModelMotion.Rect(c: [Double(c.x), Double(c.y), Double(c.z)], hw: Double(hi.x - lo.x) / 2, hh: Double(hi.y - lo.y) / 2)
+    }
 }

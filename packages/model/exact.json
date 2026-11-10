@@ -18,6 +18,22 @@
       "at": "number",
       "width": "number",
       "peak": "number"
+    },
+    "ModelScreen": {
+      "perspective": "number",
+      "translate": "string",
+      "rotate": "string",
+      "scale": "number",
+      "facing": "bool",
+      "quad": "number[]"
+    },
+    "ModelPose": {
+      "yaw": "number",
+      "pitch": "number",
+      "roll": "number",
+      "scale": "number",
+      "offsetX": "number",
+      "offsetY": "number"
     }
   },
   "views": {
@@ -51,12 +67,31 @@
         "sheenStrength": "option<number>",
         "sheenRest": "option<number>",
         "sheenYaw": "option<number>",
-        "sheenPitch": "option<number>"
+        "sheenPitch": "option<number>",
+        "screenNode": "option<string>",
+        "screenWidth": "option<number>",
+        "screenHeight": "option<number>",
+        "leanTo": "option<ModelPose>",
+        "leanBy": "option<number>"
       },
       "events": [
         "load",
-        { "event": "failed", "args": ["string"] },
-        { "event": "settled", "args": [] }
+        {
+          "event": "failed",
+          "args": [
+            "string"
+          ]
+        },
+        {
+          "event": "settled",
+          "args": []
+        },
+        {
+          "event": "screen",
+          "args": [
+            "ModelScreen"
+          ]
+        }
       ]
     }
   },

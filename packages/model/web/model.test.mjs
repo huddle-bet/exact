@@ -1,8 +1,9 @@
 // What each test catches is named above it. Run: bun test packages/model/web
 import { expect, test } from "bun:test";
-import { parseGLB, readAccessor, drawables, bounds, fromTRS, multiply } from "./glb.js";
+import { readAsset } from "./asset.js";
+import { parseGLB, readAccessor, drawables, bounds, rectOf, fromTRS, multiply } from "./glb.js";
 import { parseKTX, packR11G11B10, studioLight } from "./ktx.js";
-import { DEG, TILT_DEFAULTS, cameraDistance, kelvinToLinear, lightDirection, newTilt, poseMatrix, sheenAlong, sheenAlpha, sheenCoord, springStep, sprung, swayAt, tiltStep } from "./motion.js";
+import { DEG, TILT_DEFAULTS, axisAngle, leanGoal, leanResponse, screenPlacement, cameraDistance, kelvinToLinear, lightDirection, newTilt, poseMatrix, sheenAlong, sheenAlpha, sheenCoord, springStep, sprung, swayAt, tiltStep } from "./motion.js";
 
 const near = (a, b, digits = 6) => { expect(a.length).toBe(b.length); a.forEach((v, i) => expect(v).toBeCloseTo(b[i], digits)); };
 
@@ -182,4 +183,89 @@ test("the studio light has a bright sky, a brighter window and mips down to 4 te
   expect(light.mips.map(m => m.size)).toEqual([32, 16, 8, 4]);
   expect(light.sh[0][0]).toBeGreaterThan(0.4);
   expect(light.sh[2][0]).toBeGreaterThan(0);
+});
+
+// What CSS does with a box that has `perspective` on its parent and `translate`, `rotate` and `scale`: the
+// corners of the box land where the browser, or Exact's kernel, puts them.
+function css(placement, w, h, viewW, viewH) {
+  const [ax, ay, az, deg] = placement.rotate.split(' ').map(parseFloat);
+  const n = Math.hypot(ax, ay, az), [x, y, z] = [ax / n, ay / n, az / n], a = deg * DEG, c = Math.cos(a), sn = Math.sin(a), t = 1 - c;
+  const R = [[t * x * x + c, t * x * y - sn * z, t * x * z + sn * y], [t * x * y + sn * z, t * y * y + c, t * y * z - sn * x], [t * x * z - sn * y, t * y * z + sn * x, t * z * z + c]];
+  const [tx, ty, tz] = placement.translate.split(' ').map(parseFloat);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].flatMap(([lx, ly]) => {
+    const p = [lx * placement.scale, ly * placement.scale, 0];
+    const q = R.map(row => row[0] * p[0] + row[1] * p[1] + row[2] * p[2]);
+    const [X, Y, Z] = [q[0] + tx, q[1] + ty, q[2] + tz];
+    return [viewW / 2 + (X * placement.perspective) / (placement.perspective - Z), viewH / 2 + (Y * placement.perspective) / (placement.perspective - Z)];
+  });
+}
+
+const RECT = { c: [-0.0028, 0, 0.00566], hw: 0.03482, hh: 0.07573 };
+const place = (pose, extra = {}) => screenPlacement({ pose, rect: RECT, fov: 24, distance: 0.503, viewW: 420, viewH: 700, w: 420, h: (420 * RECT.hh) / RECT.hw, ...extra });
+
+// A placement that puts the child anywhere but on the model's screen: a wrong axis flip (y is down in CSS), a
+// wrong perspective, or a scale off the camera's depth shows as corners that miss by points.
+test("the CSS a placement gives puts a 420-point child on the model's screen corners", () => {
+  for (const [pitch, yaw, roll, s, x, y] of [[0, 0, 0, 1, 0, 0], [-2 * DEG, 16 * DEG, 0, 1, 0, 0], [-3 * DEG, -9 * DEG, 0.1, 0.99, 0.004, -0.01], [0.5, -0.8, 0, 1.4, -0.01, 0.02]]) {
+    const p = place(poseMatrix(pitch, yaw, roll, s, x, y));
+    const [w, h] = [420, (420 * RECT.hh) / RECT.hw];
+    near(css(p, w, h, 420, 700), p.quad, 2);
+  }
+});
+
+test("a placement at rest is centred, unturned and as wide as the screen's share of the view", () => {
+  const p = place(poseMatrix(0, 0, 0, 1, 0, 0));
+  expect(p.rotate.endsWith(' 0deg')).toBe(true);
+  expect(p.facing).toBe(true);
+  expect(p.scale).toBeCloseTo((2 * RECT.hw * (700 / 2 / Math.tan(12 * DEG)) / (0.503 - 0.00566)) / 420, 6);
+  expect(place(poseMatrix(0, Math.PI, 0, 1, 0, 0)).facing).toBe(false);
+});
+
+test("axis and angle come back from a rotation, including a half turn", () => {
+  const m = [0, -1, 0, 1, 0, 0, 0, 0, 1];
+  const { axis, deg } = axisAngle(m);
+  near(axis, [0, 0, 1], 9);
+  expect(deg).toBeCloseTo(90, 9);
+  expect(axisAngle([-1, 0, 0, 0, 1, 0, 0, 0, -1]).deg).toBeCloseTo(180, 6);
+});
+
+// A lean that jumps to the other pose, or one that ignores the pose being aimed at, snaps the model while a finger is down.
+test("a drag leans the aimed pose toward the next one by its share, and tightens the spring", () => {
+  const goal = { yaw: 0.2, pitch: 0, roll: 0, scale: 1, x: 0, y: 0 }, toward = { yaw: -0.4, pitch: -0.1, roll: 0, scale: 0.6, x: 0.01, y: 0 };
+  expect(leanGoal(goal, toward, 0)).toEqual(goal);
+  near([leanGoal(goal, toward, 0.5).yaw, leanGoal(goal, toward, 0.5).scale], [-0.1, 0.8], 9);
+  expect(leanGoal(goal, toward, 3).yaw).toBeCloseTo(-0.4, 9);
+  expect(leanResponse(850, 0.2)).toBeCloseTo(850 / 3, 9);
+  expect(leanResponse(850, 0)).toBe(850);
+});
+
+// A rectangle read from the node's own bounds in its own space, not the world's: a rotated node (the phone's
+// quarter turn) puts the screen's width on the wrong axis, so the child lands sideways.
+test("the rectangle of a named node is its world bounds, width along x and height along y", () => {
+  const bin = new Uint8Array(4 * 12), f = new Float32Array(bin.buffer);
+  f.set([0, -2, -1, 0, 2, -1, 0, 2, 1, 0, -2, 1]);
+  const doc = parseGLB(glb({
+    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }],
+    nodes: [{ name: 'Phone', rotation: [0, 0.7071067811865476, 0, 0.7071067811865476], translation: [0, 0, 0.5], children: [1] }, { name: 'Screen', mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    accessors: [{ bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [0, -2, -1], max: [0, 2, 1] }],
+    bufferViews: [{ buffer: 0, byteLength: 48 }], buffers: [{ byteLength: 48 }],
+  }, bin));
+  const r = rectOf(doc, 'Screen');
+  near([...r.c, r.hw, r.hh], [0, 0, 0.5, 1, 2], 6);
+  expect(rectOf(doc, 'Nothing')).toBeNull();
+});
+
+// A host reader that is ignored, so a file only an over-the-air generation holds is fetched from the page and not found; or its
+// bytes handed on as a view of a larger buffer, so the glb starts with other files' bytes.
+test("an asset is read through the host's reader first, as its own bytes, else from the page", async () => {
+  const big = new Uint8Array([9, 9, 1, 2, 3, 9]);
+  const got = await readAsset({ asset: async path => (path === "assets/a.glb" ? big.subarray(2, 5) : null) }, "http://x/", "assets/a.glb");
+  expect(Array.from(new Uint8Array(got))).toEqual([1, 2, 3]);
+  const real = globalThis.fetch;
+  globalThis.fetch = async url => ({ ok: String(url) === "http://x/assets/b.glb", status: 404, arrayBuffer: async () => new Uint8Array([7]).buffer });
+  try {
+    expect(Array.from(new Uint8Array(await readAsset({ asset: async () => null }, "http://x/", "assets/b.glb")))).toEqual([7]);
+    await expect(readAsset(undefined, "http://x/", "assets/c.glb")).rejects.toThrow("assets/c.glb: HTTP 404");
+  } finally { globalThis.fetch = real; }
 });
