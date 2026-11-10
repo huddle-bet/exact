@@ -1207,6 +1207,8 @@ is `lower-native-attr`. A capitalized name is a component use, not a
 built-in tag. Platform support can further restrict an admitted tag, notably
 native `foreignObject`.
 
+`exact-model` (`@exact/model`, [its README](../packages/model/README.md)) draws a lit glTF model: SceneKit on Apple, WebGL2 on the web, nothing on the other hosts.
+
 `contract vocab` lists every tag, style and prop name the compiler admits,
 with each style row's codec, values and default, the renamed spellings and the
 contextual restrictions: `cargo run -q -p contract -- vocab padding` for one
