@@ -643,6 +643,11 @@ impl<D: DataSource> Host<D> {
         for view in svg_lower::glass_sampling(host.runner.kernel(), &mut host.engine) {
             host.svg.element(host.runner.kernel(), view);
         }
+        let keys: Vec<_> = order
+            .iter()
+            .filter_map(|id| host.runner.kernel().node(*id).map(|n| n.key))
+            .collect();
+        host.track_cover_keys(&keys);
         host.boot_paint(&order);
         host.reconcile_height_handles(&mut batch, true);
         host.layout(&mut batch).map_err(HostError::Layout)?;
@@ -1337,6 +1342,8 @@ impl<D: DataSource> Host<D> {
                 self.svg.element(self.runner.kernel(), view);
             }
             self.play_exits(&mut batch);
+            self.track_covers(&t.receipt);
+            self.sync_cover_exits();
             self.start_flights(&t.receipt);
             self.seed_layout(&t.receipt, &mut batch);
             self.sync_paint(&t.receipt, &mut batch);

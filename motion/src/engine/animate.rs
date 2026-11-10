@@ -324,6 +324,40 @@ impl Engine {
         (self.links.play_exit)(self, node, exit)
     }
 
+    /// Whether every entry of `exit` is playing on `node` (see
+    /// [`Engine::play_exit`]).
+    pub fn exit_playing(&self, node: u64, exit: &Animations) -> bool {
+        let plays = self.animation_plays(node);
+        !exit.0.is_empty()
+            && exit
+                .0
+                .iter()
+                .all(|a| plays.iter().any(|p| p.animation == *a))
+    }
+
+    /// Stop the entries of `exit` that [`Engine::play_exit`] added to a node
+    /// that stays: its properties show their targets again.
+    pub fn cancel_exit(&mut self, node: u64, exit: &Animations) {
+        let Some(plays) = self.animations.get_mut(&node) else {
+            return;
+        };
+        let mut gone = Vec::new();
+        plays.retain(|p| {
+            let leaves = exit.0.contains(&p.animation);
+            if leaves {
+                gone.extend(p.animation.keyframes.properties());
+            }
+            !leaves
+        });
+        if plays.is_empty() {
+            self.animations.remove(&node);
+            self.animating.remove(&node);
+        }
+        for p in gone {
+            self.dirty.insert((node, p));
+        }
+    }
+
     pub(super) fn play_exit_full(
         &mut self,
         node: u64,
