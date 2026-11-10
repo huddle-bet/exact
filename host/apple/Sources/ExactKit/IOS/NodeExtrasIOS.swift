@@ -199,6 +199,7 @@ final class NodeExtras {
     var bandOver: Int64?
     var edgeInteraction: AnyObject?
     var scrollWritten: String?
+    var snapDragStart: CGFloat?
     /// A hatched node whose hatch undoes its own additions: its row may be
     /// reused.
     var hatchReusable = false
@@ -410,6 +411,7 @@ extension NodeView {
     var scrollOrigin: CGFloat { get { extras?.scrollOrigin ?? 0 } set { if newValue != 0 || extras != nil { more.scrollOrigin = newValue } } }
     var scrollCollapsed: CGFloat { get { extras?.scrollCollapsed ?? 0 } set { if newValue != 0 || extras != nil { more.scrollCollapsed = newValue } } }
     var scrollWritten: String? { get { extras?.scrollWritten } set { if newValue != nil || extras != nil { more.scrollWritten = newValue } } }
+    var snapDragStart: CGFloat? { get { extras?.snapDragStart } set { if newValue != nil || extras != nil { more.snapDragStart = newValue } } }
     var hatchReusable: Bool { get { extras?.hatchReusable ?? false } set { if newValue || extras != nil { more.hatchReusable = newValue } } }
     /// Where CSS's `scrollTop` 0 is in UIKit's offsets: past the scroller's
     /// top inset when UIKit insets it — a collapsing title's bar, or the bar

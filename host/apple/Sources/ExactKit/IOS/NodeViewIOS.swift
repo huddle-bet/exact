@@ -768,6 +768,7 @@ package final class NodeView: UIView, UITextViewDelegate, UITextFieldDelegate, U
         if let session = presenter?.session { session.frameHealth.beginScroll(scrollView, session: session) }
         presenter?.elementScrolls.userScrolled(scrollView) // its own scroller, or a grouped list's collection
         guard scrollView === self.scrollView else { return }
+        snapDragStart = scrollView.contentOffset.x
         followingEndAnimated = false
         presenter?.collections.animationEnded(id, dragging: true)
         presenter?.collections.userIntent(id, travel: true)
@@ -1382,6 +1383,17 @@ package final class NodeView: UIView, UITextViewDelegate, UITextFieldDelegate, U
             up = v.superview
         }
         sv.alwaysBounceVertical = sv.scrollsY && !nested && (!fits || !carousel)
+        sv.isDirectionalLockEnabled = style["scroll_snap_type"]?.string == "x mandatory" || crossesScroller(sv)
+    }
+
+    /// A scroller inside one that scrolls the other way (a page's `scroll` in a pager) locks a drag to its first axis.
+    func crossesScroller(_ sv: ScrollView) -> Bool {
+        var up = sv.superview
+        while let v = up {
+            if let outer = v as? ScrollView, !(outer is Viewport), outer.scrollsX != sv.scrollsX || outer.scrollsY != sv.scrollsY { return true }
+            up = v.superview
+        }
+        return false
     }
 
     /// Its parts move with its frame: in an animation UIKit has open only if the last frame showed it (`Presenter.moveOrPlace`).

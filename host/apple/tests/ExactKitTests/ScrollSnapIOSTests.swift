@@ -75,5 +75,57 @@ final class ScrollSnapIOSTests: XCTestCase {
         Agent.scroll(from: scroll, dx: 388, dy: 0)
         XCTAssertEqual(scroll.contentOffset.x, 402, accuracy: 0.01)
     }
+
+    private func pages(stop: Bool) throws -> (NodeView, UIScrollView) {
+        let p = Presenter()
+        p.viewport.frame = CGRect(x: 0, y: 0, width: 300, height: 100)
+        var ops: [[String: Any]] = [["op": "create", "id": 1, "kind": "view", "style": ["overflow_x": "scroll", "overflow_y": "hidden", "scroll_snap_type": "x mandatory"]]]
+        for i in 0..<4 {
+            var style: [String: Any] = ["scroll_snap_align": "start"]
+            if stop { style["scroll_snap_stop"] = "always" }
+            ops.append(["op": "create", "id": 10 + i, "kind": "view", "style": style])
+            ops.append(["op": "frame", "id": 10 + i, "x": Double(i) * 316, "y": 0.0, "w": 300.0, "h": 100.0])
+        }
+        ops += [["op": "children", "id": 1, "ids": [10, 11, 12, 13]], ["op": "roots", "ids": [1]],
+                ["op": "frame", "id": 1, "x": 0.0, "y": 0.0, "w": 300.0, "h": 100.0],
+                ["op": "content", "id": 1, "w": 1264.0, "h": 100.0]]
+        p.apply(wireBatch(ops))
+        let node = try XCTUnwrap(p.views[1])
+        return (node, try XCTUnwrap(node.scroll))
+    }
+
+    func testAFlingFromOnePageStopsAtTheNextWhenPagesStop() throws {
+        let (node, scroll) = try pages(stop: true)
+        node.snapDragStart = 0
+        XCTAssertEqual(rest(node, scroll, from: 700), 316, "a hard fling from page 0 passes page 1 without the stop")
+        node.snapDragStart = 632
+        XCTAssertEqual(rest(node, scroll, from: 0), 316)
+    }
+
+    func testWithoutStopsAFlingMayPassPages() throws {
+        let (node, scroll) = try pages(stop: false)
+        node.snapDragStart = 0
+        XCTAssertEqual(rest(node, scroll, from: 640), 632)
+    }
+
+    func testAScrollerInsideACrossingScrollerLocksItsDirection() throws {
+        let p = Presenter()
+        p.viewport.frame = CGRect(x: 0, y: 0, width: 300, height: 400)
+        p.apply(wireBatch([
+            ["op": "create", "id": 1, "kind": "view", "style": ["overflow_x": "scroll", "overflow_y": "hidden", "scroll_snap_type": "x mandatory"]],
+            ["op": "create", "id": 2, "kind": "view", "style": ["overflow_y": "scroll", "overflow_x": "hidden", "scroll_snap_align": "start"]],
+            ["op": "create", "id": 3, "kind": "view"],
+            ["op": "children", "id": 1, "ids": [2]], ["op": "children", "id": 2, "ids": [3]], ["op": "roots", "ids": [1]],
+            ["op": "frame", "id": 1, "x": 0.0, "y": 0.0, "w": 300.0, "h": 400.0],
+            ["op": "frame", "id": 2, "x": 0.0, "y": 0.0, "w": 300.0, "h": 400.0],
+            ["op": "frame", "id": 3, "x": 0.0, "y": 0.0, "w": 300.0, "h": 1200.0],
+            ["op": "content", "id": 1, "w": 600.0, "h": 400.0], ["op": "content", "id": 2, "w": 300.0, "h": 1200.0]
+        ]))
+        let pager = try XCTUnwrap(p.views[1]?.scroll), page = try XCTUnwrap(p.views[2]?.scroll)
+        XCTAssertTrue(pager.isDirectionalLockEnabled)
+        XCTAssertTrue(page.isDirectionalLockEnabled)
+        XCTAssertFalse(pager.contentSize.height > pager.bounds.height, "the pager cannot pan vertically, so the page takes the vertical drag")
+        XCTAssertEqual(page.contentSize.width, page.bounds.width, "the page cannot pan horizontally, so the pager takes it")
+    }
 }
 #endif
