@@ -2830,6 +2830,10 @@ function), `-exact-exit-animation`, `-exact-layout-transition`, and presentation
 specific documented behavior;
 they do not admit arbitrary frame callbacks or a second app-state graph.
 
+A route's `-exact-exit-animation` plays when the route is removed, and on the web also when a push
+covers it (it stays mounted): the route stays shown, inert, until the keyframes end and then hides;
+showing it again cancels them. Apple hosts, whose stacks are native, hide a covered route at once.
+
 For drawing and pointer-tracking, `pointerdown`, `pointermove` and `pointerup`
 hand an action that takes it a `PointerEvent` (`offsetX`/`offsetY` from the
 node's content box, `button` and `buttons`, `pressure`, `pointerType`,
