@@ -51,6 +51,9 @@
 //  176  service(host, module, moduleLen, json, len, ctx, reply): a module's
 //        service query (`ExactServices.query`); replies once on any thread,
 //        with len 0 for no answer
+//  184  asset(host, name, len, ctx, sink): an app asset's bytes by its path,
+//        from the session's resolver (the bundle or the running generation), given to
+//        `sink(ctx, bytes, len)` before the call returns; nothing when the app has no such file
 //
 // `host` is the session's runtime handle, as for `changed` and `now`: a
 // destroyed session's is answered with nothing. Service queries use the
@@ -404,10 +407,17 @@ private let hatchService: @convention(c) (UnsafeMutableRawPointer?, UnsafePointe
     }
 }
 
+/// An app asset's bytes through the session's resolver, as the pictures and the iframe arm read them.
+private let hatchAsset: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?,
+                                        (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32) -> Void)?) -> Void = { host, name, length, context, sink in
+    guard let sink, let session = hatchSession(host), let bytes = session.app.resolver.bytes(hatchText(name, length)) else { return }
+    bytes.withUnsafeBytes { sink(context, $0.bindMemory(to: UInt8.self).baseAddress, UInt32(bytes.count)) }
+}
+
 /// The host's callbacks, one table for the process: each finds its session
 /// by the handle it is called with.
 private let hatchHostTable: UnsafeRawPointer = {
-    let size = 184
+    let size = 192
     let t = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 8)
     t.initializeMemory(as: UInt8.self, repeating: 0, count: size)
     t.storeBytes(of: UInt32(size), as: UInt32.self)
@@ -433,6 +443,7 @@ private let hatchHostTable: UnsafeRawPointer = {
     t.storeBytes(of: unsafeBitCast(hatchInvoke, to: UnsafeRawPointer.self), toByteOffset: 160, as: UnsafeRawPointer.self)
     t.storeBytes(of: unsafeBitCast(hatchArrangement, to: UnsafeRawPointer.self), toByteOffset: 168, as: UnsafeRawPointer.self)
     t.storeBytes(of: unsafeBitCast(hatchService, to: UnsafeRawPointer.self), toByteOffset: 176, as: UnsafeRawPointer.self)
+    t.storeBytes(of: unsafeBitCast(hatchAsset, to: UnsafeRawPointer.self), toByteOffset: 184, as: UnsafeRawPointer.self)
     return UnsafeRawPointer(t)
 }()
 

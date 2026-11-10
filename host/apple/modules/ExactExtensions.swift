@@ -369,6 +369,7 @@ extension ExactExtensions {
             now: { [weak module] in module?.now() ?? 0 },
             tracks: tracks,
             file: { [weak module] path in module.flatMap { file(path, $0) } },
+            asset: { [weak m] path in m?.hatches?.asset(path) },
             audioSession: ExactAudioSession { [weak m] mode, options, background, events in
                 m?.hatches.flatMap { AudioClaims.claim($0, mode: mode, options: options, background: background, events: events) }
             },
