@@ -47,6 +47,9 @@ component App
   To restore after remount, save `ScrollEvent.firstVisibleKey` and
   `firstVisibleOffset` in the app, then call `scrollIntoView("list-id", key, offset=within)`.
   The optional key is text; the offset is signed CSS pixels into the row on the list's axis.
+- A pager is a horizontal scroller with `scroll-snap-type="x mandatory"` and pages with
+  `scroll-snap-align="start"`; `scroll-snap-stop="always"` on the pages moves a fling one
+  page at most. A vertical scroller inside a page scrolls on its own, and a drag keeps its first axis.
 - `scrollTop=y` on a scroller moves it only when `y` changes, so a second "top" does
   nothing; `scroll=moved` reports the offset (`action moved(x: number, y: number)`).
 

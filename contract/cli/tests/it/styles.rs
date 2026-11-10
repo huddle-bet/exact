@@ -194,6 +194,7 @@ fn enum_refusals_list_accepted_values_and_each_suggestion_compiles() {
             "local",
         ),
         ("touch-action", StyleId::TouchAction, "swipe"),
+        ("scroll-snap-stop", StyleId::ScrollSnapStop, "once"),
         ("cursor", StyleId::Cursor, "hand"),
         ("dynamic-range-limit", StyleId::DynamicRangeLimit, "high"),
     ] {
