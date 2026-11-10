@@ -1,0 +1,64 @@
+{
+  "kind": "interface",
+  "name": "@exact/model",
+  "version": "1.0.0",
+  "substitute": "implementation",
+  "shapes": {
+    "ModelLight": {
+      "yaw": "number",
+      "pitch": "number",
+      "intensity": "number",
+      "kelvin": "number"
+    },
+    "ModelTexture": {
+      "node": "string",
+      "source": "string"
+    },
+    "ModelSheen": {
+      "at": "number",
+      "width": "number",
+      "peak": "number"
+    }
+  },
+  "views": {
+    "exact-model": {
+      "props": {
+        "source": "string",
+        "environment": "option<string>",
+        "ambient": "option<number>",
+        "lights": "option<ModelLight[]>",
+        "fov": "option<number>",
+        "distance": "option<number>",
+        "viewFill": "option<number>",
+        "yaw": "option<number>",
+        "pitch": "option<number>",
+        "roll": "option<number>",
+        "modelScale": "option<number>",
+        "offsetX": "option<number>",
+        "offsetY": "option<number>",
+        "response": "option<number>",
+        "sway": "option<number>",
+        "swayMs": "option<number>",
+        "tilt": "option<number>",
+        "tiltGain": "option<number>",
+        "tiltMaxDeg": "option<number>",
+        "tiltStiffness": "option<number>",
+        "tiltDamping": "option<number>",
+        "tiltRecenter": "option<number>",
+        "textures": "option<ModelTexture[]>",
+        "hiddenNodes": "option<string[]>",
+        "sheen": "option<ModelSheen[]>",
+        "sheenStrength": "option<number>",
+        "sheenRest": "option<number>",
+        "sheenYaw": "option<number>",
+        "sheenPitch": "option<number>"
+      },
+      "events": [
+        "load",
+        { "event": "failed", "args": ["string"] },
+        { "event": "settled", "args": [] }
+      ]
+    }
+  },
+  "names": []
+}
