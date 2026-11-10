@@ -65,7 +65,48 @@ impl HistorySwipe {
     }
 }
 
+/// An image's `load` with what its pixels hold (`ImageLoadEvent`,
+/// `contract/types/src/selection.rs`): its natural size, the box its ink
+/// fills, the hull's share of that box and the ink's span on its foot row,
+/// the fractions 0 where the host read no pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ImageLoad {
+    /// `naturalWidth`, `naturalHeight`, `inkLeft`, `inkTop`, `inkRight`,
+    /// `inkBottom`, `inkFill`, `solidTop`, `footLeft`, `footRight`.
+    pub fields: [f64; 10],
+}
+
+impl ImageLoad {
+    /// ABI kind 8's payload: the ten numbers, comma-separated.
+    fn parse(payload: &str) -> Option<Self> {
+        let mut fields = [0.0; 10];
+        let mut parts = payload.split(',');
+        for f in fields.iter_mut() {
+            let n = exact_num::parse_f64(parts.next()?).ok()?;
+            if !n.is_finite() || n < 0.0 {
+                return None;
+            }
+            *f = n;
+        }
+        parts.next().is_none().then_some(Self { fields })
+    }
+
+    /// The `ImageLoadEvent` record, its fields in the compiler's order.
+    pub(super) fn value(&self) -> Value {
+        Value::record(self.fields.iter().map(|n| Value::Number(*n)).collect())
+    }
+}
+
 impl Event {
+    /// Decode ABI kind 8 (`load`): no payload for a load that carries no
+    /// pixels (an iframe's), else an image's ten numbers ([`ImageLoad`]).
+    pub fn load(payload: &str) -> Option<Event> {
+        if payload.is_empty() {
+            return Some(Event::Load);
+        }
+        ImageLoad::parse(payload).map(Event::ImageLoad)
+    }
+
     /// Decode ABI kind 6 (`key`), 43 (`keyup`) or 44 (`keycapture`),
     /// 10 (contextmenu, its point when it has one), 13
     /// (scroll), 19 (media), 20 (pan), 21 (select), 28 (panrelease), 29 to

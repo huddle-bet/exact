@@ -271,8 +271,11 @@ pub enum Event {
     /// Enter in an input with a `submit` handler — the web's implicit
     /// submission (HTML forms §4.10.21.2), without a form.
     Submit,
-    /// An iframe finished loading (including an error document on the web).
+    /// An iframe finished loading (including an error document on the web),
+    /// or an image whose host read none of its pixels.
     Load,
+    /// An image loaded, with what its pixels hold.
+    ImageLoad(super::host_kinds::ImageLoad),
     /// An iframe guest posted a string to its parent.
     Message(String),
     /// The platform requested a context menu (secondary click or long press).
@@ -586,6 +589,8 @@ impl Event {
             ),
             Event::Wheel(w) => Some(w.value()),
             Event::Historyswipe(s) => Some(s.value()),
+            Event::Load => Some(super::host_kinds::ImageLoad::default().value()),
+            Event::ImageLoad(i) => Some(i.value()),
             Event::MidiMessage(m) => Some(m.value()),
             Event::Drop(d) | Event::Dragenter(d) | Event::Dragleave(d) => Some(d.value()),
             Event::FrameNavigation(_, n) => Some(n.value()),
@@ -1115,7 +1120,7 @@ impl<D: DataSource> Runner<D> {
             Event::Keycapture(..) => "keycapture",
             Event::Keyup(..) => "keyup",
             Event::Submit => "submit",
-            Event::Load => "load",
+            Event::Load | Event::ImageLoad(_) => "load",
             Event::Message(_) => "message",
             Event::Contextmenu | Event::ContextmenuAt(_) => "contextmenu",
             Event::Beforeunload => "beforeunload",
@@ -1302,7 +1307,7 @@ impl<D: DataSource> Runner<D> {
             ),
             Event::Keyup(k) => (EventKind::Keyup, Some(Value::str(&k.key)), "keyup"),
             Event::Submit => (EventKind::Submit, None, "submit"),
-            Event::Load => (EventKind::Load, None, "load"),
+            Event::Load | Event::ImageLoad(_) => (EventKind::Load, None, "load"),
             Event::Message(message) => (EventKind::Message, Some(Value::str(message)), "message"),
             Event::Contextmenu | Event::ContextmenuAt(_) => {
                 (EventKind::Contextmenu, None, "contextmenu")

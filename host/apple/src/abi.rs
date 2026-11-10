@@ -1005,7 +1005,12 @@ impl<D: DataSource> Bridge<D> {
             4 => Event::Focus,
             5 => Event::Blur,
             7 => Event::Submit,
-            8 => Event::Load,
+            8 => {
+                let Some(event) = Event::load(&payload) else {
+                    return self.refuse("invalid image load");
+                };
+                event
+            }
             9 => Event::Message(payload),
             11 => Event::Dblclick,
             12 => Event::Swiperight,

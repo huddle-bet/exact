@@ -85,6 +85,7 @@ mod headings;
 mod health;
 mod height_binding;
 mod history_swipe;
+mod image_load;
 mod icon_forms;
 mod icon_path_readers;
 mod inference_order;
