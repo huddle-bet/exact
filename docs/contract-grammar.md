@@ -1209,6 +1209,8 @@ native `foreignObject`.
 
 `exact-model` (`@exact/model`, [its README](../packages/model/README.md)) draws a lit glTF model: SceneKit on Apple, WebGL2 on the web, nothing on the other hosts.
 
+`exact-shader` (`@exact/shader`, [its README](../packages/shader/README.md)) runs a per-pixel shader (Skia's SkSL subset) over images, its uniforms set by name from state: Metal on Apple, WebGL2 on the web, nothing on the other hosts.
+
 `contract vocab` lists every tag, style and prop name the compiler admits,
 with each style row's codec, values and default, the renamed spellings and the
 contextual restrictions: `cargo run -q -p contract -- vocab padding` for one
