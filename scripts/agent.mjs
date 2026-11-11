@@ -129,6 +129,7 @@ async function openWebUnlocked({ browser = 'chrome', plan, world, size = VIEWPOR
   const kept = storage === undefined ? null : driveStore(selected, storage, env);
   if (kept && fresh) await removeBrowserProfile(kept.profile);
   const pagePort = drivePagePort(fixed, pageURL ? null : kept, env?.EXACT_AGENT_EPHEMERAL_PORT === '1', env);
+  server.setTimeout(0); server.requestTimeout = 0; server.headersTimeout = 0; server.keepAliveTimeout = 600000;
   await listenOn(server, pagePort, '127.0.0.1', undefined, !!fixed, env).catch((e) => {
     throw e.code !== 'EADDRINUSE' || fixed || pagePort !== kept?.port ? e : new Error(`--storage ${storage}: its page's port ${kept.port} is in use: another drive of this store is open (a store is one drive's at a time), or another program holds the port: try another store name, or --port <n>`);
   });
@@ -257,7 +258,7 @@ async function openWebUnlocked({ browser = 'chrome', plan, world, size = VIEWPOR
     const t = Date.now();
     let boot = null;
     while (boot == null) {
-      if (Date.now() - t > 30000) throw new Error('the page never booted; ' + hostLines.join('\n'));
+      if (Date.now() - t > Number(process.env.EXACT_BOOT_MS ?? 30000)) throw new Error('the page never booted; ' + hostLines.join('\n'));
       await sleep(15);
       boot = await evaluate("document.getElementById('exact-root')?.dataset.bootMs ?? null").catch(() => null);
     }
