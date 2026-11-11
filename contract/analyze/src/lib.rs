@@ -882,12 +882,19 @@ pub fn resource_clock_warnings(file: &File) -> Vec<AnalyzeError> {
     let mut functions = BTreeMap::new();
     // Forward function references and derives settle in at most one pass per declaration.
     for _ in 0..=file.fns.len() {
+        let mut changed = false;
         for f in &file.fns {
             let mut scope = functions.clone();
             for param in &f.params {
                 scope.remove(&param.name);
             }
-            functions.insert(f.name.clone(), live(&f.body, &scope));
+            let now = live(&f.body, &scope);
+            if functions.insert(f.name.clone(), now) != Some(now) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     let mut out = Vec::new();
@@ -897,8 +904,15 @@ pub fn resource_clock_warnings(file: &File) -> Vec<AnalyzeError> {
             scope.insert(binding.name.clone(), false);
         }
         for _ in 0..=c.derives.len() {
+            let mut changed = false;
             for binding in &c.derives {
-                scope.insert(binding.name.clone(), live(&binding.expr, &scope));
+                let now = live(&binding.expr, &scope);
+                if scope.insert(binding.name.clone(), now) != Some(now) {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
             }
         }
         for r in &c.resources {
