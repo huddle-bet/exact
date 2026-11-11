@@ -18,6 +18,40 @@ final class MaterialTableIOSTests: XCTestCase {
         XCTAssertEqual(Materials.platform("sidebar")?.standIn, true, "an AppKit material draws a stand-in")
     }
 
+    /// A blur radius is the strength of the effect: half of `fullSigma` draws
+    /// half the style, and a radius past it the whole one. A host that kept
+    /// the fixed `.light` ignores the radius and the node's dark tint.
+    func testTheBlurRadiusIsTheStrengthAndTheAppearanceIsTheTint() {
+        XCTAssertEqual(Backdrop.fraction(of: [.blur(Backdrop.fullSigma / 2)]), 0.5)
+        XCTAssertEqual(Backdrop.fraction(of: [.blur(100)]), 1)
+        XCTAssertEqual(Backdrop.fraction(of: [.blur(0)]), 0)
+        XCTAssertEqual(Backdrop.fraction(of: [.saturate(2), .blur(5)]), 0.25)
+        XCTAssertEqual(Backdrop.fraction(of: [.saturate(2)]), 1)
+        XCTAssertEqual(Backdrop.style(dark: false), .light)
+        XCTAssertEqual(Backdrop.style(dark: true), .dark)
+        let p = Presenter()
+        let node = NodeView(id: 1, kind: "view", presenter: p)
+        node.applyStyle(["backdrop_filter": [["blur": 5]]])
+        XCTAssertEqual((node.materialView as? BackdropEffectView)?.drawn?.fraction, 0.25)
+        node.applyStyle(["backdrop_filter": [["blur": 15]]])
+        XCTAssertEqual((node.materialView as? BackdropEffectView)?.drawn?.fraction, 0.75, "a new radius redraws")
+        node.applyStyle(["backdrop_filter": [["blur": 30]]])
+        let view = node.materialView as? BackdropEffectView
+        XCTAssertEqual(view?.drawn?.fraction, 1)
+        XCTAssertNotNil(view?.effect)
+    }
+
+    /// A `mask-image` gradient masks the effect view, the one a stack of
+    /// blurs fades into a progressive blur.
+    func testAMaskGradientMasksTheBlur() {
+        let p = Presenter()
+        let node = NodeView(id: 1, kind: "view", presenter: p)
+        node.frame = CGRect(x: 0, y: 0, width: 100, height: 60)
+        node.applyStyle(["backdrop_filter": [["blur": 10]], "mask_image": ["linear": 180, "stops": [0, 0, 0, 0, 1, 1, 0, 0, 0, 0]]])
+        node.applyBoxMask()
+        XCTAssertNotNil(node.materialView?.mask)
+    }
+
     func testSaturationKeepsTheDeclaredMaterialApproximation() {
         let p = Presenter()
         let node = NodeView(id: 1, kind: "view", presenter: p)

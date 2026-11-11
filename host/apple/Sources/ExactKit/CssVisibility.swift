@@ -41,8 +41,8 @@ extension NodeView {
         #else
         field?.isHidden = hidden
         textArea?.isHidden = hidden
-        if hidden { materialView?.effect = nil }
-        else if materialView != nil, materialView?.effect == nil { updateMaterial() }
+        if hidden { hideMaterialEffect() }
+        else if materialView != nil, materialView?.effect == nil, (materialView as? BackdropEffectView)?.drawn == nil { updateMaterial() }
         #endif
         presenter?.svg.boxVisibility(id, hidden: hidden, clock: presenter?.session?.clock)
         symbolView?.isHidden = hidden

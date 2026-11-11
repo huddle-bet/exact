@@ -1027,8 +1027,17 @@ browser alone.
 order written. For example, `backdrop-filter="blur(12px) saturate(1.14)"`
 blurs the backdrop, then increases its saturation. `saturate(0)` is grayscale;
 `saturate(180%)` is the same as `saturate(1.8)`. A function may appear only once.
-Web, macOS and Linux apply these functions; iOS/tvOS use the fixed `.light`
-system material approximation. macOS samples only the parent layer's subtree
+Web, macOS and Linux apply these functions. iOS/tvOS draw a system blur
+material held part-way through its change, so the blur radius is its strength:
+`blur(10px)` is half of the style, and `blur(20px)` or more is the whole style
+(React Native's expo-blur `intensity` is the same animator). The style is the
+node's appearance, `.light`, or `.dark` for a node drawn dark (`color-scheme`,
+React Native's `tint="dark"`); `saturate()` alone draws the whole style. A
+`mask-image` gradient fades the blur on iOS as on the web, so a stack of
+adjacent nodes with growing radii and a gradient each is a progressive edge
+blur; the node's children are not faded, as the web's are. The strength is
+the system's own, not a Gaussian of the radius: the radius matches the web
+only to the extent that its blur reaches the style. macOS samples only the parent layer's subtree
 and clips children to the filter's border box, so make a glass panel a sibling
 of what it covers (a floating composer beside its scrolling transcript), not a
 child of an empty wrapper. `backgroundMaterial` wins when

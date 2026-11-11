@@ -1087,9 +1087,9 @@ package final class NodeView: UIView, UITextViewDelegate, UITextFieldDelegate, U
             presenter?.flats.containerChanged(id)
         }
         guard let materialView else { rehomeMaterialChildren(); return }
-        if cssVisibilityHidden { materialView.effect = nil }
-        else if materialView.effect == nil || materialInteractive != interactive || backdropStale {
-            showMaterialEffect(backdropEffect() ?? materialEffect(kind ?? "ultra-thin", interactive: interactive))
+        if cssVisibilityHidden { hideMaterialEffect() }
+        else if materialView is BackdropEffectView ? backdropStale : materialView.effect == nil || materialInteractive != interactive {
+            if !drawBackdrop() { showMaterialEffect(materialEffect(kind ?? "ultra-thin", interactive: interactive)) }
             materialInteractive = interactive
         }
         applyMaterialRadius()
