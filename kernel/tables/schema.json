@@ -515,6 +515,12 @@
       "kind": "str"
     },
     {
+      "id": 300,
+      "name": "popoverLevel",
+      "kind": "str",
+      "_comment": "Where an open popover paints: `page` (the default) in the page's top layer, under the sheets the platform presents; `window` in a window above everything the app presents, sheets and alerts included, as the web's top layer paints above a modal dialog opened before it. iOS draws it in a transparent overlay window that takes touches only where the popover is. The web, macOS and Linux paint every popover in their top layer, so `window` changes nothing there."
+    },
+    {
       "id": 62,
       "name": "spellcheck",
       "kind": "str"

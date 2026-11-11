@@ -14,6 +14,58 @@ extension MenuHost {
     }
 }
 
+/// A transparent window above everything the app presents (sheets and
+/// alerts are presented in the app's window), for a popover that says
+/// `popoverLevel="window"`. It takes a touch only where a popover is.
+final class TopOverlayWindow: UIWindow {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self || hit === rootViewController?.view ? nil : hit
+    }
+}
+
+/// The overlay window's controller: it supports what the app's lock allows.
+final class TopOverlayController: UIViewController {
+    weak var presenter: Presenter?
+    override func loadView() {
+        let view = UIView()
+        view.backgroundColor = .clear
+        self.view = view
+    }
+    #if os(iOS)
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        presenter?.orientationLock.supported ?? super.supportedInterfaceOrientations
+    }
+    #endif
+}
+
+extension MenuHost {
+    /// The overlay window's view, made when first wanted, in the scene the
+    /// page is in; nil with the page out of a window.
+    func topOverlayView() -> UIView? {
+        guard let presenter, let scene = presenter.viewport.window?.windowScene else { return nil }
+        if let window = overlayWindow, window.windowScene === scene {
+            window.isHidden = false
+            return window.rootViewController?.view
+        }
+        let window = TopOverlayWindow(windowScene: scene)
+        let controller = TopOverlayController()
+        controller.presenter = presenter
+        window.rootViewController = controller
+        window.windowLevel = .alert + 1
+        window.backgroundColor = .clear
+        window.isHidden = false
+        overlayWindow = window
+        return controller.view
+    }
+
+    /// Hides the overlay window once no popover is in it.
+    func releaseTopOverlay() {
+        guard let window = overlayWindow, let view = window.rootViewController?.viewIfLoaded else { return }
+        if !view.subviews.contains(where: { $0 is PopoverLayer }) { window.isHidden = true }
+    }
+}
+
 /// The dialog sheets that may host it are captured at opening: a later
 /// sheet must cover this layer. Elsewhere it is where BASE put every lifted
 /// popover, the top live route modal's view or the viewport.
@@ -47,8 +99,11 @@ final class PopoverLayer: UIView {
         defer { mounting = false }
         var host: UIView = presenter.modals.coordinateView ?? presenter.documentHost
         sheet = nil
+        // `popoverLevel="window"`: the window above the sheets, over the page's area.
+        let overlay = (popover as? NodeView)?.props["popoverLevel"] == "window" ? presenter.menus.topOverlayView() : nil
+        if let overlay { host = overlay }
         // A sheet hosts it only while its dialog still holds the popover: a move out of it leaves the sheet.
-        let holding = popover.map { presenter.menus.sheets.controllers(holding: $0) } ?? []
+        let holding = overlay == nil ? popover.map { presenter.menus.sheets.controllers(holding: $0) } ?? [] : []
         for candidate in hosts {
             if let controller = candidate.controller,
                holding.contains(where: { $0 === controller }),
@@ -67,7 +122,7 @@ final class PopoverLayer: UIView {
         }
         // UIKit orders its own siblings; authored siblings use Exact's paint ranks.
         setPaintForeground(sheet == nil)
-        if sheet != nil {
+        if sheet != nil || overlay != nil {
             // Outside the session's root, as a sheet is: its theme and tint, as the sheet's (DialogSheetController).
             ThemeRoles.adopt(self, from: presenter.root)
             tintColor = ThemeRoles.color("AccentColor", in: self)
@@ -76,7 +131,8 @@ final class PopoverLayer: UIView {
         let covered = sheet?.viewIfLoaded?.accessibilityElementsHidden ?? false
         if accessibilityElementsHidden != covered { accessibilityElementsHidden = covered }
         // Over the document, the page's area: not the bands the viewport is drawn past.
-        let place = (host as? UIScrollView)?.pageBounds ?? host.bounds
+        var place = (host as? UIScrollView)?.pageBounds ?? host.bounds
+        if overlay != nil { place = presenter.documentHost.convert(presenter.documentHost.bounds, to: nil) }
         if frame != place { frame = place }
     }
 

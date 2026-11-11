@@ -69,6 +69,8 @@ final class MenuHost {
     var nativeConfirmation: NodeView? { confirmation?.finishing == false ? confirmation?.popover : pendingConfirmations.first?.popover }
     /// How many popovers the agent has opened: each one's place in the stack.
     private var opened = 0
+    /// The window above the sheets that holds `popoverLevel="window"` popovers (PopoverLayerIOS.swift).
+    var overlayWindow: TopOverlayWindow?
     private final class Lifted {
         var placement = PositionArea.History()
         /// The region its option sized it in, as the kernel was told it (`PositionArea.place`).
@@ -800,6 +802,7 @@ final class MenuHost {
         coverClosed()
         entry.popover?.endEditing(true)
         entry.layer.removeFromSuperview()
+        releaseTopOverlay()
         guard let pop = entry.popover else { return }
         presenter?.popoverEvents.changed(pop, open: false)
         pop.isHidden = true

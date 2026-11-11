@@ -741,6 +741,7 @@ pub fn attr(name: &str) -> Option<AttrTarget> {
         // platform's checkmark.
         "id" => AttrTarget::Prop(p("id")),
         "popover" => AttrTarget::Prop(p("popover")),
+        "popoverLevel" => AttrTarget::Prop(p("popoverLevel")),
         "popovertarget" => AttrTarget::Prop(p("popovertarget")),
         "popovertargetaction" => AttrTarget::Prop(p("popovertargetaction")),
         "commandfor" => AttrTarget::Prop(p("commandfor")),
