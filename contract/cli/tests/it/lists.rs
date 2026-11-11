@@ -387,6 +387,47 @@ component A
     assert_eq!(e.id, "type-argument", "{e}");
 }
 
+/// `pow` is `Math.pow` through the pinned `libm` (the Huddle ripple's `amp * pow(1 - t, 1.3)`), with JavaScript's
+/// answers where C's `pow` differs: `pow(1, NaN)` and `pow(1, Infinity)` are NaN. It takes two numbers.
+#[test]
+fn pow_is_maths_pow() {
+    let src = r#"component A
+  state t = 0.4
+  view
+    column
+      text `${pow(2, 10)} ${pow(1 - t, 1.3)} ${pow(2, -1)} ${pow(-8, 1 / 3)} ${pow(0, 0)} ${pow(1, pow(-8, 1 / 3))} ${pow(1, pow(10, 400))} ${pow(0.5, pow(10, 400))} ${pow(10, 400)}` testId="pow"
+"#;
+    struct NoData;
+    impl DataSource for NoData {
+        fn query(&mut self, source: &str, _: &[Value]) -> Result<Value, DataError> {
+            Err(DataError::UnknownSource(source.into()))
+        }
+    }
+    let r = Runner::boot(
+        contract::compile(src).unwrap(),
+        NoData,
+        Kernel::with_monospace(),
+        Default::default(),
+        "/",
+    )
+    .unwrap();
+    let k = r.kernel();
+    let got = k
+        .node_by_key(k.find_by_test_id("pow")[0])
+        .unwrap()
+        .props
+        .iter()
+        .find_map(|(p, v)| match v {
+            PropValue::Str(s) if p.name() == "text" => Some(s.to_string()),
+            _ => None,
+        })
+        .unwrap();
+    // The decay's value at t = 0.4 as V8 prints `Math.pow(0.6, 1.3)`.
+    assert_eq!(got, "1024 0.514750320266457 0.5 NaN 1 NaN NaN 0 Infinity");
+    let e = contract::compile("component A\n  view\n    text pow(2).toString()\n").unwrap_err();
+    assert_eq!(e.id, "type-arity", "{e}");
+}
+
 /// `sortBy`: a stable sort by one number or string key,
 /// equal keys in input order in both directions; NaN, -0 and +0 tie;
 /// strings by UTF-16 code unit. Its list steps are its `Map`'s, one an

@@ -32,6 +32,16 @@ pub fn cos(x: f64) -> f64 {
     libm::cos(x)
 }
 
+/// Deterministic software power with `Math.pow`'s answers where C's `pow` differs: a NaN exponent, or a base of
+/// magnitude 1 to an infinite exponent, is NaN.
+#[inline]
+pub fn pow(x: f64, y: f64) -> f64 {
+    if y.is_nan() || (x.abs() == 1.0 && y.is_infinite()) {
+        return f64::NAN;
+    }
+    libm::pow(x, y)
+}
+
 /// Deterministic software natural logarithm: UIKit spring conversions solve
 /// with it.
 #[inline]
@@ -49,6 +59,19 @@ pub fn sqrt(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Math.pow`'s answers: C's `pow(1, NaN)` and `pow(-1, Infinity)` are 1, JavaScript's are NaN.
+    #[test]
+    fn pow_answers_as_math_pow_does() {
+        assert_eq!(pow(2.0, 10.0), 1024.0);
+        assert!(pow(1.0, f64::NAN).is_nan());
+        assert!(pow(-1.0, f64::INFINITY).is_nan());
+        assert!(pow(1.0, f64::NEG_INFINITY).is_nan());
+        assert_eq!(pow(0.5, f64::INFINITY), 0.0);
+        assert_eq!(pow(0.0, 0.0), 1.0);
+        assert!(pow(-8.0, 1.0 / 3.0).is_nan());
+        assert!((pow(0.6, 1.3) - 0.514750320266457).abs() < 1e-15);
+    }
 
     #[test]
     fn cargo_lock_matches_the_pinned_libm() {

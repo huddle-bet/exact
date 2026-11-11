@@ -1024,6 +1024,7 @@ says. Every roster function has a row and an example, and each example written
 | `min(a, b)` | Number | `min(3, 7)` is `3` |
 | `sin(rad)` | Number; `Math.sin`, CSS's `sin()`. The native runners' `libm` gives the same bits on every target; the web's `Math.sin` may differ in the last bits | `sin(0)` is `0` |
 | `cos(rad)` | Number; `Math.cos`, CSS's `cos()`, computed as `sin` is (a point on a ring is `cx + r * cos(a)`, `cy + r * sin(a)`) | `cos(0)` is `1` |
+| `pow(base, exponent)` | Number; `Math.pow`, CSS's `pow()`. The native runners' `libm` gives the same bits on every target; the web's JS target is `Math.pow`, which may differ in the last bits. `pow(1, NaN)` and `pow(1, Infinity)` are NaN, as JavaScript's, not C's | `pow(1 - t, 1.3)` |
 | `sum(xs)` | Number; a list of numbers added left to right from 0, as `xs.reduce((a, x) => a + x, 0)` (`sum([])` is `0`), a list step an item; `sum(xs.map(x => …))` totals a field | `sum([1, 2, 3])` is `6` |
 | `range(n)` | `number[]`; Exact's own, not the web's: the whole numbers from 0 to `n - 1` in order (`range(0)` is `[]`), a list step an item. `n` is a whole number at least 0: another literal is refused, and another computed value traps (`TypeMismatch`), refusing the commit that made it. `range(a, b)` is refused: the numbers from `a` are `range(b).slice(a)`, a window `range(n).slice(a, b)` | `range(4)` is `[0, 1, 2, 3]` |
 | `text.includes(substring)` | Boolean, case-sensitive literal substring | `"grocery".includes("roc")` is `true` |
