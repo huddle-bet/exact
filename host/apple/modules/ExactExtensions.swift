@@ -369,7 +369,6 @@ extension ExactExtensions {
             now: { [weak module] in module?.now() ?? 0 },
             tracks: tracks,
             file: { [weak module] path in module.flatMap { file(path, $0) } },
-            asset: { [weak m] path in m?.hatches?.asset(path) },
             audioSession: ExactAudioSession { [weak m] mode, options, background, events in
                 m?.hatches.flatMap { AudioClaims.claim($0, mode: mode, options: options, background: background, events: events) }
             },
@@ -433,7 +432,8 @@ extension ExactExtensions {
                     return module.diagnostics.log("\(name): its state is not JSON")
                 }
                 module.changed("exact-state:" + String(decoding: json, as: UTF8.self))
-            })
+            },
+            asset: { [weak m] path in m?.hatches?.asset(path) })
     }
 
     /// `EXACT_AGENT_PADS`: a drive's test pads (ExactPads), a JSON list.
