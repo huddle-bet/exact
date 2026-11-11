@@ -520,7 +520,7 @@ fn a_function_the_web_has_and_contract_refuses_says_what_to_write() {
     for (name, says) in [
         ("sort", "write `sortBy(xs, x => x.name)`"),
         ("toSorted", "name the order where the view reads it"),
-        ("pow", "`x * x` is a square"),
+        ("sqrt", "`x * x` is a square"),
         ("now", "performanceNow()"),
         ("padStart", "pad in the data module"),
     ] {

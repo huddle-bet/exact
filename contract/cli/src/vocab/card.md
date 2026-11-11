@@ -82,7 +82,7 @@ component App
 - `select value=v change=set` holds `option "Label" value="x"`. Tabs: a `row role="tablist"` of `button role="tab" aria-controls="panel-x" aria-selected=… press=…`, each panel a `column role="tabpanel" id="panel-x"`; `routes nav`, `tab`, `select(nav, name)`.
 - A number field's `min`, `max`, `step` are numbers (`min=-40`); with `inputmode="decimal"` a negative `min` gives the pad its ± key.
 - Symbols: `"symbol:<role>"` (below); `symbol:sf/<name>` is Apple-only.
-- Not in Contract (`vocab <name>` says what instead): abs pow sqrt sort reduce find some every contains padStart parseInt.
+- Not in Contract (`vocab <name>` says what instead): abs sqrt sort reduce find some every contains padStart parseInt.
 
 ## how
 ### a second screen, a sheet
@@ -152,7 +152,7 @@ main
     text "Over" color="-exact-system-red"
 ```
 ### reading and writing data
-`loadItems` and `addItem` are in app.ts and answer exactly their shape; a refusal is a reply (`ok: false, error`), not a throw. `then act` after `refreshes` clears the field on an ok reply; `pending(added)` stops a second send.
+`loadItems` and `addItem` are in app.ts and answer their shape; a refusal is a reply (`ok: false, error`), not a throw. `then act` after `refreshes` clears the field on an ok reply; `pending(added)` stops a second send.
 ```contract
 shape Reply
   ok: bool
@@ -163,7 +163,7 @@ action add
 text items.join(", ")
 ```
 ### a dated record
-The write reads the clock, not a ticked `now`, and stores `at`; `performanceNow()` alone is 0 each launch. `"iso"` is the day, compared as text; its label `formatDay(at, now, …)`: Today, Yesterday. Tests pin `epoch` and `time-zone`.
+The write reads the clock, not a ticked `now`, and stores `at`; `performanceNow()` restarts at 0. `"iso"` is the day, compared as text; its label `formatDay(at, now, …)`: Today, Yesterday. Tests pin `epoch` and `time-zone`.
 ```contract
 shape Time
   epochAtZero: number
@@ -175,7 +175,7 @@ action log
   days = days.concat([formatDate(at, time.utcOffset, "iso")])
 ```
 ### a test, and verify
-Tests start with empty storage. `clock data` lands replies, `clock settle` ends transitions, `clock held` lands held replies; `reload` keeps storage. `bun exact.mjs verify` tests, checks end screens, relaunches; `verify ios` last; `--shots <dir>` keeps screenshots.
+Tests start with empty storage. `clock data` lands replies, `clock settle` ends transitions, `clock held` lands held replies; `reload` keeps storage. `bun exact.mjs verify` tests, checks end screens, relaunches; `verify ios` last; `--shots <dir>` keeps shots.
 It runs `contract verify` too; keep its receipt.
 ```contract-test
 test "a pick survives a relaunch"
@@ -185,7 +185,7 @@ test "a pick survives a relaunch"
   expect text "n" == "1"
 ```
 ### composing a screen
-One focal point. Emphasis is a part, not paint on a `button`; the main action is `buttonStyle="filled"`. Search: `input type="search"` in the `header`, live. A form is a grouped list (`grouped-form`); no rows, an `EmptyState`, its `button` indented under it.
+One focal point. Emphasis is a part, not paint on a `button`; the main action is `buttonStyle="filled"`. Search: `input type="search"` in the `header`, live. A form is a grouped list (`grouped-form`); no rows, an `EmptyState`, its `button` under it.
 ```contract
 use SummaryCard from "exact:content"
 column gap=16 padding=16

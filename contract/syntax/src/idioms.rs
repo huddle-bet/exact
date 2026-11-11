@@ -178,8 +178,7 @@ pub fn refusal(name: &str) -> Option<String> {
         "padStart" | "padEnd" => format!(
             "`{name}` is not in Contract: pad in the data module, or align with CSS (`text-align`, a fixed `width`)"
         ),
-        // Builders look for `pow`.
-        "pow" | "sqrt" | "abs" => format!(
+        "sqrt" | "abs" => format!(
             "`{name}` is not in Contract: `x * x` is a square and `max(x, -x)` a magnitude; compute other maths in the data source and hand the view the result"
         ),
         // A repair can change what an unreadable field shows without saying
