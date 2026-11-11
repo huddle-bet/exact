@@ -105,7 +105,7 @@ private final class ModalController: UIViewController, UIGestureRecognizerDelega
     func contentChanged() {
         #if !os(tvOS)
         guard modalPresentationStyle == .pageSheet, let sheet = sheetPresentationController,
-              (detentValue ?? "").split(separator: " ").contains("fit-content") else { return }
+              (detentValue ?? "").split(separator: " ").contains(where: { $0 == "fit-content" || $0.hasPrefix("fit-content(") }) else { return }
         if viewIfLoaded?.window != nil { sheet.animateChanges { sheet.invalidateDetents() } }
         else { sheet.invalidateDetents() }
         #endif
@@ -412,9 +412,9 @@ final class ModalHost: NSObject, UIAdaptivePresentationControllerDelegate {
                 // The route's content, which its
                 // box (the sheet) does not change; before it is measured,
                 // the sheet's maximum.
+                let share = word.height
                 return .custom(identifier: identifier(word)) { context in
-                    guard let height = content(), height > 0 else { return context.maximumDetentValue }
-                    return min(height.rounded(.up), context.maximumDetentValue)
+                    fitHeight(content: content(), maximum: context.maximumDetentValue, share: share)
                 }
             }
         }
@@ -439,6 +439,9 @@ final class ModalHost: NSObject, UIAdaptivePresentationControllerDelegate {
             case "large": (kind, height) = (.large, 100)
             case "medium": (kind, height) = (.share, 50)
             case "fit-content": (kind, height) = (.content, 0)
+            case _ where word.hasPrefix("fit-content("):
+                guard let share = Double(word.dropFirst(12).dropLast(2)), word.hasSuffix("%)"), share.isFinite, share > 0, share <= 100 else { refused?(word, .unknown); continue }
+                (kind, height) = (.content, share)
             case _ where word.hasSuffix("%"):
                 guard let share = Double(word.dropLast()), share.isFinite, share > 0, share <= 100 else { refused?(word, .unknown); continue }
                 // All of the maximum is UIKit's `large`, and is the same
@@ -457,11 +460,25 @@ final class ModalHost: NSObject, UIAdaptivePresentationControllerDelegate {
         return kept
     }
 
+    /// A `fit-content` detent's height: the content's, up to `share` percent
+    /// of the sheet's maximum (0: up to the maximum); the cap itself before
+    /// the content is measured.
+    static func fitHeight(content: CGFloat?, maximum: CGFloat, share: Double) -> CGFloat {
+        let cap = share > 0 ? maximum * CGFloat(share) / 100 : maximum
+        guard let content, content > 0 else { return cap }
+        return min(content.rounded(.up), cap)
+    }
+
+    /// The cap of a lone `fit-content(P%)` word: P, else 0 (no cap).
+    static func fitShare(_ value: String?) -> Double {
+        keptDetents(value, refused: nil).first { $0.kind == .content }?.height ?? 0
+    }
+
     private static func identifier(_ word: KeptDetent) -> UISheetPresentationController.Detent.Identifier {
         switch word.kind {
         case .large: return .large
         case .share where word.word == "medium": return .medium
-        case .content: return .init("fit-content-\(word.index)")
+        case .content: return .init(word.height > 0 ? "fit-content-\(word.height)-\(word.index)" : "fit-content-\(word.index)")
         case .share, .points: return .init("authored-\(word.index)")
         }
     }

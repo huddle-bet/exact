@@ -1378,7 +1378,11 @@ are of one kind, points or percentages (`medium` is half), each taller than the
 one before, and `large` goes last; a literal that breaks this is refused. A point
 height that a small screen's tallest reaches, with a taller detent after it, is
 left out there, so `"900 large"` on a phone is `large` alone.
-`fit-content` goes alone or as `"fit-content large"`.
+`fit-content` goes alone or as `"fit-content large"`, and `"fit-content(50%)"`
+is the same height capped at that share of the sheet's tallest (React
+Native's `0.5` for a filter sheet, `0.875` for a tall one): a short content
+keeps its own height, a long one stops at the cap and scrolls. A `dialog` sheet
+takes the same word as `navigationDetent="fit-content(50%)"` for its one height.
 It measures the route laid out on its own with its height left to its
 content, as CSS's `fit-content` does, so nothing the sheet gives it counts:
 rows do not shrink into it, and a percentage `height` or `flex-grow` takes

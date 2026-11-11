@@ -325,7 +325,7 @@ impl<D: DataSource> Host<D> {
             let fits = node
                 .props
                 .str(PropId::NavigationDetent)
-                .is_some_and(|d| d.split(' ').any(|w| w == "fit-content"));
+                .is_some_and(|d| d.split(' ').any(|w| w == "fit-content" || w.starts_with("fit-content(")));
             let scrolls = [overflow.0, overflow.1]
                 .iter()
                 .any(|o| matches!(o, Overflow::Scroll | Overflow::Auto));

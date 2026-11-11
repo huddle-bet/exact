@@ -34,6 +34,26 @@ final class ModalDetentIOSTests: XCTestCase {
         XCTAssertTrue(ModalHost.detents(nil) { nil }.isEmpty)
     }
 
+    /// `fit-content(50%)` is the content's height capped at half the maximum,
+    /// which a short content does not reach and a tall one stops at. A cap
+    /// that were dropped would let the tall content take the maximum.
+    func testAFitContentCapStopsTheContentAtAShareOfTheMaximum() {
+        var content: CGFloat? = 200
+        let detent = ModalHost.detents("fit-content(50%)") { content }[0]
+        XCTAssertEqual(detent.resolvedValue(in: Context(800)), 200)
+        content = 900
+        XCTAssertEqual(detent.resolvedValue(in: Context(800)), 400)
+        content = nil
+        XCTAssertEqual(detent.resolvedValue(in: Context(800)), 400, "before it is measured, the cap")
+        XCTAssertEqual(ModalHost.fitHeight(content: 900, maximum: 800, share: 0), 800)
+        XCTAssertEqual(ModalHost.fitShare("fit-content(50%)"), 50)
+        XCTAssertEqual(ModalHost.fitShare("fit-content"), 0)
+        XCTAssertEqual(ModalHost.detents("fit-content(87.5%) large") { 900 }.count, 2)
+        var refused: [Substring] = []
+        XCTAssertTrue(ModalHost.detents("fit-content(0%) fit-content(120%)", refused: { word, _ in refused.append(word) }) { 1 }.isEmpty)
+        XCTAssertEqual(refused, ["fit-content(0%)", "fit-content(120%)"])
+    }
+
     /// A percentage is that share of UIKit's maximum
     /// detent value, as RN's `sheetAllowedDetents: [0.45]` is.
     func testAPercentageIsAShareOfTheMaximum() {

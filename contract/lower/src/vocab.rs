@@ -15,7 +15,7 @@ use exact_kernel::{PropId, StyleCodec, StyleId};
 /// A prop's literal value grammar, shared by its refusal and `contract vocab`.
 pub fn accepts(prop: PropId) -> Option<&'static str> {
     match prop {
-        PropId::NavigationDetent => Some("space-separated large, medium, finite positive point heights, or percentages of the sheet's maximum height above 0% and at most 100%; fit-content alone or as fit-content large; otherwise ascending, point heights and percentages (or medium) not mixed, large last"),
+        PropId::NavigationDetent => Some("space-separated large, medium, finite positive point heights, or percentages of the sheet's maximum height above 0% and at most 100%; fit-content alone or as fit-content large, either with a cap written fit-content(50%), the content's height up to that share of the maximum; otherwise ascending, point heights and percentages (or medium) not mixed, large last"),
         PropId::ParagraphDirs => Some("ltr, rtl or auto, HTML's dir words: written, one word for every line; bound, one per source line in order, separated by white space, a line past the last word taking the last"),
         _ => None,
     }
@@ -25,12 +25,28 @@ pub fn accepts(prop: PropId) -> Option<&'static str> {
 /// `medium`, `fit-content`, a positive point height, or a percentage above
 /// 0% and at most 100%.
 pub fn detent_word(word: &str) -> bool {
-    matches!(word, "large" | "medium" | "fit-content")
+    matches!(word, "large" | "medium") || fit_content(word).is_some()
         || word.parse::<f64>().is_ok_and(|h| h.is_finite() && h > 0.0)
         || word.strip_suffix('%').is_some_and(|p| {
             p.parse::<f64>()
                 .is_ok_and(|p| p.is_finite() && p > 0.0 && p <= 100.0)
         })
+}
+
+/// `fit-content` as a `navigationDetent` word: `Some(None)` for the content's
+/// height, `Some(Some(share))` for `fit-content(share%)`, the content's height
+/// up to that percentage of the sheet's maximum (above 0% and at most 100%);
+/// `None` for any other word.
+pub fn fit_content(word: &str) -> Option<Option<f64>> {
+    if word == "fit-content" {
+        return Some(None);
+    }
+    let share = word
+        .strip_prefix("fit-content(")?
+        .strip_suffix("%)")?
+        .parse::<f64>()
+        .ok()?;
+    (share.is_finite() && share > 0.0 && share <= 100.0).then_some(Some(share))
 }
 
 /// The first of a `navigationDetent`'s valid words that is not taller than
@@ -52,7 +68,7 @@ pub fn detent_out_of_order<'a>(words: &[&'a str]) -> Option<&'a str> {
                 large = true;
                 continue;
             }
-            "fit-content" => continue,
+            w if fit_content(w).is_some() => continue,
             "medium" => (true, 50.0),
             w => match w.strip_suffix('%') {
                 Some(p) => {

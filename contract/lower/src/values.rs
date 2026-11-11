@@ -1057,8 +1057,10 @@ pub(crate) fn check_prop_value(
             // UIKit's detents go from shortest to tallest; the content's
             // height changes, so only `large` is always above it.
             let words: Vec<&str> = s.split(' ').filter(|w| !w.is_empty()).collect();
-            if words.contains(&"fit-content")
-                && !matches!(words[..], ["fit-content"] | ["fit-content", "large"])
+            let fits = |w: &&str| vocab::fit_content(w).is_some();
+            if words.iter().any(fits)
+                && !(words.len() == 1 && fits(&words[0])
+                    || words.len() == 2 && fits(&words[0]) && words[1] == "large")
             {
                 return err(
                     "lower-attr-value",

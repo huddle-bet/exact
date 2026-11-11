@@ -22,6 +22,9 @@ final class DialogSheetController: UIViewController, UIGestureRecognizerDelegate
     let scroller = ScrollView()
     /// The dialog's box as the kernel laid it out: the sheet's height.
     private(set) var box = CGSize.zero
+    /// The share of the sheet's maximum its height stops at, from the
+    /// dialog's `navigationDetent="fit-content(50%)"`; 0 for the maximum.
+    var heightShare: Double = 0
     private var backdropTap: UITapGestureRecognizer?
     #if !os(tvOS)
     private var maximumDetentHeight: CGFloat?
@@ -52,8 +55,7 @@ final class DialogSheetController: UIViewController, UIGestureRecognizerDelegate
         sheetPresentationController?.detents = [.custom(identifier: .init("exact.dialog")) { [weak self] context in
             guard let self else { return context.maximumDetentValue }
             maximumDetentHeight = context.maximumDetentValue
-            let height = box.height
-            return height > 0 ? min(height.rounded(.up), context.maximumDetentValue) : context.maximumDetentValue
+            return ModalHost.fitHeight(content: box.height, maximum: context.maximumDetentValue, share: heightShare)
         }]
         #endif
     }
@@ -345,6 +347,9 @@ final class DialogSheets: NSObject, UIAdaptivePresentationControllerDelegate {
         // editing on the page ends its editing, and takes it back at the close.
         let previous: UIView? = old == nil ? presenter.focusedNode.map { $0.textArea ?? $0.field ?? $0 } : old?.previous
         let controller = DialogSheetController(host: self)
+        #if os(iOS)
+        controller.heightShare = ModalHost.fitShare(dialog.props["navigationDetent"])
+        #endif
         let entry = Entry(dialog, source: source, previous: previous, controller: controller)
         let under: UIView = top?.viewIfLoaded ?? presenter.modals.coordinateView ?? presenter.session?.view ?? presenter.viewport
         entry.under = under
