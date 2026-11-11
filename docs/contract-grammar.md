@@ -1732,6 +1732,25 @@ action moved(x: number, y: number, e: ScrollEvent)
 list appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true scroll=moved …
 ```
 
+A pager is a horizontal scroller that snaps to its pages, and the fractional
+page offset is `scrollLeft / clientWidth` in its `scroll` handler. The scroller
+says `overflow-x="scroll" scroll-snap-type="x mandatory"` (`proximity` snaps
+only near a page); each page is a child as wide as the scrollport, with
+`flex-shrink=0 scroll-snap-align="start"`, and `scroll-snap-stop="always"` on
+the pages lets a fling cross one page at most. The web snaps with CSS. iOS snaps
+to the pages (a fling stops at the next page a `stop` names), and sends `scroll` on every frame of a
+drag and of the glide after it, before that frame paints, so a handler's state
+moves with the finger (a title that crossfades by `1 - abs(offset - page)`). A
+`scrollLeft=` prop moves the pager to a page without animation, as a press on a
+page dot does:
+
+```text
+action moved(x: number, y: number, e: ScrollEvent)
+  offset = e.scrollLeft / e.clientWidth
+  page = round(offset)
+scroll scroll=moved overflow-x="scroll" scroll-snap-type="x mandatory" scrollbar-width="none"
+```
+
 On a virtualized list, the record also carries `firstVisibleKey: option<string>`
 and `firstVisibleOffset: number`: the first row intersecting the port, and the
 signed distance in CSS pixels from its wrapper's start to the port's start,
