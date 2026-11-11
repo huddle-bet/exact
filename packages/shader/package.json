@@ -1,0 +1,11 @@
+{
+  "name": "@exact/shader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "exact-shader, a per-pixel shader over images as a package view: Metal on Apple, WebGL2 on the web.",
+  "exports": {
+    ".": "./exact.json",
+    "./apple": "./apple/exact.json",
+    "./web": "./web/exact.json"
+  }
+}

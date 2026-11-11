@@ -248,6 +248,7 @@ fn call_value(
         // native target computes the same bits.
         Stdlib::Sin => Value::Number(exact_motion::math::sin(num(0)?)),
         Stdlib::Cos => Value::Number(exact_motion::math::cos(num(0)?)),
+        Stdlib::Pow => Value::Number(exact_motion::math::pow(num(0)?, num(1)?)),
         // `Math.ceil`, `Math.round`, a strict
         // `Number()`, and an age's calendar count.
         Stdlib::Ceil => Value::Number(num(0)?.ceil()),

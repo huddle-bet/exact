@@ -1,0 +1,21 @@
+{
+  "kind": "implementation",
+  "implements": "@exact/shader@^1.0",
+  "platform": "web",
+  "targets": [
+    "web"
+  ],
+  "shapes": {},
+  "options": {},
+  "names": [],
+  "views": [
+    "exact-shader"
+  ],
+  "hatches": [],
+  "sources": {
+    "javascript": [
+      "index.js"
+    ]
+  },
+  "artifacts": []
+}

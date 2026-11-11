@@ -381,6 +381,8 @@ test('sin, cos, sum, range and flat compute as the runner does, and the lists st
   const { x_sin, x_cos } = await import(resolve(dir, 'roster.js'));
   const budget = await import(resolve(dir, 'budget.js'));
   expect([x_sin(0), x_cos(0), x_sin(1), x_cos(1)]).toEqual([0, 1, 0.8414709848078965, 0.5403023058681398]);
+  const { x_pow } = await import(resolve(dir, 'roster.js'));
+  expect([x_pow(2, 10), x_pow(0.6, 1.3), x_pow(1, NaN), x_pow(1, Infinity)]).toEqual([1024, 0.514750320266457, NaN, NaN]);
   expect([budget.x_sum([1, 2, 3], 0, 7), budget.ST]).toEqual([6, 3]);
   expect(budget.x_sum([0.1, 0.2, 0.3], 0, 7)).toBe(0.6000000000000001);
   expect(Object.is(budget.x_sum([-0], 0, 7), 0)).toBe(true);

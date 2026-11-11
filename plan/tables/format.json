@@ -1759,6 +1759,12 @@
       "_comment": "JavaScript's `Math.cos` and CSS's `cos()`, of radians, computed as `sin` is."
     },
     {
+      "name": "pow",
+      "params": ["number", "number"],
+      "returns": "number",
+      "_comment": "JavaScript's `Math.pow` and CSS's `pow()`: the base to the exponent. The native runners compute it with `libm` (`exact_motion::math::pow`), the same bits on every target, with ECMA-262's answers where C's differ (`pow(1, NaN)` and `pow(1, Infinity)` are NaN); the web's JS target is `Math.pow`, which may differ in the last bits (as `sin` does). A negative base to a fractional exponent is NaN."
+    },
+    {
       "name": "sum",
       "params": ["list<number>"],
       "returns": "number",

@@ -1,0 +1,37 @@
+{
+  "kind": "interface",
+  "name": "@exact/shader",
+  "version": "1.0.0",
+  "substitute": "implementation",
+  "shapes": {
+    "ShaderImage": {
+      "name": "string",
+      "source": "string",
+      "sizing": "string",
+      "tile": "string"
+    },
+    "ShaderUniform": {
+      "name": "string",
+      "value": "number[]"
+    }
+  },
+  "views": {
+    "exact-shader": {
+      "props": {
+        "source": "string",
+        "images": "option<ShaderImage[]>",
+        "uniforms": "option<ShaderUniform[]>"
+      },
+      "events": [
+        "load",
+        {
+          "event": "failed",
+          "args": [
+            "string"
+          ]
+        }
+      ]
+    }
+  },
+  "names": []
+}
