@@ -1479,3 +1479,20 @@ fn a_refused_build_types_a_for_resource_as_a_list_at_its_call_sites() {
     let ids: Vec<&str> = errors.iter().map(|e| e["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["type-unknown-field"], "{errors:#?}");
 }
+
+// Bug (ENG-2579): a refused build dropped every error inside a child whenever
+// a call site was also at fault. A `for` resource passed to a list prop was
+// such a false call-site error, so a real `type-call-arity` in the child (an
+// action prop that is called with no argument, given a one-argument action)
+// stayed hidden until the false error was fixed. The real error must show.
+#[test]
+fn a_child_call_arity_error_shows_beside_a_for_resource_passed_to_a_list_prop() {
+    let app = App::new("child-arity-under-for-resource");
+    let root = app.write(
+        "app.contract",
+        "shape Item\n  name: string\ncomponent App\n  resource ids = ids() as shape string[]\n  resource details = detail(id) for id in ids key=id as shape Item\n  state opened = \"\"\n  action open(id: string)\n    opened = id\n  view\n    Row(items=details, retry=open)\ncomponent Row\n  props\n    items: Item[]\n    retry: action\n  action again\n    retry()\n  view\n    for item in items key=item.name\n      button press=again\n        text item.name\n",
+    );
+    let errors = diagnostics(&app.run(&[root.to_str().unwrap(), "--json"]), 1);
+    let ids: Vec<&str> = errors.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["type-call-arity"], "{errors:#?}");
+}

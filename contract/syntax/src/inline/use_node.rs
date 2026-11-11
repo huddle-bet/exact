@@ -149,6 +149,15 @@ pub(super) fn inline_use(
                 .filter(|r| super::reads_device(r))
                 .map(|r| r.name.clone()),
         )
+        // A prop or inject that is not an `action` holds a value, so a call
+        // spelling its name (`list.at(at)`) names a function, not the prop.
+        .chain(
+            c.props
+                .iter()
+                .chain(&c.injects)
+                .filter(|p| p.ty.as_ref().is_some_and(|t| !super::is_action(t)))
+                .map(|p| p.name.clone()),
+        )
         .collect();
     // Closure-convert child props/injects into hidden action
     // parameters. A handler evaluates these curried arguments

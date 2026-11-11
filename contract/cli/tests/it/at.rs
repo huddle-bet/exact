@@ -118,3 +118,45 @@ fn at_takes_a_list_and_a_number() {
         assert!(error.contains(id), "{call}: {error}");
     }
 }
+
+// Bug: a child's value prop named `at` replaced the head of `list.at(at)`.
+// Inlining substituted the prop by the parent's state in the call's name too,
+// so the checker saw a call of `stat#N` and refused it as "not in the stdlib
+// roster". A value prop is never a call's head; only an `action` prop is.
+#[test]
+fn a_value_prop_named_at_does_not_replace_the_at_call() {
+    let source = r#"
+component App
+  state stat = 1
+  resource names = names() as shape string[]
+  view
+    Pick(names=names, at=stat)
+
+component Pick
+  props
+    names: string[]
+    at: number
+  view
+    column
+      match names.at(at)
+        case some(n)
+          text n testId="at"
+        case none
+          text "nobody" testId="at"
+"#;
+    let plan = contract::bake(contract::compile(source).unwrap(), Names).unwrap();
+    let r = Runner::boot(
+        plan,
+        Names,
+        Kernel::with_monospace(),
+        Default::default(),
+        "/",
+    )
+    .unwrap();
+    let k = r.kernel();
+    let key = k.find_by_test_id("at")[0];
+    assert_eq!(
+        k.node_by_key(key).unwrap().props.str(PropId::Text),
+        Some("grace")
+    );
+}
