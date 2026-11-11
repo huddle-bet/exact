@@ -1830,6 +1830,21 @@ action fit(w: number, h: number)
 column resize=fit …
 ```
 
+A text's laid-out width is a `resize` away. A `text` with `flex-shrink=0` (or
+`width="max-content"`) in a `row` is as wide as its string in its font, so its
+`resize=action` hears that width and its line's height after the layout that
+placed it, and again when the string, the font or a loaded font file changes it.
+Layout runs again before the frame paints (native hosts) or before the next
+paint (the web's `ResizeObserver`), so a contract that writes the width to state
+and lays out by it (an initialled name when `nameWidth > columnWidth`; a marquee
+that travels `textWidth - boxWidth`; an arrow that follows the month name) shows
+no frame with the old value. To measure a string that is not drawn, give a text
+`position="absolute" visibility="hidden" white-space="nowrap"` with the same font
+rows: the font tokens are the node's own rows and inheritance, so no token is
+named twice. A `text` with `flex-shrink=0` is as wide as its string, so
+`color="transparent"` with a `background-color` is a bar of exactly that width.
+Tests: [`text_measure.rs`](../contract/cli/tests/text_measure.rs).
+
 `pan` supplies the move since its last event (dx, dy),
 the first one since the press, so their sum is the drag's offset from the press. `panrelease` appends x/y release velocity;
 `heightrelease` appends height and velocity. A `pan` hears a drag that starts
