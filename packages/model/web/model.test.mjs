@@ -1,4 +1,3 @@
-// What each test catches is named above it. Run: bun test packages/model/web
 import { expect, test } from "bun:test";
 import { readAsset } from "./asset.js";
 import { parseGLB, readAccessor, drawables, bounds, rectOf, fromTRS, multiply } from "./glb.js";
@@ -7,17 +6,14 @@ import { DEG, TILT_DEFAULTS, axisAngle, leanGoal, leanResponse, screenPlacement,
 
 const near = (a, b, digits = 6) => { expect(a.length).toBe(b.length); a.forEach((v, i) => expect(v).toBeCloseTo(b[i], digits)); };
 
-// A light that shines from below or behind the camera instead of from the upper left front.
 test("the key light travels down and away from the camera on its upper left", () => {
   near(lightDirection(-34.7, 18), [0.541417, -0.309017, -0.781905]);
 });
 
-// Linear light written as sRGB: a 5500 K rim light that is too dark and too orange.
 test("a 5500 K light is linear sRGB, warm but not orange", () => {
   near(kelvinToLinear(5500), [1, 0.850871, 0.732285]);
 });
 
-// A wrong omega: the pose arrives in a different time than `response` says, or rings past its goal.
 test("a spring with response 850 ms reaches its goal without overshoot and reports settled", () => {
   let x = 0, v = 0, peak = 0, at = -1;
   for (let i = 0; i < 180; i++) {
@@ -31,8 +27,6 @@ test("a spring with response 850 ms reaches its goal without overshoot and repor
   expect(at).toBeLessThan(65);
 });
 
-// A tilt that never recentres drifts off for good when the phone is held at an angle, or one that is
-// not clamped leans the phone far past the app's limit.
 test("a held device leans the model back to rest and a sharp turn is clamped to tiltMaxDeg", () => {
   const held = newTilt();
   for (let i = 0; i < 600; i++) tiltStep(held, 1.2, 0.3, 1 / 60);
@@ -46,7 +40,6 @@ test("a held device leans the model back to rest and a sharp turn is clamped to 
   expect(worst).toBeLessThan(TILT_DEFAULTS.maxDeg * DEG * 1.35);
 });
 
-// Tilt with the wrong sign: the phone leans toward the thumb instead of away from it.
 test("the model turns against the device's roll and pitch", () => {
   const s = newTilt();
   tiltStep(s, 1, 0, 1 / 60);
@@ -55,7 +48,6 @@ test("the model turns against the device's roll and pitch", () => {
   expect(s.yaw).toBeLessThan(0);
 });
 
-// A sway that starts at full swing jolts the model on the first frame.
 test("the sway starts at rest, peaks a quarter period in and swings on the period", () => {
   expect(swayAt(0, 5200)).toBe(0);
   expect(swayAt(1300, 5200)).toBeCloseTo(1, 6);
@@ -63,7 +55,6 @@ test("the sway starts at rest, peaks a quarter period in and swings on the perio
   expect(swayAt(1300 + 2600, 5200)).toBeCloseTo(-1, 6);
 });
 
-// `distance` ignored, or `fit` measured to the model's middle instead of its front face.
 test("an authored distance wins; otherwise the model's height takes `fit` of the view", () => {
   expect(cameraDistance({ distance: 0.5, fit: 0.74, fov: 24, half: 0.0783, front: 0.00566 })).toBe(0.5);
   const d = cameraDistance({ distance: NaN, fit: 0.74, fov: 24, half: 0.0783, front: 0.00566 });
@@ -71,8 +62,6 @@ test("an authored distance wins; otherwise the model's height takes `fit` of the
   expect(2 * 0.0783 / (2 * (d - 0.00566) * Math.tan(12 * DEG))).toBeCloseTo(0.74, 6);
 });
 
-// The app's projectPhonePoint turns the model about y, then x, scaled first and moved last. A pose
-// that rotates in another order puts each tour pose's screen corners elsewhere.
 test("the pose matrix is the app's: yaw, then pitch, then roll, scaled, then moved", () => {
   const rn = ([px, py, pz], pitch, yaw, s, shift, lift) => {
     const [x0, y0, z0] = [px * s, py * s, pz * s];
@@ -89,7 +78,6 @@ test("the pose matrix is the app's: yaw, then pitch, then roll, scaled, then mov
   near([rolled[0], rolled[1], rolled[4], rolled[5]], [0, 1, -1, 0], 9);
 });
 
-// The sheen band that does not move with the pose, or one that is not centred on its coordinate.
 test("a sheen band peaks at its coordinate and travels with yaw and pitch", () => {
   near([sheenCoord(0.3, 0.6, -0.6, 420, 912)], [0.715836], 6);
   expect(sheenAlpha(0.5, 0.12, 0.06)).toBeCloseTo(0.06, 9);
@@ -110,7 +98,6 @@ function glb(json, bin) {
   return out.buffer;
 }
 
-// A byteStride ignored: interleaved positions read as garbage, so the model's bounds and shape are wrong.
 test("a glb's interleaved accessor is read by its stride, its scene by node transforms", () => {
   const bin = new Uint8Array(3 * 20), f = new Float32Array(bin.buffer);
   [[0, 0, 0, 9, 9], [2, 0, 0, 9, 9], [0, 4, 0, 9, 9]].forEach((p, i) => f.set(p, i * 5));
@@ -155,7 +142,6 @@ function ktx({ format = 35898, faces = 6, sh = '1 1 1\n0 0 0\n0 0 0\n0 0 0\n0 0 
   return out.buffer;
 }
 
-// Faces read at the wrong offset (the size field of a level counted once, not per level) scramble the light.
 test("a cmgen ktx's mips, faces and sh rows are read", () => {
   const light = parseKTX(ktx());
   expect(light.mips.map(m => m.size)).toEqual([4, 2]);
@@ -171,7 +157,6 @@ test("a ktx that is not R11G11B10F, or has no sh, is refused by name", () => {
   expect(() => parseKTX(ktx({ sh: '1 1 1\n' }))).toThrow("sh entry");
 });
 
-// A packer that rounds the exponent wrongly writes a light of the wrong brightness.
 test("R11G11B10F packs the values the GPU unpacks", () => {
   expect(packR11G11B10(1, 1, 1)).toBe(((15 << 6) | ((15 << 6) << 11) | (15 << 5 << 22)) >>> 0);
   expect(packR11G11B10(0, 0, 0)).toBe(0);
@@ -185,8 +170,6 @@ test("the studio light has a bright sky, a brighter window and mips down to 4 te
   expect(light.sh[2][0]).toBeGreaterThan(0);
 });
 
-// What CSS does with a box that has `perspective` on its parent and `translate`, `rotate` and `scale`: the
-// corners of the box land where the browser, or Exact's kernel, puts them.
 function css(placement, w, h, viewW, viewH) {
   const [ax, ay, az, deg] = placement.rotate.split(' ').map(parseFloat);
   const n = Math.hypot(ax, ay, az), [x, y, z] = [ax / n, ay / n, az / n], a = deg * DEG, c = Math.cos(a), sn = Math.sin(a), t = 1 - c;
@@ -203,8 +186,6 @@ function css(placement, w, h, viewW, viewH) {
 const RECT = { c: [-0.0028, 0, 0.00566], hw: 0.03482, hh: 0.07573 };
 const place = (pose, extra = {}) => screenPlacement({ pose, rect: RECT, fov: 24, distance: 0.503, viewW: 420, viewH: 700, w: 420, h: (420 * RECT.hh) / RECT.hw, ...extra });
 
-// A placement that puts the child anywhere but on the model's screen: a wrong axis flip (y is down in CSS), a
-// wrong perspective, or a scale off the camera's depth shows as corners that miss by points.
 test("the CSS a placement gives puts a 420-point child on the model's screen corners", () => {
   for (const [pitch, yaw, roll, s, x, y] of [[0, 0, 0, 1, 0, 0], [-2 * DEG, 16 * DEG, 0, 1, 0, 0], [-3 * DEG, -9 * DEG, 0.1, 0.99, 0.004, -0.01], [0.5, -0.8, 0, 1.4, -0.01, 0.02]]) {
     const p = place(poseMatrix(pitch, yaw, roll, s, x, y));
@@ -229,7 +210,6 @@ test("axis and angle come back from a rotation, including a half turn", () => {
   expect(axisAngle([-1, 0, 0, 0, 1, 0, 0, 0, -1]).deg).toBeCloseTo(180, 6);
 });
 
-// A lean that jumps to the other pose, or one that ignores the pose being aimed at, snaps the model while a finger is down.
 test("a drag leans the aimed pose toward the next one by its share, and tightens the spring", () => {
   const goal = { yaw: 0.2, pitch: 0, roll: 0, scale: 1, x: 0, y: 0 }, toward = { yaw: -0.4, pitch: -0.1, roll: 0, scale: 0.6, x: 0.01, y: 0 };
   expect(leanGoal(goal, toward, 0)).toEqual(goal);
@@ -239,8 +219,6 @@ test("a drag leans the aimed pose toward the next one by its share, and tightens
   expect(leanResponse(850, 0)).toBe(850);
 });
 
-// A rectangle read from the node's own bounds in its own space, not the world's: a rotated node (the phone's
-// quarter turn) puts the screen's width on the wrong axis, so the child lands sideways.
 test("the rectangle of a named node is its world bounds, width along x and height along y", () => {
   const bin = new Uint8Array(4 * 12), f = new Float32Array(bin.buffer);
   f.set([0, -2, -1, 0, 2, -1, 0, 2, 1, 0, -2, 1]);
@@ -256,8 +234,6 @@ test("the rectangle of a named node is its world bounds, width along x and heigh
   expect(rectOf(doc, 'Nothing')).toBeNull();
 });
 
-// A host reader that is ignored, so a file only an over-the-air generation holds is fetched from the page and not found; or its
-// bytes handed on as a view of a larger buffer, so the glb starts with other files' bytes.
 test("an asset is read through the host's reader first, as its own bytes, else from the page", async () => {
   const big = new Uint8Array([9, 9, 1, 2, 3, 9]);
   const got = await readAsset({ asset: async path => (path === "assets/a.glb" ? big.subarray(2, 5) : null) }, "http://x/", "assets/a.glb");

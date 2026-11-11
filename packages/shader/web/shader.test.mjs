@@ -1,6 +1,3 @@
-// What each test catches is named above it. Run: bun test packages/shader/web
-// The pixel tests drive the real web view in Chrome (WebGL2) and compare its canvas with test/fixture.mjs's CPU
-// reference of the home-screen ripple; they are skipped only where there is no Chrome.
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -15,14 +12,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const chrome = existsSync(CHROME);
 
-// A source that declares two images and a value in a way the translators must both read.
 test("the declarations of the ripple's source are its two images and seven values, in order", () => {
   const d = parse(WAVE_SOURCE);
   expect(d.shaders).toEqual(["image", "huddle"]);
   expect(d.floats).toEqual([["label", 1], ["band", 1], ["amp", 1], ["spread", 1], ["center", 2], ["radius", 1], ["power", 1]].map(([name, size]) => ({ name, size })));
 });
 
-// A GLSL that keeps SkSL's `half`, `float2` or `.eval(` fails to compile on the first draw; one that keeps `main` collides with GLSL's.
 test("the GLSL has no SkSL type, no eval call and renames main", () => {
   const glsl = toGLSL(WAVE_SOURCE);
   expect(glsl).not.toMatch(/\b(half\d?|float[234]|uniform shader)\b|\.eval\(/);
@@ -31,7 +26,6 @@ test("the GLSL has no SkSL type, no eval call and renames main", () => {
   expect(glsl).toContain("uniform vec2 center;");
 });
 
-// A comment that mentions a uniform, or a second name on one line, read as a declaration that the shader does not make.
 test("comments are not declarations, and a declaration with two names is refused", () => {
   expect(parse("// uniform float ghost;\n/* uniform shader other; */\nuniform float a;\nhalf4 main(float2 p) { return half4(a); }").floats).toEqual([{ name: "a", size: 1 }]);
   expect(() => parse("uniform float a, b;\nhalf4 main(float2 p) { return half4(1.0); }")).toThrow("one to a line");
@@ -40,7 +34,6 @@ test("comments are not declarations, and a declaration with two names is refused
   expect(() => parse("half4 shade(float2 p) { return half4(1.0); }")).toThrow("half4 main(float2 p)");
 });
 
-// Cover that scales by the smaller side leaves bars; fill that keeps the aspect distorts nothing and crops nothing.
 test("an image fills the box by cover, contain or fill", () => {
   const near = (a, b) => a.forEach((v, i) => expect(v).toBeCloseTo(b[i], 9));
   near(placement("cover", [420, 912], [100, 100]), [1 / 912, 1 / 912, -(420 - 912) / 2 / 912, 0]);
@@ -86,7 +79,6 @@ afterAll(async () => { await browser?.close(); server?.stop(true); });
 
 const flip = (px, w, h) => { const out = new Uint8Array(px.length); for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4); return out; };
 
-// Opens the view in a page of `scale` pixels to the point and returns the page.
 async function open({ box, scale, props }) {
   const context = await browser.newContext({ deviceScaleFactor: scale, viewport: { width: Math.ceil(box[0]), height: Math.ceil(box[1]) } });
   const page = await context.newPage();
@@ -111,7 +103,6 @@ const ripple = (u, extra = {}) => ({
 });
 const setup = () => { images.set("home-empty.png", png(105, 228, pics.image.data)); images.set("home-huddle.png", png(105, 228, pics.huddle.data)); };
 
-// A y flip, a red/blue swap, a decal that clamps, a shift in pixels instead of points or a wrong mix shows as many channels off by more than 1.
 test.skipIf(!chrome)("the web view draws the home ripple as its equations say", async () => {
   setup();
   const { page, context } = await open({ box: [420, 912], scale: 1, props: ripple(UNIFORMS) });
@@ -124,7 +115,6 @@ test.skipIf(!chrome)("the web view draws the home ripple as its equations say", 
   await context.close();
 });
 
-// A shader coordinate in canvas pixels draws the wave at twice the radius on a 2x screen.
 test.skipIf(!chrome)("a shader coordinate is a point of the box, whatever the pixel density", async () => {
   setup();
   const u = { ...UNIFORMS, center: [129.335, 222], radius: 90, band: 48, amp: UNIFORMS.amp / 2 };
@@ -137,7 +127,6 @@ test.skipIf(!chrome)("a shader coordinate is a point of the box, whatever the pi
   await context.close();
 });
 
-// A uniform cached from the first draw leaves the wave where it began as the app's timer moves the radius.
 test.skipIf(!chrome)("new uniform values draw again, and the first picture differs from the second", async () => {
   setup();
   const { page, context } = await open({ box: [420, 912], scale: 1, props: ripple(UNIFORMS) });
@@ -153,7 +142,6 @@ test.skipIf(!chrome)("new uniform values draw again, and the first picture diffe
   await context.close();
 });
 
-// A view that throws on a bad uniform stops the app's frame; one that ignores it hides the typo.
 test.skipIf(!chrome)("a uniform the shader lacks, or of the wrong size, is reported once and the rest still draws", async () => {
   setup();
   const bad = ripple({ ...UNIFORMS, radus: 3, center: [1, 2, 3] });
@@ -165,7 +153,6 @@ test.skipIf(!chrome)("a uniform the shader lacks, or of the wrong size, is repor
   await context.close();
 });
 
-// A source that does not compile must say so through `failed`, not draw nothing.
 test.skipIf(!chrome)("a shader that does not compile fails with the driver's reason", async () => {
   const { page, context } = await open({ box: [100, 100], scale: 1, props: { source: "half4 main(float2 p) { return half4(nope); }" } });
   await page.waitForFunction(() => window.events.length > 0);
@@ -176,7 +163,6 @@ test.skipIf(!chrome)("a shader that does not compile fails with the driver's rea
   await context.close();
 });
 
-// An image the app forgot to list leaves the shader sampling nothing; the app should hear which.
 test.skipIf(!chrome)("an image the shader reads but images does not list is reported by name", async () => {
   const { page, context } = await open({ box: [100, 100], scale: 1, props: { source: "uniform shader tex;\nhalf4 main(float2 p) { return tex.eval(p); }", images: "[]" } });
   await page.waitForFunction(() => window.events.length > 0);

@@ -1,4 +1,3 @@
-// A PNG encoder for the tests' pictures: 8-bit RGBA, no filter, so a browser or ImageIO decodes exactly the bytes made.
 import { deflateSync } from "node:zlib";
 
 const table = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });

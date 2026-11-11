@@ -1,6 +1,3 @@
-// The numbers `exact-model` moves by: the same on the web and in ModelMotion.swift, so the
-// tests of both name one set of values.
-
 export const DEG = Math.PI / 180;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -82,9 +79,7 @@ export function cameraDistance({ distance, fit, fov, half, front }) {
  * the order the model is posed in (yaw first). */
 export function poseMatrix(pitch, yaw, roll, s, x, y) {
   const [cy, sy, cp, sp, cr, sr] = [Math.cos(yaw), Math.sin(yaw), Math.cos(pitch), Math.sin(pitch), Math.cos(roll), Math.sin(roll)];
-  // Rx(pitch) * Ry(yaw)
   const a = [cy, sp * sy, -cp * sy, 0, 0, cp, sp, 0, sy, -sp * cy, cp * cy, 0];
-  // Rz(roll) * (that), by columns
   const out = new Array(16).fill(0);
   for (let c = 0; c < 3; c++) {
     const [px, py, pz] = [a[c * 4], a[c * 4 + 1], a[c * 4 + 2]];
@@ -160,7 +155,6 @@ export function screenPlacement({ pose, rect, fov, distance, viewW, viewH, w, h 
   const f = viewH / 2 / Math.tan((fov * DEG) / 2);
   const depth = distance - c[2];
   const k = f / depth;
-  // The pose's rotation, as CSS sees it: y is down, so conjugate by diag(1, -1, 1).
   const r = [0, 1, 2].flatMap(row => [0, 1, 2].map(col => pose[col * 4 + row] / s));
   const flip = [1, -1, 1, -1, 1, -1, 1, -1, 1];
   const rc = r.map((v, i) => v * flip[i]);

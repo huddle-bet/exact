@@ -1386,7 +1386,6 @@ package final class NodeView: UIView, UITextViewDelegate, UITextFieldDelegate, U
         sv.isDirectionalLockEnabled = style["scroll_snap_type"]?.string == "x mandatory" || crossesScroller(sv)
     }
 
-    /// A scroller inside one that scrolls the other way (a page's `scroll` in a pager) locks a drag to its first axis.
     func crossesScroller(_ sv: ScrollView) -> Bool {
         var up = sv.superview
         while let v = up {

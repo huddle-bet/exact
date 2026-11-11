@@ -271,10 +271,7 @@ pub enum Event {
     /// Enter in an input with a `submit` handler — the web's implicit
     /// submission (HTML forms §4.10.21.2), without a form.
     Submit,
-    /// An iframe finished loading (including an error document on the web),
-    /// or an image whose host read none of its pixels.
     Load,
-    /// An image loaded, with what its pixels hold.
     ImageLoad(super::host_kinds::ImageLoad),
     /// An iframe guest posted a string to its parent.
     Message(String),

@@ -1,15 +1,11 @@
-// An image's `load` record, `ImageLoadEvent` (contract/types/src/selection.rs), as the Apple hosts read it
-// (host/apple/Sources/ExactKit/ImageInk.swift): the natural size, then the ink read on a copy whose longer side is at
-// most 150 pixels, each read pixel the source pixel under its centre. Ink is alpha >= 24, solid alpha > 128. An image
-// from another origin is read through a CORS request for the same source; one the page cannot read reports zeros.
 const MAX_SIDE = 150, INK = 24, SOLID = 128, FOOT_ROW = 0.98, KEPT = 500;
-const Read = new Map(); // source -> Promise of the eight fractions, or null
+const Read = new Map();
 
 const pixels = (img, w, h) => {
   const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d", { willReadFrequently: true }); ctx.imageSmoothingEnabled = false;
   ctx.drawImage(img, 0, 0, w, h);
-  return ctx.getImageData(0, 0, w, h).data; // throws on a tainted canvas
+  return ctx.getImageData(0, 0, w, h).data;
 };
 const cors = src => new Promise(ok => { const i = new Image(); i.crossOrigin = "anonymous"; i.onload = () => ok(i); i.onerror = () => ok(null); i.src = src; });
 const hullArea = points => {

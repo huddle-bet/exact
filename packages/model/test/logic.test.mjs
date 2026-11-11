@@ -1,6 +1,3 @@
-// The Apple side's numbers (apple/ModelMotion.swift, ModelGLB.swift, ModelLight.swift) against the web's
-// (web/motion.js, glb.js, ktx.js): one set of values on both. Compiles test/main.swift with swiftc and
-// runs it; skipped where there is no swiftc. A glb and a ktx named by MODEL_GLB and MODEL_KTX are read too.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -27,7 +24,6 @@ const run = () => {
 
 const close = (a, b, digits = 9) => { expect(a).toHaveLength(b.length); a.forEach((v, i) => expect(v).toBeCloseTo(b[i], digits)); };
 
-// Apple and web that disagree on a number: the app looks right on one and wrong on the other.
 test.skipIf(!swiftc)("Apple's motion numbers equal the web's", () => {
   const apple = run();
   close(apple.light, lightDirection(-34.7, 18));

@@ -367,7 +367,6 @@ fn background_image_is_one_declaration_over_the_colour() {
         css(&[(StyleId::ScrollSnapAlign, t("end"))], &[]),
         "scroll-snap-align:end;"
     );
-    // `always` reaches the browser as CSS's own, so a fling stops at each page.
     assert_eq!(
         css(&[(StyleId::ScrollSnapStop, t("always"))], &[]),
         "scroll-snap-stop:always;"

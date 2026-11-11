@@ -51,9 +51,6 @@
 //  176  service(host, module, moduleLen, json, len, ctx, reply): a module's
 //        service query (`ExactServices.query`); replies once on any thread,
 //        with len 0 for no answer
-//  184  asset(host, name, len, ctx, sink): an app asset's bytes by its path,
-//        from the session's resolver (the bundle or the running generation), given to
-//        `sink(ctx, bytes, len)` before the call returns; nothing when the app has no such file
 //
 // `host` is the session's runtime handle, as for `changed` and `now`: a
 // destroyed session's is answered with nothing. Service queries use the
@@ -407,7 +404,6 @@ private let hatchService: @convention(c) (UnsafeMutableRawPointer?, UnsafePointe
     }
 }
 
-/// An app asset's bytes through the session's resolver, as the pictures and the iframe arm read them.
 private let hatchAsset: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?,
                                         (@convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32) -> Void)?) -> Void = { host, name, length, context, sink in
     guard let sink, let session = hatchSession(host), let bytes = session.app.resolver.bytes(hatchText(name, length)) else { return }

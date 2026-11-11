@@ -43,8 +43,6 @@ struct Leaving {
     end: Option<f64>,
 }
 
-/// A route with an exit row. It stays mounted while another route covers it,
-/// so no exit receipt reaches it: its exit plays on the live node instead.
 #[derive(Debug)]
 struct Cover {
     key: NodeKey,
@@ -123,8 +121,6 @@ impl<D: DataSource> Host<D> {
         }
     }
 
-    /// Note the routes a receipt created or touched that declare an exit row,
-    /// and forget those it destroyed.
     pub(super) fn track_covers(&mut self, receipt: &CommitReceipt) {
         for key in &receipt.destroyed {
             self.presence.covers.retain(|c| c.key != *key);
@@ -155,8 +151,6 @@ impl<D: DataSource> Host<D> {
         }
     }
 
-    /// Play a route's exit when a push covers it, and stop it when the route
-    /// is shown again. A route a tab hides is not covered.
     pub(super) fn sync_cover_exits(&mut self) {
         for i in 0..self.presence.covers.len() {
             let (key, animations) = {

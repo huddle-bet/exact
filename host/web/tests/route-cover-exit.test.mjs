@@ -1,6 +1,3 @@
-// A route a push covers stays mounted, so no exit receipt reaches it. Its `-exact-exit-animation` plays when the
-// projection stops showing it (navigation.js `routeShows`): the route stays visible until the keyframes end, and
-// showing it again cancels them. The projection runs over nodes as the hosts write them, in Chrome's animation clock.
 import { test, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -56,7 +53,6 @@ async function inChrome(test) {
   }
 }
 
-// Bug caught: the covered route is hidden at once (visibility: hidden) and its exit keyframes never show.
 check('a covered route plays its exit animation, then hides', () => inChrome(async (evaluate) => {
   await evaluate("show('b')");
   expect(await evaluate("state('a')")).toEqual({ visibility: '', animation: '200ms linear 0s 1 normal both running leave', running: 1, inert: true });
@@ -66,7 +62,6 @@ check('a covered route plays its exit animation, then hides', () => inChrome(asy
   expect(await evaluate("state('a')")).toEqual({ visibility: 'hidden', animation: '', running: 0, inert: true });
 }), 60000);
 
-// Bug caught: going back before the keyframes end leaves the route faded out (the fill stays) or hidden.
 check('showing a covered route again cancels its exit animation', () => inChrome(async (evaluate) => {
   await evaluate("show('b')");
   await evaluate("show('a')");
@@ -75,7 +70,6 @@ check('showing a covered route again cancels its exit animation', () => inChrome
   expect(await evaluate("state('a').visibility")).toBe('');
 }), 60000);
 
-// Bug caught: a route without the row, or one never shown, plays a stray exit; both hide at once as before.
 check('a route with no exit animation, or never shown, hides at once', () => inChrome(async (evaluate) => {
   expect(await evaluate("state('c')")).toMatchObject({ visibility: 'hidden', running: 0 });
   await evaluate("show('b')");

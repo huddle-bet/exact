@@ -1467,8 +1467,6 @@ fn refusals_from_the_app_diaries_name_the_fix() {
 #[test]
 fn a_refused_build_types_a_for_resource_as_a_list_at_its_call_sites() {
     let app = App::new("for-resource-call-site");
-    // `details` holds one `Item` for each id, so it fits the `Item[]` prop.
-    // The only mistake is `item.nmae` inside `Row`, a child of the root.
     let root = app.write(
         "app.contract",
         "shape Item\n  name: string\ncomponent App\n  resource ids = ids() as shape string[]\n  resource details = detail(id) for id in ids key=id as shape Item\n  view\n    Row(items=details)\ncomponent Row\n  props\n    items: Item[]\n  view\n    for item in items key=item.name\n      text item.nmae\n",
@@ -1480,11 +1478,6 @@ fn a_refused_build_types_a_for_resource_as_a_list_at_its_call_sites() {
     assert_eq!(ids, ["type-unknown-field"], "{errors:#?}");
 }
 
-// Bug (ENG-2579): a refused build dropped every error inside a child whenever
-// a call site was also at fault. A `for` resource passed to a list prop was
-// such a false call-site error, so a real `type-call-arity` in the child (an
-// action prop that is called with no argument, given a one-argument action)
-// stayed hidden until the false error was fixed. The real error must show.
 #[test]
 fn a_child_call_arity_error_shows_beside_a_for_resource_passed_to_a_list_prop() {
     let app = App::new("child-arity-under-for-resource");

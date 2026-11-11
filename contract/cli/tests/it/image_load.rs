@@ -1,8 +1,3 @@
-//! An image's `load` hands an action that takes one more parameter its
-//! `ImageLoadEvent`: the natural size and where the pixels' ink sits. A load
-//! that carries no pixels (an iframe's, or a host that read none) hands the
-//! record with zeros.
-
 use exact_kernel::{Kernel, PropId};
 use exact_runner::{Event, Runner};
 

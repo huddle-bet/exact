@@ -1,5 +1,3 @@
-//! A pager: a horizontal scroller that snaps to its pages, and the fractional page
-//! offset (`scrollLeft / clientWidth`) its `scroll` handler reads while the finger moves.
 use exact_kernel::Kernel;
 use exact_runner::{DataError, DataSource, Event, Runner, ScrollEvent, Value};
 
@@ -32,9 +30,6 @@ fn scroll_to(r: &mut Runner<NoData>, left: f64) {
     r.dispatch(view, Event::Scroll(event)).unwrap();
 }
 
-/// Bug: the handler hearing only the whole-page offset (a rounded or stale value),
-/// so a title that crossfades with the finger would jump at the page edge; or a
-/// pager attribute refused by the compiler.
 #[test]
 fn the_scroll_handler_reads_the_fractional_page_while_the_finger_moves() {
     let mut r = Runner::boot(contract::compile(PAGER).unwrap(), NoData, Kernel::with_monospace(), Default::default(), "/").unwrap();

@@ -34,9 +34,6 @@ final class ModalDetentIOSTests: XCTestCase {
         XCTAssertTrue(ModalHost.detents(nil) { nil }.isEmpty)
     }
 
-    /// `fit-content(50%)` is the content's height capped at half the maximum,
-    /// which a short content does not reach and a tall one stops at. A cap
-    /// that were dropped would let the tall content take the maximum.
     func testAFitContentCapStopsTheContentAtAShareOfTheMaximum() {
         var content: CGFloat? = 200
         let detent = ModalHost.detents("fit-content(50%)") { content }[0]

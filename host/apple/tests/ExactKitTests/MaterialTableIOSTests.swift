@@ -18,9 +18,6 @@ final class MaterialTableIOSTests: XCTestCase {
         XCTAssertEqual(Materials.platform("sidebar")?.standIn, true, "an AppKit material draws a stand-in")
     }
 
-    /// A blur radius is the strength of the effect: half of `fullSigma` draws
-    /// half the style, and a radius past it the whole one. A host that kept
-    /// the fixed `.light` ignores the radius and the node's dark tint.
     func testTheBlurRadiusIsTheStrengthAndTheAppearanceIsTheTint() {
         XCTAssertEqual(Backdrop.fraction(of: [.blur(Backdrop.fullSigma / 2)]), 0.5)
         XCTAssertEqual(Backdrop.fraction(of: [.blur(100)]), 1)
@@ -41,8 +38,6 @@ final class MaterialTableIOSTests: XCTestCase {
         XCTAssertNotNil(view?.effect)
     }
 
-    /// A `mask-image` gradient masks the effect view, the one a stack of
-    /// blurs fades into a progressive blur.
     func testAMaskGradientMasksTheBlur() {
         let p = Presenter()
         let node = NodeView(id: 1, kind: "view", presenter: p)

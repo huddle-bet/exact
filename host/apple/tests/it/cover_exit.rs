@@ -1,7 +1,3 @@
-//! A route a push covers stays mounted, so no exit receipt reaches it. Its
-//! `-exact-exit-animation` plays on the live view as Core Animation specs,
-//! and Back takes them off.
-
 use exact_apple::Host;
 use exact_kernel::MonospaceMeasurer;
 use exact_runner::{DataError, DataSource, Event, Value};
@@ -57,7 +53,6 @@ fn boot(exit: &str) -> Host<NoData> {
     .0
 }
 
-/// The `specs` of the last `animations` op for `id`.
 fn specs(batch: &str, id: u32) -> Option<String> {
     let marker = format!("{{\"op\":\"animations\",\"id\":{id},\"specs\":");
     let at = batch.rfind(&marker)? + marker.len();
@@ -65,7 +60,6 @@ fn specs(batch: &str, id: u32) -> Option<String> {
     Some(batch[at..at + end].to_string())
 }
 
-// Bug caught: the covered route has no exit (the host sends it no specs), so it cuts out.
 #[test]
 fn a_covered_route_plays_its_exit_as_core_animation_specs() {
     let mut host = boot("leave 200ms linear both");
@@ -84,7 +78,6 @@ fn a_covered_route_plays_its_exit_as_core_animation_specs() {
     );
 }
 
-// Bug caught: Back leaves the route faded out (the specs stay, the fill holds opacity 0).
 #[test]
 fn back_takes_the_exit_off_the_route() {
     let mut host = boot("leave 200ms linear both");
@@ -95,7 +88,6 @@ fn back_takes_the_exit_off_the_route() {
     assert_eq!(specs(&popped, home).as_deref(), Some("[]"), "{popped}");
 }
 
-// Bug caught: a route with no exit row gets specs.
 #[test]
 fn a_route_with_no_exit_row_is_left_alone() {
     let mut host = boot("none");

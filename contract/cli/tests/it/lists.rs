@@ -387,8 +387,6 @@ component A
     assert_eq!(e.id, "type-argument", "{e}");
 }
 
-/// `pow` is `Math.pow` through the pinned `libm` (the Huddle ripple's `amp * pow(1 - t, 1.3)`), with JavaScript's
-/// answers where C's `pow` differs: `pow(1, NaN)` and `pow(1, Infinity)` are NaN. It takes two numbers.
 #[test]
 fn pow_is_maths_pow() {
     let src = r#"component A
@@ -422,7 +420,6 @@ fn pow_is_maths_pow() {
             _ => None,
         })
         .unwrap();
-    // The decay's value at t = 0.4 as V8 prints `Math.pow(0.6, 1.3)`.
     assert_eq!(got, "1024 0.514750320266457 0.5 NaN 1 NaN NaN 0 Infinity");
     let e = contract::compile("component A\n  view\n    text pow(2).toString()\n").unwrap_err();
     assert_eq!(e.id, "type-arity", "{e}");

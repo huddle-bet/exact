@@ -1,22 +1,3 @@
-// @exact/model on the web: `exact-model`, a binary glTF (`source`) drawn with WebGL2 in a canvas that
-// fills its box: lit by directional `lights` and an image-based light (`environment`, a KTX 1
-// cubemap as Filament's cmgen writes it; a plain studio when absent), seen by a camera at
-// `distance` or `viewFill`. See ../README.md for every prop; this file is its web side.
-//
-// - A pose prop (`yaw`, `pitch`, `roll`, `modelScale`, `offsetX`, `offsetY`) moves the model to it:
-//   at once when `response` is absent or 0, else on a critically damped spring that settles in
-//   about `response` ms, and `settled` runs when it has.
-// - `tilt` (0..1) turns on the device's tilt: the model leans against the device's pitch and roll
-//   through a spring (`tiltGain`, `tiltMaxDeg`, `tiltStiffness`, `tiltDamping`, `tiltRecenter`).
-//   iOS Safari asks for the motion permission at the first touch.
-// - `sway` (degrees) swings the model gently with period `swayMs`.
-// - `screenNode` names a node (the phone's screen): each frame it moves, the view sends `screen` with the CSS
-//   that lays a `screenWidth` by `screenHeight` box over it (see ../README.md). `leanTo` and `leanBy` lean the aimed
-//   pose toward another, as a drag does, on a quicker spring.
-// - `textures` replace the picture on named nodes; `hiddenNodes` leaves named nodes out; `sheen`
-//   draws moving light bands over the nodes that show a picture.
-// - `load` runs once the model has drawn; `failed` runs with the reason when the model, the light
-//   or a picture cannot be read or WebGL2 is missing.
 import { parseGLB, bounds, rectOf } from './glb.js';
 import { readAsset } from './asset.js';
 import { parseKTX, studioLight } from './ktx.js';
@@ -83,7 +64,7 @@ class ExactModel {
     this.aim = aim;
     this.lean = Math.max(0, Math.min(1, num(p.leanBy, 0)));
     let toward = null;
-    try { const t = JSON.parse(p.leanTo || 'null'); if (t && typeof t === 'object') toward = { yaw: t.yaw * DEG, pitch: t.pitch * DEG, roll: t.roll * DEG, scale: t.scale, x: t.offsetX, y: t.offsetY }; } catch { /* no lean */ }
+    try { const t = JSON.parse(p.leanTo || 'null'); if (t && typeof t === 'object') toward = { yaw: t.yaw * DEG, pitch: t.pitch * DEG, roll: t.roll * DEG, scale: t.scale, x: t.offsetX, y: t.offsetY }; } catch { }
     const aimed = this.lean > 0 && toward ? leanGoal(aim, toward, this.lean) : aim;
     const moved = Object.keys(aimed).some(k => aimed[k] !== this.goal[k]);
     this.goal = aimed;
@@ -160,7 +141,7 @@ class ExactModel {
         const permit = globalThis.DeviceOrientationEvent?.requestPermission;
         if (permit && (await permit.call(globalThis.DeviceOrientationEvent)) !== 'granted') return;
         globalThis.addEventListener('deviceorientation', on);
-      } catch { /* the page may not ask */ }
+      } catch { }
     };
     if (globalThis.DeviceOrientationEvent?.requestPermission) {
       const once = () => { globalThis.removeEventListener('pointerdown', once); ask(); };

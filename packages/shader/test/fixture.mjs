@@ -1,8 +1,3 @@
-// What the web and Apple pixel tests share: the React Native home-screen ripple as its app writes it, two test images,
-// and a CPU reference of that shader built from the ripple's equations (not from the translators), so a GPU picture is
-// checked against the maths rather than against the other host.
-
-// huddle-client apps/mobile/src/onboarding/native-phone/ripple.ts RIPPLE_FIELD and home-screen.tsx WAVE_SOURCE, verbatim.
 export const RIPPLE_FIELD = `
 uniform float2 center;
 uniform float radius;
@@ -42,10 +37,8 @@ half4 main(float2 p) {
 }
 `;
 
-// The values the app passes at a moment of the wave (T.HOME_SLOT's centre, WAVE_SQUIRCLE, WAVE_BAND, WAVE_AMP, WAVE_SPREAD).
 export const UNIFORMS = { center: [258.67, 444], radius: 180, power: 5, band: 96, amp: 34 * Math.pow(0.6, 1.3), spread: 0.025, label: 0.6 };
 
-/** An opaque w by h picture with smooth colour, a hard edge and no symmetry, so a flip, a swap or a shift shows. */
 export function picture(w, h, seed) {
   const out = new Uint8Array(w * h * 4);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -60,7 +53,6 @@ export function picture(w, h, seed) {
 
 const mix = (a, b, t) => a + (b - a) * t;
 
-/** One channel of `img` ({w, h, data}) at box point (x, y) in cover sizing: bilinear, outside the picture 0 (decal). */
 function sample(img, box, x, y, channel) {
   const s = Math.max(box[0] / img.w, box[1] / img.h);
   const ox = (box[0] - img.w * s) / 2, oy = (box[1] - img.h * s) / 2;
@@ -70,7 +62,6 @@ function sample(img, box, x, y, channel) {
   return mix(mix(at(x0, y0), at(x0 + 1, y0), fx), mix(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
 }
 
-/** The ripple's picture, RGBA bytes: `box` in points drawn at `scale` pixels to the point. */
 export function reference({ box, scale, image, huddle, u }) {
   const w = Math.round(box[0] * scale), h = Math.round(box[1] * scale), out = new Uint8Array(w * h * 4);
   const field = (x, y) => Math.pow(Math.pow(Math.abs(x - u.center[0]), u.power) + Math.pow(Math.abs(y - u.center[1]), u.power), 1 / u.power) - u.radius;
@@ -92,7 +83,6 @@ export function reference({ box, scale, image, huddle, u }) {
   return out;
 }
 
-/** How far two RGBA pictures are apart: the largest channel difference, and how many channels differ by more than 1. */
 export function distance(a, b) {
   if (a.length !== b.length) throw new Error(`pictures of ${a.length} and ${b.length} bytes`);
   let max = 0, over = 0;

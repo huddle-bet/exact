@@ -1,16 +1,8 @@
-// @exact/shader on the web: `exact-shader`, a per-pixel shader (`source`, SkSL as sksl.js describes) over `images`
-// in a WebGL2 canvas that fills its box. `uniforms` set the shader's numeric uniforms by name, so state, a timer or a
-// spring in Contract drives them; each change draws once, and nothing draws between changes. See ../README.md.
-//
-// - A shader coordinate is a point of the box, y down, whatever the canvas's pixel density.
-// - `load` runs after the first draw; `failed` runs with the reason (a shader that does not compile, an image that
-//   cannot be read, a uniform the shader does not declare or of the wrong size, no WebGL2), once for each reason.
 import { ShaderRenderer } from './render.js';
 import { placement } from './sksl.js';
 
 const list = text => { try { const v = JSON.parse(text || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
 
-// A file by its app path: the host's asset reader (`context.asset`: a bundled path, an `app:/` file), else the page's own URL space.
 async function readAsset(implementation, base, path) {
   if (implementation?.asset) {
     const bytes = await implementation.asset(path);

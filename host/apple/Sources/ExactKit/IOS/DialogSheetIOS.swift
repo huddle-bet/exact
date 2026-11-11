@@ -22,8 +22,6 @@ final class DialogSheetController: UIViewController, UIGestureRecognizerDelegate
     let scroller = ScrollView()
     /// The dialog's box as the kernel laid it out: the sheet's height.
     private(set) var box = CGSize.zero
-    /// The share of the sheet's maximum its height stops at, from the
-    /// dialog's `navigationDetent="fit-content(50%)"`; 0 for the maximum.
     var heightShare: Double = 0
     private var backdropTap: UITapGestureRecognizer?
     #if !os(tvOS)

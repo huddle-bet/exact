@@ -1,8 +1,3 @@
-//! `exact-shader`, the package view of `@exact/shader`, through its real `exact.json`: every prop it declares
-//! compiles on the tag and reaches the implementation as JSON under its name, the uniforms follow the state a
-//! frame timer writes, a prop is held to its declared type, and the events it sends run their handlers. The app is
-//! the Huddle onboarding's home-screen ripple.
-
 use exact_kernel::PropId;
 use exact_runner::{Event, Runner, Value};
 use serde_json::json;
@@ -10,7 +5,6 @@ use std::path::PathBuf;
 
 const INTERFACE: &str = include_str!("../../../../packages/shader/exact.json");
 
-/// The ripple's declarations; the body is not the contract's business.
 const SOURCE: &str = "uniform shader image;\\nuniform shader huddle;\\nuniform float2 center;\\nuniform float radius;\\nuniform float power;\\nuniform float band;\\nuniform float amp;\\nuniform float spread;\\nuniform float label;\\nuniform float t;\\nhalf4 main(float2 p) { return half4(1.0); }";
 
 const APP: &str = r#"use ShaderImage, ShaderUniform from "@exact/shader"
@@ -105,7 +99,6 @@ fn props(r: &Runner<NoData>) -> serde_json::Value {
     serde_json::from_str(node.props.str(PropId::NativeViewProps).unwrap()).unwrap()
 }
 
-/// The uniforms the view was given, by name.
 fn uniforms(r: &Runner<NoData>) -> std::collections::BTreeMap<String, Vec<f64>> {
     let p = props(r);
     let list: Vec<serde_json::Value> =
@@ -125,9 +118,6 @@ fn uniforms(r: &Runner<NoData>) -> std::collections::BTreeMap<String, Vec<f64>> 
         .collect()
 }
 
-/// A declared prop named like a known attribute would bind to the box and never reach the implementation:
-/// compiling every prop is the catch, and the JSON names each. The shapes' fields (`name`, `value`, `sizing`,
-/// `tile`) must survive as written too.
 #[test]
 fn every_declared_prop_reaches_the_view_under_its_name() {
     let r = boot(&App::new("props", APP));
@@ -167,8 +157,6 @@ fn every_declared_prop_reaches_the_view_under_its_name() {
     assert_eq!(u["power"], [5.0]);
 }
 
-/// A uniform that stays at its first value as the timer runs: the wave would sit still. A frame timer drives the
-/// radius from `performanceNow()`, and the radius is the eased progress, so it also needs the easing right.
 #[test]
 fn the_uniforms_follow_the_state_a_frame_timer_writes() {
     let mut r = boot(&App::new("timer", APP));
@@ -188,7 +176,6 @@ fn the_uniforms_follow_the_state_a_frame_timer_writes() {
     );
 }
 
-/// An easing that is not RN's bezier(0.3, 0.3, 0.45, 1) starts or ends the wave off its time.
 #[test]
 fn the_bezier_ease_a_contract_fn_writes_matches_the_curve() {
     let mut r = boot(&App::new("ease", APP));
@@ -239,7 +226,6 @@ fn a_prop_is_held_to_its_declared_type() {
     }
 }
 
-/// `load` is the box's, `failed` the package's: each runs its action, `failed` with the reason sent.
 #[test]
 fn load_and_failed_run_their_handlers() {
     let mut r = boot(&App::new("events", APP));

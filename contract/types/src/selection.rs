@@ -79,7 +79,6 @@ pub fn event_record(attr: &str) -> Option<&'static str> {
         "toggle" => Some("ToggleEvent"),
         // the history swipe the host tracks.
         "historyswipe" => Some("HistorySwipeEvent"),
-        // An image's pixels as it loaded (an iframe's load reports zeros).
         "load" => Some("ImageLoadEvent"),
         "press" => Some("MouseEvent"),
         "copy" | "cut" | "paste" => Some("ClipboardEvent"),
@@ -238,18 +237,6 @@ pub(super) fn declare(shapes: &mut Shapes) {
             ("clientY".into(), Ty::Number),
         ],
     );
-    // An image's `load`, in the order the runner's `ImageLoad::value` builds
-    // it: HTML's `naturalWidth` and `naturalHeight`, then where its ink sits,
-    // as fractions of the image read with its longer side scaled to at most
-    // 150 pixels. Ink is a pixel whose alpha is at least 24 of 255:
-    // `inkLeft`, `inkTop`, `inkRight` and `inkBottom` bound it, and
-    // `inkFill` is the area of its convex hull over the area of that box.
-    // Solid is a pixel whose alpha is above 128: `solidTop` is its first
-    // row, and `footLeft` and `footRight` bound it on the row at 98% of the
-    // height. The fractions are 0
-    // where the host could not read the pixels (another origin without CORS
-    // on the web, an iframe, a host that does not read them) or the image
-    // holds no ink.
     shapes.map.insert(
         "ImageLoadEvent".into(),
         vec![

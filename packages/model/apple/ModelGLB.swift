@@ -1,6 +1,3 @@
-// A binary glTF 2.0 file read into plain arrays, as web/glb.js reads it: the scene's mesh
-// primitives with their world matrices, accessors as packed arrays, embedded images as bytes. No
-// skins, morphs, animations or sparse accessors.
 import Foundation
 import simd
 
@@ -40,7 +37,6 @@ struct GLB {
     var accessors: [[String: Any]] { array("accessors") }
     var samplers: [[String: Any]] { array("samplers") }
 
-    /// Accessor `index` as packed floats (a normalized or integer type converted).
     func floats(_ index: Int) throws -> (values: [Float], width: Int) {
         let a = accessors[index]
         guard a["sparse"] == nil else { throw ModelRefusal("a sparse accessor is not read") }
@@ -62,7 +58,6 @@ struct GLB {
         return (out, width)
     }
 
-    /// Accessor `index` as indices.
     func indices(_ index: Int) throws -> [UInt32] {
         let a = accessors[index]
         let count = a["count"] as? Int ?? 0
@@ -86,7 +81,6 @@ struct GLB {
         return out
     }
 
-    /// The bytes of image `index`.
     func imageData(_ index: Int) throws -> Data {
         guard let view = images[index]["bufferView"] as? Int else { throw ModelRefusal("an image that is a uri is not read") }
         let bv = array("bufferViews")[view]
@@ -115,7 +109,6 @@ struct GLB {
         return move * rot * scale
     }
 
-    /// Every mesh primitive of the default scene.
     func drawables() -> [Drawable] {
         var out: [Drawable] = []
         func walk(_ index: Int, _ parent: simd_float4x4, _ names: [String]) {
@@ -140,7 +133,6 @@ struct GLB {
         (meshes[d.mesh]["primitives"] as? [[String: Any]] ?? [])[d.primitive]
     }
 
-    /// The scene's bounds after the nodes' transforms, from the accessors' bounding boxes.
     func bounds() -> (min: SIMD3<Float>, max: SIMD3<Float>) {
         var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
         for d in drawables() {
@@ -156,8 +148,6 @@ struct GLB {
         return (lo, hi)
     }
 
-    /// The flat rectangle of the surfaces under node `name`, before any pose: the centre of their bounds, and the
-    /// half width (x) and half height (y), facing +z. Nil when no surface is named so.
     func rectOf(_ name: String) -> ModelMotion.Rect? {
         var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
         for d in drawables() where d.chain.contains(name) {

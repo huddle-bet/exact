@@ -1,10 +1,3 @@
-// @exact/shader on Apple: `exact-shader`, a per-pixel shader (`source`, SkSL as ShaderSkSL.swift describes) over
-// `images` in a Metal view that fills its box. `uniforms` set the shader's numeric uniforms by name, so state, a
-// timer or a spring in Contract drives them; each change draws once, and nothing draws between changes. See ../README.md.
-// - A shader coordinate is a point of the box, y down, whatever the screen's scale.
-// - An image path is read through the host's asset reader (`context.asset`: the running generation's file, else the
-//   bundle's), else from EXACT_ASSETS or the bundle under the agent; an `app:/` path from the session's files.
-// - `load` runs after the first draw; `failed` runs with the reason, once for each reason.
 import ExactPackage
 import Foundation
 import Metal

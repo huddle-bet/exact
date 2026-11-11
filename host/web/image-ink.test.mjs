@@ -1,5 +1,3 @@
-// The web's image ink must equal the Apple hosts' (ImageInkTests.swift): the same shapes give the same numbers. The bug
-// each catches: a cut-out read as full frame, or the reverse, which draws a plate where the app wants none.
 import { expect, test } from "bun:test";
 import { measure } from "./image-ink.js";
 

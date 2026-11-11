@@ -1,4 +1,3 @@
-// The WebGL2 side of exact-shader: one full-canvas triangle whose fragment shader is the app's, translated by sksl.js.
 import { toGLSL, parse } from './sksl.js';
 
 const VERTEX = `#version 300 es
@@ -26,12 +25,10 @@ export class ShaderRenderer {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
 
-  /** Make `bitmap` (premultiplied, top row first) the image `name`. */
   setImage(name, bitmap) {
     const gl = this.gl;
     const texture = this.textures.get(name)?.texture ?? gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
-    // No mips: texelFetch on a texture whose default minification filter wants them reads zero.
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
@@ -40,7 +37,6 @@ export class ShaderRenderer {
 
   size(name) { const t = this.textures.get(name); return t ? [t.w, t.h] : null; }
 
-  /** Draw: `box` in points, `placements` and `tiles` by image name, `values` by uniform name (arrays of floats). */
   draw({ box, placements, tiles, values }) {
     const gl = this.gl, canvas = gl.canvas;
     gl.viewport(0, 0, canvas.width, canvas.height);

@@ -60,7 +60,6 @@ pub fn sqrt(x: f64) -> f64 {
 mod tests {
     use super::*;
 
-    /// `Math.pow`'s answers: C's `pow(1, NaN)` and `pow(-1, Infinity)` are 1, JavaScript's are NaN.
     #[test]
     fn pow_answers_as_math_pow_does() {
         assert_eq!(pow(2.0, 10.0), 1024.0);

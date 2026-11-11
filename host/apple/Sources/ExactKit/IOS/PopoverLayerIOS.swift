@@ -14,9 +14,6 @@ extension MenuHost {
     }
 }
 
-/// A transparent window above everything the app presents (sheets and
-/// alerts are presented in the app's window), for a popover that says
-/// `popoverLevel="window"`. It takes a touch only where a popover is.
 final class TopOverlayWindow: UIWindow {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
@@ -24,7 +21,6 @@ final class TopOverlayWindow: UIWindow {
     }
 }
 
-/// The overlay window's controller: it supports what the app's lock allows.
 final class TopOverlayController: UIViewController {
     weak var presenter: Presenter?
     override func loadView() {
@@ -40,8 +36,6 @@ final class TopOverlayController: UIViewController {
 }
 
 extension MenuHost {
-    /// The overlay window's view, made when first wanted, in the scene the
-    /// page is in; nil with the page out of a window.
     func topOverlayView() -> UIView? {
         guard let presenter, let scene = presenter.viewport.window?.windowScene else { return nil }
         if let window = overlayWindow, window.windowScene === scene {
@@ -59,7 +53,6 @@ extension MenuHost {
         return controller.view
     }
 
-    /// Hides the overlay window once no popover is in it.
     func releaseTopOverlay() {
         guard let window = overlayWindow, let view = window.rootViewController?.viewIfLoaded else { return }
         if !view.subviews.contains(where: { $0 is PopoverLayer }) { window.isHidden = true }
@@ -99,7 +92,6 @@ final class PopoverLayer: UIView {
         defer { mounting = false }
         var host: UIView = presenter.modals.coordinateView ?? presenter.documentHost
         sheet = nil
-        // `popoverLevel="window"`: the window above the sheets, over the page's area.
         let overlay = (popover as? NodeView)?.props["popoverLevel"] == "window" ? presenter.menus.topOverlayView() : nil
         if let overlay { host = overlay }
         // A sheet hosts it only while its dialog still holds the popover: a move out of it leaves the sheet.

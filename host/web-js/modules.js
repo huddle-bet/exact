@@ -422,8 +422,6 @@ export function modules(rows, bound = {}, views = {}, events = {}) {
     if (!bound[extension]) return null;
     if (!loaded.has(extension)) loaded.set(extension, chunk(extension).then(m => {
       const context = { changed: key => byKey.has(key) && reask([key]), agent: clock.agent, config: m.config ?? {}, now: () => { time(); return clock.now; }, foreground: shown, log: say, tracks, files, audioSession,
-        // An app file's bytes by its path: an `app:/` file from the store, any other path from the page's own files
-        // (the app's `assets`), as the page's `fetch` finds it. Null where it has none.
         asset: async path => {
           if (typeof path !== "string" || path === "") return null;
           if (path.startsWith("app:/")) { const bytes = await files.read(path).catch(() => null); return bytes ?? null; }

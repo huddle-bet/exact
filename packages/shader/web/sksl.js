@@ -1,12 +1,3 @@
-// The shader language of exact-shader: the subset of Skia's SkSL that React Native Skia runtime effects use, so a
-// `RuntimeEffect.Make` source runs as written. SkSL's types are Metal's (`float2`, `half4`), so Apple translates it to
-// MSL (apple/ShaderSkSL.swift) and this file translates it to GLSL ES 3.00. Both read the same declarations:
-//
-//   uniform shader name;     an image, sampled with name.eval(p) at a point of the box (decal or clamp, bilinear)
-//   uniform float|float2|float3|float4 name;    (half and half2..half4 likewise) a value the app sets by name
-//   half4 main(float2 p)     the colour of the pixel whose centre is p, in the box's points, y down; premultiplied
-//
-// `half` is `float` on both hosts. Anything else is refused by name; `uniform` takes one name per line.
 const FLOATS = { float: 1, float2: 2, float3: 3, float4: 4, half: 1, half2: 2, half3: 3, half4: 4 };
 
 /** The declarations of `source`: its images, its numeric uniforms with their sizes, and the body left over. */

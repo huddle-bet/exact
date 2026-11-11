@@ -1,7 +1,3 @@
-// The Apple side of exact-shader on this Mac's GPU: ShaderSkSL.swift's Metal translation and ShaderRender.swift's
-// pipeline, built with swiftc and run on test/main.swift, against fixture.mjs's CPU reference and the web's
-// declarations; plus a typecheck of the view and the package against the iOS simulator SDK. Skipped where there is no swiftc.
-// What each test catches is named above it. Run: bun test packages/shader/test
 import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -39,14 +35,12 @@ function render({ source = WAVE_SOURCE, box, scale, u, tile = "decal", extra = {
   return JSON.parse(out.stdout);
 }
 
-// A Metal translation that keeps `max(float2, float)` or a `half` the GPU compiler refuses fails here, naming the line.
 test.skipIf(!swiftc)("the ripple's source, as written for Skia, compiles for Metal and fills every pixel", () => {
   const out = render({ box: [420, 912], scale: 1, u: UNIFORMS });
   expect(out.problems).toEqual([]);
   expect(Buffer.from(out.rgba, "base64").length).toBe(420 * 912 * 4);
 });
 
-// A y flip, a red/blue swap, a decal that clamps, a shift in pixels instead of points or a wrong mix shows as many channels off by more than 1.
 test.skipIf(!swiftc)("the Metal view draws the home ripple as its equations say", () => {
   const got = Uint8Array.from(Buffer.from(render({ box: [420, 912], scale: 1, u: UNIFORMS }).rgba, "base64"));
   const d = distance(got, reference({ box: [420, 912], scale: 1, ...pics, u: UNIFORMS }));
@@ -54,7 +48,6 @@ test.skipIf(!swiftc)("the Metal view draws the home ripple as its equations say"
   expect(d.share).toBeLessThan(0.001);
 });
 
-// A shader coordinate in drawable pixels draws the wave at twice the radius on a 2x screen.
 test.skipIf(!swiftc)("a shader coordinate is a point of the box, whatever the screen's scale", () => {
   const u = { ...UNIFORMS, center: [129.335, 222], radius: 90, band: 48, amp: UNIFORMS.amp / 2 };
   const got = Uint8Array.from(Buffer.from(render({ box: [210, 456], scale: 2, u }).rgba, "base64"));
@@ -63,13 +56,11 @@ test.skipIf(!swiftc)("a shader coordinate is a point of the box, whatever the sc
   expect(d.share).toBeLessThan(0.001);
 });
 
-// A mistyped uniform name that is ignored in silence leaves the wave still while the app's timer runs.
 test.skipIf(!swiftc)("an undeclared uniform and one of the wrong size are reported", () => {
   const out = render({ box: [420, 912], scale: 1, u: { ...UNIFORMS, radus: 3, center: [1, 2, 3] } });
   expect(out.problems).toEqual(["uniform `center` takes 2 finite numbers", "uniform `radus` is not declared by the shader"]);
 });
 
-// A shader that Metal refuses must say why (the app hears it as `failed`), not draw nothing.
 test.skipIf(!swiftc)("a shader that does not compile is refused with the compiler's reason", () => {
   const out = spawnSync(exe, [(() => { const p = resolve(dir, "bad.json"); writeFileSync(p, JSON.stringify({ source: "half4 main(float2 p) { return half4(nope); }", width: 4, height: 4, box: [4, 4], images: [], uniforms: [] })); return p; })()], { encoding: "utf8" });
   expect(out.status).not.toBe(0);
@@ -77,7 +68,6 @@ test.skipIf(!swiftc)("a shader that does not compile is refused with the compile
   expect(out.stderr).toContain("nope");
 });
 
-// Two parsers that disagree on the declarations put a uniform's value in another uniform's slot on one host only.
 test.skipIf(!swiftc)("Apple reads the same declarations as the web, and the same refusals", () => {
   const msl = JSON.parse(spawnSync(exe, [(() => { const p = resolve(dir, "msl.json"); writeFileSync(p, JSON.stringify({ source: WAVE_SOURCE, msl: true })); return p; })()], { encoding: "utf8" }).stdout).msl;
   const d = parse(WAVE_SOURCE);
@@ -92,7 +82,6 @@ test.skipIf(!swiftc)("Apple reads the same declarations as the web, and the same
   }
 });
 
-// A Swift that builds for the Mac and not for iOS (an AppKit-only call in the view), or a view that stops conforming to ExactPackageView.
 test.skipIf(!swiftc)("the package typechecks against the iOS simulator SDK and the macOS SDK", () => {
   const root = resolve(here, "../../..");
   for (const [sdk, triple] of [["iphonesimulator", "arm64-apple-ios17.0-simulator"], ["macosx", "arm64-apple-macos14.0"]]) {

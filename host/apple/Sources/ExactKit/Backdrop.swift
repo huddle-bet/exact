@@ -18,15 +18,6 @@
 // its own, which the mask would clip (`Mac/BackdropShadowMac.swift`).
 //
 // iOS has no public arbitrary-radius backdrop blur (`backgroundFilters` is
-// macOS-only and `CABackdropLayer` is private), so a blur is the node's
-// material view under its children, at the strength the radius asks: a
-// `UIViewPropertyAnimator` held part-way through the change to the blur
-// effect (the technique expo-blur's `intensity` uses), the fraction being
-// the radius over `Backdrop.fullSigma`, the radius at which the style is
-// drawn whole. The style is the node's appearance: `.light`, or `.dark` for
-// a node drawn dark (a dark tint). A `mask-image` gradient fades the effect
-// view (`BoxMaskIOS.swift`), so stacked nodes make a progressive blur.
-// A declared deviation with its measured bound. `backgroundMaterial` stays the host-policy
 // spelling and wins on a node that has both, on every host.
 import CExact
 import CoreGraphics
@@ -232,11 +223,9 @@ extension NodeView {
 /// The system material approximation, remembering its authored functions.
 final class BackdropEffectView: UIVisualEffectView {
     var operations: [BackdropOperation] = []
-    /// What is drawn now; nil while hidden or not yet drawn.
     private(set) var drawn: (style: UIBlurEffect.Style, fraction: CGFloat)?
     private var animator: UIViewPropertyAnimator?
 
-    /// The blur effect in `style`, `fraction` of the way from none to whole.
     func show(style: UIBlurEffect.Style, fraction: CGFloat) {
         release()
         drawn = (style, fraction)
@@ -248,13 +237,11 @@ final class BackdropEffectView: UIVisualEffectView {
         self.animator = animator
     }
 
-    /// No effect, as `display: none` or `visibility: hidden` ask.
     func hide() {
         release()
         drawn = nil
     }
 
-    /// A paused animator must be stopped and finished before it goes.
     private func release() {
         if let animator {
             animator.stopAnimation(false)
@@ -275,12 +262,10 @@ extension NodeView {
         return view.operations != backdropOperations || view.drawn?.style != want.style || view.drawn?.fraction != want.fraction
     }
 
-    /// The style and strength this node's backdrop operations ask for.
     var backdropDraw: (style: UIBlurEffect.Style, fraction: CGFloat) {
         (Backdrop.style(dark: drawsDark), Backdrop.fraction(of: backdropOperations))
     }
 
-    /// Hides the effect of a material view, whichever kind it is.
     func hideMaterialEffect() {
         if let view = materialView as? BackdropEffectView { view.hide() } else { materialView?.effect = nil }
     }
@@ -309,7 +294,6 @@ extension NodeView {
         #endif
     }
 
-    /// Draws the backdrop blur; false when this is not a backdrop.
     func drawBackdrop() -> Bool {
         guard let view = materialView as? BackdropEffectView else { return false }
         view.operations = backdropOperations
@@ -327,15 +311,10 @@ enum Backdrop {
     /// tinted glass included. It does not follow the appearance.
     static var material: UIBlurEffect.Style { .light }
 
-    /// The radius, in points, at which the style is drawn whole: the system
-    /// styles blur with a Gaussian of about 20 points on the simulator.
     static let fullSigma: CGFloat = 20
 
-    /// The style for a node drawn `dark` or not.
     static func style(dark: Bool) -> UIBlurEffect.Style { dark ? .dark : material }
 
-    /// How much of the style `operations` draw: the first `blur()`'s radius
-    /// over `fullSigma`, at most 1; a backdrop with no `blur()` draws it whole.
     static func fraction(of operations: [BackdropOperation]) -> CGFloat {
         for case .blur(let sigma) in operations { return min(1, max(0, sigma / fullSigma)) }
         return 1

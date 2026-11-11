@@ -1,23 +1,3 @@
-// @exact/model on Apple: `exact-model`, a binary glTF (`source`) in a SceneKit view that fills its
-// box, lit by directional `lights` and an image-based light (`environment`, a KTX 1 cubemap as
-// Filament's cmgen writes it; a plain studio when absent). See ../README.md for every prop.
-//
-// - The glTF is read here (ModelGLB.swift) into SCNGeometry and physically based SCNMaterials:
-//   base colour, metallic-roughness, normal, occlusion, emissive, alpha blend, a clearcoat layer
-//   (KHR_materials_clearcoat), and KHR_materials_unlit as a constant material.
-// - A pose prop moves the model at once, or on a critically damped spring when `response` is set;
-//   `settled` runs when it arrives. `tilt` leans the model against the device's pitch and roll from
-//   Core Motion (iOS), `sway` swings it gently. The numbers are ModelMotion.swift's.
-// - `textures` replace the picture of named nodes, `hiddenNodes` leaves nodes out, `sheen` draws
-//   moving light bands over the nodes that show a picture (a surface shader modifier).
-// - An asset path (`assets/phone.glb`) is read through the host's asset reader (`context.asset`: the
-//   running generation's file, else the bundle's), else from the bundle or EXACT_ASSETS under the agent;
-//   an `app:/` path from the session's files; an http(s) URL is fetched.
-// - `screenNode` makes the view send `screen` with the CSS that lays a box over that node (see
-//   ../README.md); `leanTo` and `leanBy` lean the aimed pose toward another, as a drag does.
-// - Light units: a light's `intensity` is irradiance in the scene's own units (white diffuse shows
-//   intensity / pi); SceneKit's lumens are taken as 1000 for a radiance of 1, so a light is set at
-//   intensity * 1000 / pi, and `ambient` scales the environment as it is.
 import CoreMotion
 import ExactPackage
 import Foundation
@@ -71,7 +51,7 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
     private var lightNodes: [SCNNode] = []
     private var props: [String: String] = [:]
     private var pose = [Double](repeating: 0, count: 6), velocity = [Double](repeating: 0, count: 6)
-    private var goal = [Double](repeating: 0, count: 6)   // yaw, pitch, roll (radians), scale, x, y
+    private var goal = [Double](repeating: 0, count: 6)
     private var speed = 0.0
     private var screenRect: ModelMotion.Rect?
     private var screenFor = ""
@@ -165,8 +145,6 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         scn.delegate = nil
         scn.isPlaying = false
     }
-
-    // MARK: loading
 
     private func fail(_ message: String) { events.emit("failed", [message]) }
 
@@ -311,8 +289,6 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         #endif
     }
 
-    // MARK: environment
-
     private func setEnvironment(_ data: Data?) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw ModelRefusal("no Metal device") }
         let light = try data.map { try KTXLight($0) } ?? KTXLight.studio()
@@ -328,8 +304,6 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         }
         scene.lightingEnvironment.contents = texture
     }
-
-    // MARK: lights, nodes
 
     private func applyLights() {
         lightNodes.forEach { $0.removeFromParentNode() }
@@ -403,8 +377,6 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
     _surface.diffuse.rgb = rgb;
     """
 
-    // MARK: motion
-
     private func updateTiltSensor() {
         #if os(iOS)
         if tiltMix > 0, motion.isDeviceMotionAvailable {
@@ -455,7 +427,6 @@ final class ModelView: NSObject, ExactPackageView, SCNSceneRendererDelegate {
         return (yaw, pitch)
     }
 
-    /// Sends `screen` when the CSS that lays a box over `screenNode` changed (web/motion.js `screenPlacement`).
     private func reportScreen(yaw: Double, pitch: Double) {
         guard let name = props["screenNode"], !name.isEmpty, let doc else { return }
         if screenFor != name { screenFor = name; screenRect = doc.rectOf(name) }

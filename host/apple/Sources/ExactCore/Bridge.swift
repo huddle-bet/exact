@@ -572,7 +572,6 @@ package final class Runtime {
         }
     }
     package func load(_ view: UInt32, now: Double) -> Batch { on { read(exact_dispatch(rt, view, 8, 0, now)) } }
-    /// An image's `load` with its `ImageLoadEvent` (`ImageInk.payload`).
     package func load(_ view: UInt32, image payload: String, now: Double) -> Batch {
         on { read(exact_dispatch(rt, view, 8, write(payload), now)) }
     }

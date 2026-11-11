@@ -3,9 +3,6 @@ import UIKit
 import XCTest
 @testable import ExactKit
 
-/// The window a `popoverLevel="window"` popover paints in is transparent: it
-/// takes a touch only where a popover is, so the page and its sheets beneath
-/// keep every other touch.
 final class TopOverlayIOSTests: XCTestCase {
     func testTheOverlayWindowTakesATouchOnlyWhereAPopoverIs() {
         let window = TopOverlayWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))

@@ -1,7 +1,3 @@
-// `exact-model`'s WebGL2 drawing: a glTF scene lit as Filament lights it: GGX specular and
-// Lambert diffuse under directional lights, the diffuse and specular of an image-based light, a
-// clearcoat layer, KHR_materials_unlit, blended materials drawn back to front, ACES tone mapping
-// for lit surfaces. Unlit surfaces (a screen's picture) are written as they are.
 import { drawables, imageBlob, readAccessor, multiply } from './glb.js';
 import { DEG } from './motion.js';
 
@@ -136,7 +132,6 @@ function normalMatrix(m) {
   const [a, b, c, d, e, f, g, h, i] = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]];
   const A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
   const det = a * A + b * B + c * C || 1;
-  // The inverse transpose: the cofactors over the determinant.
   return [A / det, B / det, C / det, (c * h - b * i) / det, (a * i - c * g) / det, (b * g - a * h) / det, (b * f - c * e) / det, (c * d - a * f) / det, (a * e - b * d) / det];
 }
 
@@ -258,7 +253,6 @@ export class ModelRenderer {
     return t;
   }
 
-  /** A picture over the base colour of every surface of node `name` (and of its children). */
   setPicture(name, bitmap) {
     const had = this.overrides.get(name);
     this.overrides.set(name, this.upload(bitmap, true, { wrapS: 33071, wrapT: 33071 }, had ?? null));
@@ -289,8 +283,6 @@ export class ModelRenderer {
     this.sh = light.sh.flat();
   }
 
-  /** One frame. `scene`: { pose (matrix), fov, distance, lights: [{direction, color}], ambient,
-   * hidden: Set, sheen: { bands: [[along, width, peak]], weight, wu } }. */
   draw(scene) {
     const gl = this.gl, { canvas } = this;
     gl.viewport(0, 0, canvas.width, canvas.height);

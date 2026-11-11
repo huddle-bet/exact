@@ -77,7 +77,6 @@ pub struct ImageLoad {
 }
 
 impl ImageLoad {
-    /// ABI kind 8's payload: the ten numbers, comma-separated.
     fn parse(payload: &str) -> Option<Self> {
         let mut fields = [0.0; 10];
         let mut parts = payload.split(',');
@@ -91,7 +90,6 @@ impl ImageLoad {
         parts.next().is_none().then_some(Self { fields })
     }
 
-    /// The `ImageLoadEvent` record, its fields in the compiler's order.
     pub(super) fn value(&self) -> Value {
         Value::record(self.fields.iter().map(|n| Value::Number(*n)).collect())
     }

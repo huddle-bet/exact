@@ -1,6 +1,3 @@
-// An image-based light as Filament's cmgen writes it: a KTX 1 cubemap of R11G11B10F texels, its mips
-// prefiltered by roughness. SceneKit filters and integrates the cubemap itself, so the file's sh
-// entry is not read here (the web reads it). Foundation only.
 import Foundation
 
 struct KTXLight {
@@ -36,7 +33,6 @@ struct KTXLight {
 
     private init(size: Int, mips: [Mip]) { self.size = size; self.mips = mips }
 
-    /// A plain studio when the app names no light: a grey room with a brighter sky and a soft window.
     static func studio(size: Int = 32) -> KTXLight {
         func face(_ f: Int, _ u: Double, _ v: Double) -> [Double] {
             [[1, -v, -u], [-1, -v, u], [u, 1, v], [u, -1, -v], [u, -v, 1], [-u, -v, -1]][f]
@@ -76,7 +72,6 @@ struct KTXLight {
     }
 }
 
-/// An unsigned float of `eb` exponent and `mb` mantissa bits, as R11G11B10F holds each channel.
 func packFloat(_ value: Double, _ eb: Int, _ mb: Int) -> UInt32 {
     guard value > 0 else { return 0 }
     let bits = Float(value).bitPattern

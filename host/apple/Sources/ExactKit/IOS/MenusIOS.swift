@@ -69,7 +69,6 @@ final class MenuHost {
     var nativeConfirmation: NodeView? { confirmation?.finishing == false ? confirmation?.popover : pendingConfirmations.first?.popover }
     /// How many popovers the agent has opened: each one's place in the stack.
     private var opened = 0
-    /// The window above the sheets that holds `popoverLevel="window"` popovers (PopoverLayerIOS.swift).
     var overlayWindow: TopOverlayWindow?
     private final class Lifted {
         var placement = PositionArea.History()

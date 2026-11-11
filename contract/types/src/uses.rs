@@ -88,7 +88,6 @@ fn provisional_scope(c: &Component, types: &Types, routes: bool) -> Scope {
             .iter()
             .map(|r| {
                 let t = resolve(Some(&r.shape));
-                // A `for` resource is a list of its shape, as in `component.rs`.
                 if r.each.is_some() && t != Ty::Unknown {
                     Ty::List(Box::new(t))
                 } else {

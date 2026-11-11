@@ -1,24 +1,15 @@
 import CoreGraphics
 
-/// What an image's pixels hold, for its `load`'s `ImageLoadEvent`
-/// (`contract/types/src/selection.rs`): read on a copy whose longer side is
-/// at most `maxSide` pixels, sampled nearest-neighbour, by alpha alone.
 enum ImageInk {
     static let maxSide = 150
-    /// Ink: alpha at least 24 of 255. Solid: alpha above 128.
     static let ink: UInt8 = 24, solid: UInt8 = 128
-    /// The foot row, as a fraction of the height.
     static let footRow = 0.98
 
-    /// ABI kind 8's payload: `naturalWidth,naturalHeight,inkLeft,inkTop,
-    /// inkRight,inkBottom,inkFill,solidTop,footLeft,footRight`, the fractions
-    /// 0 when the image holds no ink.
     static func payload(_ image: CGImage, natural: CGSize) -> String {
         let fields = [Double(natural.width), Double(natural.height)] + (measure(image) ?? Array(repeating: 0, count: 8))
         return fields.map { $0 == $0.rounded() ? String(Int($0)) : String($0) }.joined(separator: ",")
     }
 
-    /// The eight fractions, or nil where the image has no ink or cannot be drawn.
     static func measure(_ image: CGImage) -> [Double]? {
         let k = min(1, Double(maxSide) / Double(max(image.width, image.height, 1)))
         let w = max(1, Int((Double(image.width) * k).rounded())), h = max(1, Int((Double(image.height) * k).rounded()))
@@ -31,7 +22,6 @@ enum ImageInk {
             return true
         }
         guard drawn else { return nil }
-        // A bitmap context's rows run bottom up in user space but sit top down in memory.
         let a = { (x: Int, y: Int) in alpha[y * w + x] }
         var x0 = w, y0 = h, x1 = -1, y1 = -1
         var rows: [(y: Int, first: Int, last: Int)] = []
@@ -62,7 +52,6 @@ enum ImageInk {
                 r4(min(1, Double(y1 + 1) / Double(h))), fill, r4(solidTop), r4(footLeft), r4(footRight)]
     }
 
-    /// The area of the points' convex hull (Andrew's monotone chain).
     static func hullArea(_ points: [(Double, Double)]) -> Double {
         guard points.count >= 3 else { return 0 }
         let sorted = points.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }

@@ -1,8 +1,3 @@
-// A binary glTF 2.0 file read into plain arrays: the scene's nodes with their world matrices, each
-// mesh primitive's attributes and indices, and the document's materials, textures and images.
-// What `exact-model` draws: triangle meshes with POSITION, NORMAL, TEXCOORD_0; no skins, morphs,
-// animations or sparse accessors.
-
 const MAGIC = 0x46546c67;
 const COMPONENT = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array };
 const WIDTH = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
@@ -47,7 +42,6 @@ export function imageBlob({ json, bin }, index) {
   return new Blob([new Uint8Array(bin, bv.byteOffset ?? 0, bv.byteLength)], { type: image.mimeType });
 }
 
-// Column-major 4x4 matrices.
 export const identity = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 export function multiply(a, b) {
   const out = new Array(16);

@@ -16,7 +16,6 @@ export const HOST_WEB_GLUE = [
   'collection-glue.js', 'image-glue.js', 'canvas2d-glue.js',
   // An iframe's navigation records and commands (commands.js, rt.js `onFrameNavigation`).
   'frame-navigation.js', 'frame-messages.js',
-  // An image's `load` record, read from its pixels (rt.js `imageEvent`).
   'image-ink.js',
   // Sign-in, storage, request bodies, injected faults and the local network's spaces (ts-data.js, auth.js, admission.js, agent.js, modules.js).
   'auth-glue.js', 'storage-environment.js', 'http-body.js', 'faults.js', 'address-space.js',

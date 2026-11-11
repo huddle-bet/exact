@@ -460,16 +460,12 @@ final class ModalHost: NSObject, UIAdaptivePresentationControllerDelegate {
         return kept
     }
 
-    /// A `fit-content` detent's height: the content's, up to `share` percent
-    /// of the sheet's maximum (0: up to the maximum); the cap itself before
-    /// the content is measured.
     static func fitHeight(content: CGFloat?, maximum: CGFloat, share: Double) -> CGFloat {
         let cap = share > 0 ? maximum * CGFloat(share) / 100 : maximum
         guard let content, content > 0 else { return cap }
         return min(content.rounded(.up), cap)
     }
 
-    /// The cap of a lone `fit-content(P%)` word: P, else 0 (no cap).
     static func fitShare(_ value: String?) -> Double {
         keptDetents(value, refused: nil).first { $0.kind == .content }?.height ?? 0
     }

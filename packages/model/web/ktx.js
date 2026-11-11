@@ -1,7 +1,3 @@
-// An image-based light as Filament's `cmgen` writes it: a KTX 1 cubemap of R11G11B10F texels, its
-// mips prefiltered by roughness (the last is roughness 1), and the diffuse light as nine
-// spherical-harmonic coefficients in the file's `sh` entry, ready to evaluate (`irradianceSH`).
-
 const IDENT = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x31, 0x31, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a];
 export const R11G11B10F = 35898;
 
@@ -76,7 +72,6 @@ export function studioLight(size = 32) {
     }
     mips.push({ size: n, texels });
   }
-  // Irradiance over pi: each band's cosine weight (1, 2/3, 1/4) and the basis constant, twice, with the sphere's 4 pi.
   const K = [0.282095, 0.488603, 0.488603, 0.488603, 1.092548, 1.092548, 0.315392, 1.092548, 0.546274];
   const A = [1, 2 / 3, 2 / 3, 2 / 3, 0.25, 0.25, 0.25, 0.25, 0.25];
   const sh = sum.map((s, k) => { const v = A[k] * K[k] * K[k] * 4 * Math.PI * (s / total); return [v, v, v]; });

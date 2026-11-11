@@ -568,7 +568,6 @@ final class ExactHatches {
     let arrangementFn: ArrangementFn?
     /// One of 184 or more: a module's service query (ExactServices.swift).
     let serviceFn: ServiceFn?
-    /// One of 192 or more: an app asset's bytes by its path, handed to `sink` before the call returns.
     typealias AssetSinkFn = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32) -> Void
     typealias AssetFn = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt32, UnsafeMutableRawPointer?, AssetSinkFn?) -> Void
     let assetFn: AssetFn?
@@ -634,7 +633,6 @@ final class ExactHatches {
             ? table.load(fromByteOffset: 184, as: UnsafeRawPointer?.self).map { unsafeBitCast($0, to: AssetFn.self) } : nil
     }
 
-    /// The app asset at `path`, from the host's resolver; nil where the host has none or the app lacks the file.
     func asset(_ path: String) -> Data? {
         guard let assetFn else { return nil }
         final class Box { var data: Data? }

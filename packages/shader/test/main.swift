@@ -1,7 +1,3 @@
-// Renders a shader on this Mac's GPU, the way the view does, and prints the picture for test/apple.test.mjs.
-// Built with ShaderSkSL.swift and ShaderRender.swift. usage: render <spec.json>, a JSON file of
-// { source, width, height (pixels), box: [w, h] (points), images: [{ name, file (a PNG), sizing, tile }], uniforms: [{ name, value }] }.
-// Prints { rgba: <base64 of RGBA rows, top first>, problems: [..] }, or { msl: <the Metal source> } for { "msl": true }.
 import Foundation
 import Metal
 

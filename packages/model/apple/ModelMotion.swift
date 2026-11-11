@@ -1,18 +1,13 @@
-// The numbers `exact-model` moves by, the same as web/motion.js (their tests name one set of values).
-// Foundation only, so the logic compiles and runs without a view.
 import Foundation
 
 enum ModelMotion {
     static let deg = Double.pi / 180
 
-    /// The direction a light travels for a yaw and pitch in degrees: yaw turns about +y from -z, a
-    /// positive pitch aims the light down.
     static func lightDirection(yaw: Double, pitch: Double) -> [Double] {
         let cp = cos(pitch * deg)
         return [-cp * sin(yaw * deg), -sin(pitch * deg), -cp * cos(yaw * deg)]
     }
 
-    /// A black body's colour at `kelvin` in linear sRGB.
     static func kelvinToLinear(_ kelvin: Double) -> [Double] {
         let t = kelvin / 100
         func ch(_ v: Double) -> Double { max(0, min(255, v)) / 255 }
@@ -23,7 +18,6 @@ enum ModelMotion {
         return [lin(r), lin(g), lin(b)]
     }
 
-    /// One step of a critically damped spring, in closed form: it settles in about `responseMs`.
     static func springStep(_ x: Double, _ v: Double, goal: Double, responseMs: Double, dt: Double) -> (Double, Double) {
         let w = 2 * Double.pi / max(responseMs / 1000, 0.05)
         let decay = exp(-w * dt)
@@ -37,7 +31,6 @@ enum ModelMotion {
         return abs(x - goal) <= limit && abs(v) <= limit * w
     }
 
-    /// The idle sway, -1 to 1: it rises to 1 in a quarter of the period, then swings with it.
     static func swayAt(_ t: Double, periodMs: Double) -> Double {
         guard periodMs > 0, t > 0 else { return 0 }
         let half = periodMs / 2
@@ -55,7 +48,6 @@ enum ModelMotion {
         var pitch = 0.0, yaw = 0.0, vPitch = 0.0, vYaw = 0.0
     }
 
-    /// One step of the device tilt from the device's `pitch` and `roll` (radians, `CMAttitude`'s).
     static func tiltStep(_ s: inout Tilt, pitch: Double, roll: Double, dt: Double, _ c: TiltConfig = TiltConfig()) {
         if !s.ready { s.ready = true; s.basePitch = pitch; s.baseRoll = roll }
         s.basePitch += (pitch - s.basePitch) * c.recenter
@@ -70,14 +62,11 @@ enum ModelMotion {
         s.yaw += s.vYaw * h
     }
 
-    /// The camera's distance from the origin: an authored `distance` wins; else the bounds (`half`
-    /// the half height, `front` the nearest z) take `fit` of the view's height.
     static func cameraDistance(distance: Double?, fit: Double, fov: Double, half: Double, front: Double) -> Double {
         if let d = distance, d > 0 { return d }
         return front + half / (fit * tan(fov * deg / 2))
     }
 
-    /// The sheen's gradient coordinate for a screen point after the band moved `along`.
     static func sheenCoord(u: Double, v: Double, along: Double, w: Double, h: Double) -> Double {
         let wu = w * w / (w * w + h * h)
         return (wu * (u + 1 - along) + (1 - wu) * (v + 1 - along)) / 3
@@ -89,7 +78,6 @@ enum ModelMotion {
 
     static let leanTighten = 3.0
 
-    /// The pose a drag leans toward: the aimed pose (yaw, pitch, roll, scale, x, y) moved `t` of the way to `toward`.
     static func leanGoal(_ goal: [Double], _ toward: [Double]?, _ t: Double) -> [Double] {
         let k = max(0, min(1, t))
         return goal.indices.map { goal[$0] + ((toward?[$0] ?? goal[$0]) - goal[$0]) * k }
@@ -97,7 +85,6 @@ enum ModelMotion {
 
     static func leanResponse(_ response: Double, _ t: Double) -> Double { t > 0 ? response / leanTighten : response }
 
-    /// translate(x, y, 0) * Rz(roll) * Rx(pitch) * Ry(yaw) * scale(s), column-major.
     static func poseMatrix(pitch: Double, yaw: Double, roll: Double, scale s: Double, x: Double, y: Double) -> [Double] {
         let (cy, sy, cp, sp, cr, sr) = (cos(yaw), sin(yaw), cos(pitch), sin(pitch), cos(roll), sin(roll))
         let a = [cy, sp * sy, -cp * sy, 0, 0, cp, sp, 0, sy, -sp * cy, cp * cy, 0]
@@ -112,7 +99,6 @@ enum ModelMotion {
         return out
     }
 
-    /// Axis and angle (degrees) of a rotation matrix given by rows.
     static func axisAngle(_ m: [Double]) -> (axis: [Double], deg: Double) {
         let tr = m[0] + m[4] + m[8]
         let angle = acos(max(-1, min(1, (tr - 1) / 2)))
@@ -139,8 +125,6 @@ enum ModelMotion {
         var json: [String: Any] { ["perspective": perspective, "translate": translate, "rotate": rotate, "scale": scale, "facing": facing, "quad": quad] }
     }
 
-    /// Where a flat rectangle of the model is on screen, as the CSS a box of `w` by `h` points needs to cover it
-    /// (web/motion.js `screenPlacement`, whose notes say how).
     static func screenPlacement(pose: [Double], rect: Rect, fov: Double, distance: Double, viewW: Double, viewH: Double, w: Double) -> Placement {
         func at(_ x: Double, _ y: Double, _ z: Double) -> [Double] { (0..<3).map { pose[$0] * x + pose[4 + $0] * y + pose[8 + $0] * z + pose[12 + $0] } }
         let s = (pose[0] * pose[0] + pose[1] * pose[1] + pose[2] * pose[2]).squareRoot()

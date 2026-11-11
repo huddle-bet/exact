@@ -1,6 +1,3 @@
-// Prints what Model*.swift computes for fixed inputs, as JSON, for web/apple.test.mjs to compare with
-// web/motion.js. Built with ModelMotion.swift, ModelGLB.swift and ModelLight.swift:
-// usage: logic <glb> <ktx>
 import Foundation
 
 var out: [String: Any] = [:]

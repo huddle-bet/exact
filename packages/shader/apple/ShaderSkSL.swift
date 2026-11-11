@@ -1,9 +1,3 @@
-// The shader language of exact-shader on Apple: the SkSL subset web/sksl.js describes, translated to Metal. SkSL's
-// types are Metal's (`float2`, `half4`), so the translation wraps the app's source in a struct: each `uniform`
-// becomes a member the fragment function fills, each function a member function, and `uniform shader` an
-// `ExactImage` whose `eval` samples as sksl.js's GLSL does (bilinear from texels, decal or clamp). `half` is `float`.
-// The buffer layout the fragment function reads, in floats: box (2), canvas (2), each image's placement (4) and tile
-// (1), then each numeric uniform in declaration order.
 import Foundation
 
 struct ShaderRefusal: Error, CustomStringConvertible {
@@ -49,7 +43,6 @@ enum ShaderSkSL {
         return declared
     }
 
-    /// The Metal source for `source`, and the entry points `exact_vertex` and `exact_fragment`.
     static func toMSL(_ source: String) throws -> (code: String, declared: Declared) {
         let d = try parse(source)
         let body = replace("\\bmain\\b", in: d.body, with: "exact_main")
@@ -110,7 +103,6 @@ enum ShaderSkSL {
         return (code, d)
     }
 
-    /// `uv = p * [0..1] + [2..3]` for an image of `image` pixels placed in `box` points by cover, contain or fill.
     static func placement(_ sizing: String, box: (Double, Double), image: (Double, Double)) -> [Double] {
         let fx = box.0 / image.0, fy = box.1 / image.1
         let sx = sizing == "fill" ? fx : (sizing == "contain" ? min(fx, fy) : max(fx, fy))

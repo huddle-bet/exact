@@ -1,6 +1,3 @@
-// The Metal side of exact-shader: ShaderSkSL's source compiled at run time (so an over-the-air shader needs no
-// build), one full-target triangle, an image as an RGBA8 texture of premultiplied, non-colour-managed bytes (the bytes
-// Skia samples). Used by the view and by the pixel test, which renders into a texture of its own.
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -21,7 +18,6 @@ enum ShaderRender {
         return t
     }
 
-    /// An encoded image (PNG, JPEG, …) as premultiplied RGBA bytes, top row first, colours as stored.
     static func decode(_ data: Data) throws -> (rgba: [UInt8], width: Int, height: Int) {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw ShaderRefusal("the image could not be decoded") }
         let w = image.width, h = image.height
@@ -36,7 +32,6 @@ enum ShaderRender {
         return (bytes, w, h)
     }
 
-    /// The uniforms by name as the fragment function's buffer, and what is wrong with them (undeclared, wrong size).
     static func buffer(_ declared: ShaderSkSL.Declared, box: (Double, Double), view: (Double, Double), images: [String: ShaderImage], values: [(name: String, value: [Double])]) -> (floats: [Float], problems: [String]) {
         var out: [Float] = [box.0, box.1, view.0, view.1].map { Float($0) }
         var problems: [String] = []
@@ -74,7 +69,6 @@ final class ShaderPipeline {
         state = try device.makeRenderPipelineState(descriptor: d)
     }
 
-    /// Draws into `encoder`'s target of `view` pixels, the shader's points being `box`. Returns what was wrong with the uniforms.
     func encode(_ encoder: MTLRenderCommandEncoder, box: (Double, Double), view: (Double, Double), images: [String: ShaderImage], values: [(name: String, value: [Double])]) -> [String] {
         let (floats, problems) = ShaderRender.buffer(declared, box: box, view: view, images: images, values: values)
         encoder.setRenderPipelineState(state)

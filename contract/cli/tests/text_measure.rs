@@ -1,5 +1,3 @@
-//! A text's laid-out width, read through the element resize event: a contract lays out by
-//! the width of a string in its font (the kernel's measurer, the host's on a device).
 use exact_kernel::{Kernel, Offer, PropId};
 use exact_runner::{DataError, DataSource, Event, Runner, Value};
 
@@ -63,9 +61,6 @@ const MARQUEE: &str = r#"component App
         text "longer"
 "#;
 
-/// Bug: the text reporting its clipped box (100) instead of its own width, so a marquee's
-/// travel (`textW - boxW`) is 0 and a long title never scrolls; or the width staying at its
-/// first value after the string changes.
 #[test]
 fn a_text_reports_its_own_width_beyond_the_box_that_clips_it() {
     let mut r = boot(MARQUEE);
@@ -96,8 +91,6 @@ const INITIALS: &str = r#"component App
       text "Alexander Hamilton" resize=named position="absolute" visibility="hidden" white-space="nowrap"
 "#;
 
-/// Bug: a hidden measuring text delivering no size (so the fallback never engages), or the
-/// fallback judged before the sizes arrive (a first frame showing the full name).
 #[test]
 fn a_name_falls_back_to_initials_when_a_hidden_copy_is_wider_than_its_column() {
     let mut r = boot(INITIALS);

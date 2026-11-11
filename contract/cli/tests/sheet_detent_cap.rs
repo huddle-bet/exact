@@ -1,7 +1,3 @@
-//! `navigationDetent`'s `fit-content(P%)`: the content's height, up to P percent of
-//! the sheet's maximum. It goes where `fit-content` goes (alone, or before `large`),
-//! and a dialog sheet takes it too.
-
 fn route(value: &str) -> Result<(), String> {
     contract::compile(&format!(
         "component App\n  view\n    column navigationKey=\"a\" navigationPresentation=\"modal\" navigationDetent=\"{value}\"\n"
@@ -10,8 +6,6 @@ fn route(value: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Bug: a cap word read as a bare `fit-content` (cap dropped), or refused as an
-/// unknown word, or let past the rule that a content height can pass every other detent.
 #[test]
 fn a_capped_fit_content_goes_where_fit_content_goes() {
     for value in ["fit-content(50%)", "fit-content(87.5%) large", "fit-content(100%)"] {
@@ -30,7 +24,6 @@ fn a_capped_fit_content_goes_where_fit_content_goes() {
     }
 }
 
-/// Bug: a dialog refusing `navigationDetent`, or taking a bad cap unchecked.
 #[test]
 fn a_dialog_takes_a_capped_fit_content_detent() {
     let compile = |value: &str| {
