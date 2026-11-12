@@ -1,4 +1,4 @@
-//! What an app's view says about its design's tokens:
+//! What an app's view says about its design's tokens (LLP 1121 D3, D7):
 //! the names its literals write, the expressions over tokens they write
 //! (each a synthetic token), and whether a colour row is computed, when a
 //! string from data may name any token.
@@ -33,8 +33,6 @@ pub(crate) fn colour_codec(row: StyleId) -> bool {
         row.codec(),
         StyleCodec::ColorValue
             | StyleCodec::KeywordColor
-            | StyleCodec::Rgba8
-            | StyleCodec::Color2
             | StyleCodec::SymbolPalette
             | StyleCodec::Paint
             | StyleCodec::BackgroundImage
@@ -48,7 +46,7 @@ pub(crate) fn colour_codec(row: StyleId) -> bool {
 /// An attribute that may hold a colour: a colour row, or a shorthand
 /// (`border`, `outline`, `background`) that sets one.
 fn colour_attr(name: &str) -> bool {
-    // A state part's row is the row it is.
+    // A state part's row (LLP 1121 D8) is the row it is.
     let name = contract_syntax::state::state_of(name).map_or(name, |(_, row)| row);
     match crate::tags::attr(name) {
         Some(crate::tags::AttrTarget::Styles(rows)) => rows.iter().any(|r| colour_codec(*r)),
@@ -82,9 +80,9 @@ pub(crate) struct Said {
     /// A colour row's value is computed somewhere: any token may be named.
     pub computed: bool,
     /// A length or number row's value is computed and may be a string
-    /// somewhere: any length or number token may be named.
+    /// somewhere: any length or number token may be named (LLP 1121 D7).
     pub computed_measure: bool,
-    /// Every word the literals write, a token's name or not: what the
+    /// Every word the literals write, a token's name or not: what D7's
     /// retention reads (`tamber::Retention`), for this design or an edit of it.
     pub words: BTreeSet<String>,
     /// Every word a colour keyframe writes: a token one names is folded into
@@ -138,7 +136,7 @@ fn grouped_list(file: &File, tag: &str, attrs: &[Attr]) -> bool {
             .rfind(|s| s.name == name)
             .map(|s| s.attrs.as_slice())
     };
-    let Ok(class) = crate::class::rows(attrs, &style) else {
+    let Ok(class) = crate::class::rows(attrs, &style, &[]) else {
         return false;
     };
     let expanded: Vec<Attr> = class
@@ -200,7 +198,7 @@ fn grouped_refused(file: &File, tag: &str, attrs: &[Attr]) -> bool {
             .rfind(|s| s.name == name)
             .map(|s| s.attrs.as_slice())
     };
-    let Ok(class) = crate::class::rows(attrs, &style) else {
+    let Ok(class) = crate::class::rows(attrs, &style, &[]) else {
         return false;
     };
     let expanded: Vec<Attr> = class
@@ -237,7 +235,7 @@ fn has_class_family(file: &File, attrs: &[Attr]) -> bool {
             .rfind(|s| s.name == name)
             .map(|s| s.attrs.as_slice())
     };
-    matches!(crate::class::rows(attrs, &style), Ok(Some((_, rows))) if rows.iter().any(|a| a.name == "font-family"))
+    matches!(crate::class::rows(attrs, &style, &[]), Ok(Some((_, rows))) if rows.iter().any(|a| a.name == "font-family"))
 }
 
 /// Whether lowering's `check_svg` passes the element `tag` with `attrs`
@@ -259,7 +257,7 @@ fn prepared(
             .rfind(|s| s.name == name)
             .map(|s| s.attrs.as_slice())
     };
-    let Ok(class) = crate::class::rows(attrs, &style) else {
+    let Ok(class) = crate::class::rows(attrs, &style, &[]) else {
         return false;
     };
     let joined: Vec<Attr>;
@@ -319,8 +317,8 @@ impl Said {
             for a in attrs {
                 let colour = colour_attr(&a.name);
                 computed |= colour && !literal(&a.value);
-                // A face's colours are read as a computed colour row's:
-                // any token may be named.
+                // A face's colours are read as a computed colour row's
+                // (LLP 1045.000 D2): any token may be named.
                 computed |= a.name == "atomFaces";
                 computed_measure |=
                     measure_attr(&a.name) && !literal(&a.value) && !number(&a.value);
@@ -548,7 +546,7 @@ impl Said {
                     };
                     let class = match class_left {
                         true => None,
-                        false => crate::class::rows(a, &style).ok().flatten(),
+                        false => crate::class::rows(a, &style, &[]).ok().flatten(),
                     };
                     let judged = class.as_ref().is_some_and(|(_, rows)| {
                         let joined: Vec<Attr> = rows.iter().chain(own).cloned().collect();
@@ -649,7 +647,7 @@ impl Said {
                 // pushes (binding nothing). A subject whose type isn't known
                 // by its form leaves the whole region untyped, the `none`
                 // arm too: the build lowers the `some` arm first, and its
-                // refusal there would be the build's first.
+                // refusal there would be the build's first (Grok's round 1).
                 Node::Each {
                     var,
                     index,
@@ -982,14 +980,14 @@ fn expressions<'t>(text: &'t str, is_token: &dyn Fn(&str) -> bool) -> Vec<&'t st
 /// Whether `word` is a dotted identifier, a name a design's token may have
 /// (`eu.glow`, `_eu.glow`): Tamber's own name grammar (`is_name`), with a
 /// `.`. A number, a dimension (`-1.5px`) or a function (`rgb(0.5 0 0)`) is
-/// none.
+/// none (stage 12 B3, round 1, Astra 4; round 2, Astra 2).
 pub(crate) fn dotted_name(word: &str) -> bool {
     word.contains('.') && exact_tamber::is_name(word)
 }
 
 /// `tamber-unknown-token` or `tamber-kind` for a word inside a literal the
 /// kernel refused in a row that holds a colour among other words (a shadow,
-/// a border, a gradient): a dotted word
+/// a border, a gradient; LLP 1121 stage 12 B3, QUEUE's item): a dotted word
 /// naming no token of the design and no role, in a colour row's words; in a
 /// shadow, a length token or a base name, which a literal's px lengths
 /// don't read, pointing to a shadow token. `None` otherwise: the kernel's

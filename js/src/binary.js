@@ -1,11 +1,11 @@
 // The data seam's bytes, and the store's presence calls (below), for
 // prelude.js: base64 for what crosses the seam
 // as JSON, a string's UTF-8 length, a stream message's data, a long
-// poll's terms as the seam carries them, an upload's
-// option and events, a fetch's file
+// poll's terms as the seam carries them (LLP 1016.000 D8), an upload's
+// option and events, a fetch's body and file
 // options, an image call's options and an answer's timers (here, beside the
 // prelude, under its line cap). Natively a
-// binary message (a byte stream's bytes, a socket's frame)
+// binary message (a byte stream's bytes, a socket's frame; LLP 1016.000)
 // names only its size, and the host fills an ArrayBuffer of it through the
 // bytes door (op 9, js/src/crypto.rs): base64 decoded byte by byte in the
 // interpreter cost 1.8 ms a 12 KB message. Evaluated just before prelude.js,
@@ -14,6 +14,10 @@
 (function (global) {
   "use strict";
   var door = global.__exact_bytes; // natively; prelude.js takes it from the global
+  var StreamBody = global.__exact_stream_body || global.Response;
+  delete global.__exact_stream_body;
+  var streamLocked = global.ReadableStream && Object.getOwnPropertyDescriptor(global.ReadableStream.prototype, "locked").get;
+  function isReadableStream(value) { return value !== null && typeof value === "object" && streamLocked && holds(streamLocked, value); }
   function fromBase64(text) {
     return Uint8Array.from(global.atob(text), function (c) { return c.charCodeAt(0); });
   }
@@ -53,13 +57,13 @@
     }
     return message.binary !== undefined ? fromBase64(message.binary).buffer : message.data;
   }
-  // The video gate's stub decode, until `VideoDecoder`: a chunk's bytes copied
+  // LLP 1133.003 §9's gate, until `VideoDecoder`: a chunk's bytes copied
   // into the host and dropped (bytes door op 8). prelude.js installs it as
   // `__exact_gate_decode` under the agent only.
   function gateDecode(track, type, timestamp, data) {
     door(8, data.byteOffset + " " + data.byteLength, data.buffer);
   }
-  // `exactLongPoll`, checked as the web's ts-stream.js checks it (names in code points, `from` a member
+  // `exactLongPoll` (LLP 1016.000 D8), checked as the web's ts-stream.js checks it (names in code points, `from` a member
   // or two joined by one `.`): the op's `long_poll`, nothing when there is none, or why it is refused.
   function longPollOf(init, stream, method, url) {
     var poll = init ? init.exactLongPoll : undefined, name = function (k) { var v = poll[k], n = typeof v === "string" ? Array.from(v).length : 0; return n > 0 && n <= 256 ? v : null; };
@@ -74,7 +78,7 @@
     if (poll.sameCursor !== undefined && poll.sameCursor !== "heartbeat" && poll.sameCursor !== "event") return "exactLongPoll.sameCursor is \"heartbeat\" (the default) or \"event\"";
     return { cursor: poll.cursor, from: poll.from, same_cursor_event: poll.sameCursor === "event" ? true : undefined };
   }
-  // `exactUploadProgress`, checked as the runner and the web's
+  // `exactUploadProgress` (LLP 1016.000 D10), checked as the runner and the web's
   // ts-stream.js check it: true for an upload whose stream reports its progress, nothing, or why it is refused.
   function uploadOf(init, stream, method, url) {
     var upload = init ? init.exactUploadProgress : undefined;
@@ -87,6 +91,28 @@
     if (method === "GET" || method === "HEAD") return "exactUploadProgress: a GET or HEAD request sends no body";
     return true;
   }
+  // `exactIdleTimeout` (LLP 1016.000 D11): why it is refused, if it is. `socket`: a WebSocket stream that is no
+  // listener, child, upload or long poll.
+// Protocol names, never credentials (LLP 1016.000; RFC 7230 token).
+function socketProtocols(value, socket) {
+  if (value === undefined) return [];
+  if (!socket) throw new TypeError('exactProtocols: only a WebSocket stream takes protocols');
+  if (!Array.isArray(value)) throw new TypeError('exactProtocols must be an array of protocol names');
+  var names = [];
+  for (var name of value) {
+    if (typeof name !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name))
+      throw new TypeError(`invalid WebSocket protocol ${JSON.stringify(name)}: expected a non-empty RFC 7230 token`);
+    if (names.includes(name)) throw new TypeError(`duplicate WebSocket protocol ${JSON.stringify(name)}`);
+    names.push(name);
+  }
+  return names;
+}
+
+  function idleRefusal(idle, socket) {
+    if (idle === undefined) return undefined;
+    if (!Number.isInteger(idle) || idle < 1 || idle > 3600000) return "exactIdleTimeout must be an integer number of milliseconds from 1 to 3600000";
+    return socket ? undefined : "exactIdleTimeout: only a WebSocket stream takes an idle timeout";
+  }
   // An upload's event for its mapper, as XMLHttpRequest names them: `progress` for the host's count of the body's
   // bytes sent, and `load` for the reply, whatever its status, which ends the stream.
   function uploadEvent(o) {
@@ -94,15 +120,13 @@
     var sent = JSON.parse(o.message.data);
     return { type: "progress", loaded: sent.loaded, total: sent.total, lengthComputable: true, data: "", lastEventId: "", coalesced: o.message.coalesced };
   }
-  // The store's presence calls, for prelude.js's `store`,
+  // The store's presence calls (LLP 1133.010 D5), for prelude.js's `store`,
   // over its host door: a name's occupancy (op 18 kept, 19 locked or
   // pending, 20 this device keeps locked secrets now), and a call that waits
   // on the host's backend as a request of its own, whose reply carries an
   // unlocked value to its promise alone, never through the store. A refusal
   // whose message names its error (`InvalidAccessError: …`) carries that name.
   function presence(host, get, refuse) {
-    // Own properties: a hardened realm's frozen `Error.prototype` refuses an
-    // assigned `name`.
     function as(e, name) {
       Object.defineProperty(e, "name", { value: name, writable: true, configurable: true });
       Object.defineProperty(e, "code", { value: name, writable: true, enumerable: true, configurable: true });
@@ -146,9 +170,9 @@
   }
   // The image calls' options (prelude.js `imageCall`), checked before
   // anything is queued, as the host's arguments after `from` and `to`:
-  // `compressImage`'s two numbers and type, then its
+  // `compressImage`'s two numbers and type (LLP 1069.002 A1, A1.11), then its
   // edit, and `transformImage`'s all, each as the one JSON value the codec
-  // reads.
+  // reads (LLP 1133.019 D17).
   var IMAGE_WORDS = { flip: ["horizontal", "vertical"], resizeQuality: ["pixelated", "low", "medium", "high"], metadata: ["keep", "no-location", "none"] };
   function imageOptions(api, options, transform) {
     var out = {}, crop;
@@ -186,7 +210,7 @@
     word("metadata");
     return [JSON.stringify(out)];
   }
-  // `exactBodyFrom` and `exactBodyTo`, checked as the web's
+  // `exactBodyFrom` and `exactBodyTo` (LLP 1108 D6 R2), checked as the web's
   // ts-body-from.js checks them: a refusal's words, or undefined.
   function filePath(name, path) {
     if (typeof path !== "string" || path.slice(0, 5) !== "app:/") return name + " must be an app:/ path";
@@ -215,15 +239,15 @@
       if (reply.headers[i][0] === ":exact-body-to") return Number(reply.headers.splice(i, 1)[0][1]);
   }
 
-  // A resource's two-way socket: the handle its mapper
+  // A resource's two-way socket (LLP 1016.000 D7): the handle its mapper
   // receives. Its state is what the mapper has seen: CONNECTING until
   // `open`, OPEN until the end, CLOSED once the stream ends or its answer
   // is let go. A mutation's synchronous source and the socket's own mapper
   // answering `open` or a `message` may send or close: each operation is
   // copied now, handed over with that turn's answer (`settle`,
   // `__exact_message`) and published once the commit that settles it stands.
-  // An answer in flight's go to the host as each is made, in any turn of it.
-  // A local listener's connections take the same rules, each
+  // An answer in flight's go to the host as each is made, in any turn of it (amendment of 2026-10-18).
+  // A local listener's connections (LLP 1133.005 D6) take the same rules, each
   // connection a target of its own: its mapper sends only on the connection
   // whose `connection` or `message` event it answers. `env` is the prelude's
   // door and turn: the answer running, the mapper call, and any mapper call.
@@ -234,7 +258,7 @@
     // The transport's bytes as this turn began, earlier turns' unsent ones and
     // an answer's this turn (door op 15; none on wasm, whose handle never
     // opens), as WHATWG's `bufferedAmount` counts them at a task's start. A
-    // listener's connections are bounded by the host.
+    // listener's connections are bounded by the host (D3).
     function buffered(owner) { if (owner.listen) return 0; try { return Number(host(15, String(owner.ticket), "")) || 0; } catch (e) { return 0; } }
     function turn(owner) { var m = env.mapping(); return m && m.owner === owner ? m : env.current(); } // its own mapper's call, else the turn's
     // Stage `op` on `target` (the socket, or one connection of a listener),
@@ -262,7 +286,7 @@
       op.owner = owner; op.target = target;
       ops.push(op);
     }
-    // An answer's operation goes to the host now; the socket bounds count over all its turns.
+    // An answer's operation goes to the host now; D7's bounds count over all its turns.
     function sendNow(owner, target, call, op) {
       var sent = call.socketSent || (call.socketSent = { ops: 0, bytes: 0, closed: [] });
       if (sent.closed.indexOf(target) >= 0) throw closed(owner.listen ? "connection" : "socket");
@@ -303,7 +327,7 @@
       });
       return owner;
     }
-    // A listener: its state is the stream's (OPEN from
+    // A listener (LLP 1133.005 D1): its state is the stream's (OPEN from
     // `listening`), and each connection's handle is OPEN from its
     // `connection` event to its `end`, CLOSED once the stream ends.
     function listenOwner(ticket) {
@@ -346,7 +370,7 @@
     }
     return { socketOwner: socketOwner, listenOwner: listenOwner, listenEvent: listenEvent, hand: hand };
   }
-  // An answer's own timers, for
+  // An answer's own timers (LLP 1027.000 D1 as amended 2026-10-28), for
   // prelude.js, here under its line cap. `setTimeout` arms one due on the
   // runner's clock as the call began (`clock`, host door op 21), owned by the
   // answer running (`owner`, which refuses one outside an answer). An answer
@@ -376,6 +400,8 @@
       return arm("setTimeout()", callback, Math.max(Number(delay) | 0, 0), Array.prototype.slice.call(arguments, 2)); // `long`, as WebIDL converts it
     });
     fixed("clearTimeout", function clearTimeout(id) {
+      var timer = armed.get(id);
+      if (timer) timer.call.ran = true; // Its parked deadline must be read again (LLP 1162 D3).
       armed.delete(id);
       reports = reports.filter(function (r) { return r.id !== id; });
     });
@@ -433,21 +459,23 @@
       // An `AbortSignal.timeout` still to fire, or one composed of it: the ms
       // left, the deadline a fetch carrying it gives the host; `expire` aborts
       // it when that passes, its timer dropped or not, as a browser's fires:
-      // a fetch its answer let go runs to its end, and another
+      // a fetch its answer let go runs to its end (LLP 1146 D2), and another
       // answer may carry the same signal.
       left: function (signal) { var s = deadline(signal); return s && !signal.aborted ? Math.max(1, s.due - time()) : undefined; },
       expire: function (signal) { var s = deadline(signal); if (s && !signal.aborted) { armed.delete(s.id); s.abort(); } },
       checkpoint: function () {
+        var ran = reports.length > 0;
         while (reports.length) {
           var report = reports.shift();
           try { report.run(); } catch (e) { /* the tracker's own; nothing to tell */ }
         }
+        return ran;
       },
     };
   }
   // An answer's reply as JSON (prelude.js `ok`), where a list element that is plain data frozen to its leaves
   // keeps its JSON by identity and is spliced back, never walked again: a transcript's window holds its last
-  // page's rows. Frozen plain data, no Proxy in it, can't change once its prototypes
+  // page's rows (rt1's crossing plan). Frozen plain data, no Proxy in it, can't change once its prototypes
   // are frozen, which hardening does natively; only the native runtime (its byte door) keeps anything, since
   // the web's module realm is unhardened.
   // `step(holder, key, item)` is the prelude's own replacer (its large-string capture), run as JSON would.
@@ -573,12 +601,35 @@
   // Whether `value` has the internal slot `getter` reads
   function holds(getter, value) { try { slot(getter, value); return true; } catch (e) { return false; } }
 
+  var formText = global.URLSearchParams && global.URLSearchParams.prototype.toString;
+  // Whether `value` is a `URLSearchParams`, by the platform's own check
+  function isForm(value) {
+    if (!formText || value === null || typeof value !== "object") return false;
+    try { reflectApply(formText, value, []); return true; } catch (e) { return false; }
+  }
+  // Fetch's BodyInit extraction gives strings and forms a type, bytes and streams none.
+  function bodyType(body, form) {
+    return form ? "application/x-www-form-urlencoded;charset=UTF-8" : typeof body === "string" ? "text/plain;charset=UTF-8" : null;
+  }
+  function requestBody(raw, method, headers) {
+    if (isReadableStream(raw)) throw new TypeError("fetch: ReadableStream request bodies are unavailable; collect the bytes with new Response(body).arrayBuffer() first");
+    // Fetch's Request refuses a body on a GET or HEAD, an empty one too.
+    if (raw != null && (method === "GET" || method === "HEAD"))
+      throw new TypeError("fetch: a " + method + " request cannot have a body");
+    // A BufferSource goes as bytes (LLP 1069.002 D4); forms use their internal list, never an app's toString.
+    var bytes = bufferSourceBytes(raw, "fetch"), form = !bytes && isForm(raw);
+    var text = bytes || raw == null ? "" : form ? reflectApply(formText, raw, []) : String(raw);
+    var type = bytes || raw == null ? null : bodyType(text, form);
+    if (type && !headers.has("content-type")) headers.set("content-type", type);
+    return { bytes: bytes, text: text };
+  }
+
   // A fetch's `Response` (Fetch, "Response class"): the host's replies
   // (`reply`) and an app's own, as a demo's server in the app makes one. Its
   // state is out of the app's reach, as the platform's is: properties an app
-  // gives one are not a clone's. A body is read once. An app's is held as
-  // bytes and read back as UTF-8, as Fetch extracts and reads it ("BodyInit
-  // unions"): a BufferSource's bytes, with no type; a `URLSearchParams`, as
+  // gives one are not a clone's. A body is read once. An app's bytes, or a
+  // ReadableStream's byte chunks, are read back as UTF-8 (Fetch's "BodyInit
+  // unions"): bytes and streams bring no type; a `URLSearchParams`, as
   // `application/x-www-form-urlencoded;charset=UTF-8`; any other value, its
   // string, as `text/plain;charset=UTF-8`, unless `headers` names a type. Its
   // headers take no cookie a server sets (the "response" guard); a
@@ -596,8 +647,13 @@
     // The platform's own operations, taken before any app code runs, for what an app's object could answer itself; a
     // realm may lack either class
     var Headers = global.Headers, eachHeader = Headers && Headers.prototype.forEach, appendHeader = Headers && Headers.prototype.append;
-    var formText = global.URLSearchParams && global.URLSearchParams.prototype.toString;
     var states = new WeakMap();
+    var streamRead = StreamBody && StreamBody.prototype.arrayBuffer, streamClone = StreamBody && StreamBody.prototype.clone;
+    var streamUsed = StreamBody && Object.getOwnPropertyDescriptor(StreamBody.prototype, "bodyUsed").get;
+    var streamBody = StreamBody && Object.getOwnPropertyDescriptor(StreamBody.prototype, "body").get;
+    function isStreamBody(body) { return StreamBody && body instanceof StreamBody; }
+    function used(s) { return isStreamBody(s.body) ? slot(streamUsed, s.body) : s.used; }
+    function unusable(s) { return used(s) || isStreamBody(s.body) && slot(streamLocked, slot(streamBody, s.body)); }
     function state(response) {
       var s = states.get(response);
       if (!s) throw new TypeError("not a Response");
@@ -612,11 +668,6 @@
       var copy = new Headers();
       reflectApply(eachHeader, headers, [function (value, name) { reflectApply(appendHeader, copy, [name, value]); }]);
       return guard(copy, kind);
-    }
-    // Whether `value` is a `URLSearchParams`, by the platform's own check
-    function isForm(value) {
-      if (!formText || value === null || typeof value !== "object") return false;
-      try { reflectApply(formText, value, []); return true; } catch (e) { return false; }
     }
     // Web IDL's `unsigned short`: ToNumber (a BigInt or a symbol refused), truncated, modulo 2^16; NaN and the infinities 0
     function unsignedShort(value) { var n = +value; return isFinite(n) ? ((Math.trunc(n) % 65536) + 65536) % 65536 : 0; }
@@ -684,7 +735,7 @@
       var status = asked === undefined ? 200 : unsignedShort(asked), statusText = given.statusText;
       return { headers: headers, status: status, statusText: statusText === undefined ? "" : byteString(statusText, api) };
     }
-    // Fetch's "initialize a response": a body `source` (bytes or a string, or null for none) and the type it brings
+    // Fetch's "initialize a response": the extracted body and the type it brings
     function initialized(source, type, options, api) {
       var status = options.status, statusText = options.statusText, headers = new Headers();
       if (status < 200 || status > 599) throw new RangeError(api + ": the status must be from 200 to 599, not " + status);
@@ -706,22 +757,22 @@
       states.set(response, fields);
       return response;
     }
-    // Web IDL converts the body first (a BufferSource or a `URLSearchParams` kept as it is, any other value made a
+    // Web IDL converts the body first (bytes, a stream or a `URLSearchParams` kept as it is, any other value made a
     // string), then the init; Fetch extracts the body after both
     function Response(body, init) {
       if (!new.target) throw new TypeError("Response must be constructed with new");
-      var api = "new Response()", form = isForm(body);
-      var kept = body == null || form || isBufferSource(body, api) ? body : string(body, api), options = initOf(init, api);
-      var source = kept == null ? null : form ? reflectApply(formText, kept, []) : typeof kept === "string" ? kept : bufferSourceBytes(kept, api);
-      var type = typeof kept === "string" ? "text/plain;charset=UTF-8" : form ? "application/x-www-form-urlencoded;charset=UTF-8" : null;
+      var api = "new Response()", form = isForm(body), stream = isReadableStream(body);
+      var kept = body == null || form || stream || isBufferSource(body, api) ? body : string(body, api), options = initOf(init, api);
+      var source = kept == null ? null : stream ? new StreamBody(kept) : form ? reflectApply(formText, kept, []) : typeof kept === "string" ? kept : bufferSourceBytes(kept, api);
+      var type = bodyType(kept, form);
       states.set(this, initialized(source, type, options, api));
     }
     ["status", "statusText", "headers", "exactBodyTo"].forEach(function (name) {
       Object.defineProperty(Response.prototype, name, { get: function () { return state(this)[name]; }, enumerable: true, configurable: true });
     });
     Object.defineProperty(Response.prototype, "ok", { get: function () { var status = state(this).status; return status >= 200 && status < 300; }, enumerable: true, configurable: true });
-    Object.defineProperty(Response.prototype, "bodyUsed", { get: function () { var s = state(this); return s.body !== null && s.used; }, enumerable: true, configurable: true });
-    // Fetch's "consume body": a body is read once; none reads as empty, as often as asked. An app's body is bytes;
+    Object.defineProperty(Response.prototype, "bodyUsed", { get: function () { var s = state(this); return s.body !== null && used(s); }, enumerable: true, configurable: true });
+    // Fetch's "consume body": a body is read once; none reads as empty, as often as asked. An app's body is bytes or a stream;
     // a host reply's, its bytes in base64 and their UTF-8 text, as the host decoded it. `read` makes the reader's
     // value from it, and the promise is resolved with that value alone: the body held stays out of reach. As Fetch
     // consumes one, a body is marked read now and read in a later turn, and none is read now, so its promise is
@@ -732,7 +783,8 @@
       try {
         var s = state(response);
         if (s.body === null) return Promise.resolve(read(none));
-        if (s.used) throw new TypeError("the body was read already");
+        if (unusable(s)) throw new TypeError("the body is locked or was read already");
+        if (isStreamBody(s.body)) return reflectApply(streamRead, s.body, []).then(function (bytes) { return read(new Uint8Array(bytes)); });
         s.used = true;
         body = s.body;
       } catch (e) {
@@ -753,8 +805,9 @@
     Response.prototype.json = function () { return consumed(this, function (body) { return JSON.parse(decoded(body)); }); };
     Response.prototype.clone = function () {
       var s = state(this);
-      if (s.body !== null && s.used) throw new TypeError("Response.clone(): the body was read already");
-      return made({ status: s.status, statusText: s.statusText, headers: headersCopy(s.headers, s.guard), guard: s.guard, body: s.body, used: false, exactBodyTo: s.exactBodyTo });
+      if (s.body !== null && unusable(s)) throw new TypeError("Response.clone(): the body is locked or was read already");
+      var body = isStreamBody(s.body) ? reflectApply(streamClone, s.body, []) : s.body;
+      return made({ status: s.status, statusText: s.statusText, headers: headersCopy(s.headers, s.guard), guard: s.guard, body: body, used: false, exactBodyTo: s.exactBodyTo });
     };
     // The init converted before the data is serialized, as Web IDL converts the arguments first
     Response.json = function (data, init) {
@@ -781,13 +834,29 @@
     }
     return { Response: Response, reply: reply };
   }
+  function FetchError(f) {
+    Object.defineProperties(this, {
+      name: { value: "FetchError", configurable: true },
+      message: { value: String(f.message), configurable: true },
+      kind: { value: String(f.kind), configurable: true },
+    });
+  }
+  FetchError.prototype = Object.create(Error.prototype);
+  function cacheMode(init) {
+    var raw = init ? init.cache : undefined, mode = raw === undefined ? "default" : String(raw);
+    if (["default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached"].indexOf(mode) < 0)
+      throw new TypeError("cache must be default, no-store, reload, no-cache, force-cache or only-if-cached");
+    return raw === undefined ? undefined : mode;
+  }
   global.__exact_binary = Object.freeze({
+    requestBody: requestBody,
     keptReply: keptReply,
     responses: responses,
-    bufferSourceBytes: bufferSourceBytes,
     copyBytes: copyBytes,
     timers: timers,
     fileRefusal: fileRefusal,
+    cacheMode: cacheMode,
+    FetchError: FetchError,
     imageOptions: imageOptions,
     toBase64: toBase64,
     utf8Length: utf8Length,
@@ -795,13 +864,15 @@
     gateDecode: door ? gateDecode : undefined,
     longPollOf: longPollOf,
     uploadOf: uploadOf,
+    idleRefusal: idleRefusal,
+    socketProtocols: socketProtocols,
     uploadEvent: uploadEvent,
     presence: presence,
     sockets: sockets,
   });
 })(globalThis);
 
-// Work that outlives its answer: a fetch with effects whose
+// Work that outlives its answer (LLP 1146 D2): a fetch with effects whose
 // answer was let go is adopted, not rejected (`__exact_adopt`), and its reply
 // reaches the let-go answer's continuation in a module turn, which the
 // executor runs outside every answer and commit (js/src/module_work.rs), so
@@ -873,9 +944,33 @@
         return steps.length;
       },
       inModuleTurn: function () { return turn === MODULE.id; },
+      readied: function (call) { return ready.has(call); },
       adopted: function () { adopted++; note(); },
       landed: function () { adopted--; note(); },
       outstanding: function () { return adopted + waiting() > 0; },
     });
+  };
+})(globalThis);
+
+// A parked answer needs a turn only when its chain or its next operation moved (LLP 1162 D3).
+(function (global) {
+  "use strict";
+  global.__exact_waiting_answers = function (calls, pending, work, headOwner) {
+    return function (ids) {
+      var own = new Set(), unclaimed = false, at = headOwner(), ready = [];
+      pending.forEach(function (p) {
+        if (p.claimed || p.stream || p.module) return;
+        if (p.call && p.call.status === "pending" && !p.call.letGo && calls.has(p.call.id)) own.add(p.call.id);
+        else unclaimed = true;
+      });
+      JSON.parse(ids).forEach(function (id) {
+        var c = calls.get(id);
+        if (!c) return;
+        var claims = unclaimed && c.status === "pending" && !c.storage;
+        if (claims) unclaimed = false;
+        if (c.ran || c.status !== "pending" || work.readied(c) || own.has(id) || c.storage && (!at || at === c) || claims) ready.push(id);
+      });
+      return JSON.stringify(ready);
+    };
   };
 })(globalThis);

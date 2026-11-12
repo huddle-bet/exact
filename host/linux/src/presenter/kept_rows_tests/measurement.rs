@@ -1,4 +1,4 @@
-//! Explicit kept-rows measurements; never part of the default suite.
+//! Explicit S0 measurements; never part of the gate. @ref LLP 1149 D15.
 // The workers must compile in debug and refuse only when explicitly run there.
 #![allow(clippy::assertions_on_constants)]
 use super::super::*;
@@ -368,7 +368,7 @@ fn cpu_ms() -> f64 {
 }
 
 #[test]
-#[ignore = "optimized measurement worker; selects one arm and workload by environment"]
+#[ignore = "S0 optimized measurement worker; selects one arm and workload by environment"]
 fn worker() {
     assert!(!cfg!(debug_assertions), "measure an optimized profile");
     let arm = std::env::var("INK_ARM").expect("INK_ARM");
@@ -428,7 +428,7 @@ fn worker() {
 }
 
 #[test]
-#[ignore = "boot phase worker"]
+#[ignore = "S0 boot phase worker"]
 fn boot_worker() {
     assert!(!cfg!(debug_assertions), "measure an optimized profile");
     let arm = std::env::var("INK_ARM").unwrap();
@@ -448,7 +448,7 @@ fn boot_worker() {
 }
 
 #[test]
-#[ignore = "five interleaved rounds, optimized profile only"]
+#[ignore = "S0: five interleaved rounds, optimized profile only"]
 fn series() {
     use std::io::Write;
     assert!(!cfg!(debug_assertions), "measure an optimized profile");
@@ -519,7 +519,7 @@ fn series() {
                     }
                     log.flush().unwrap();
                     eprint!("{stderr}");
-                    eprintln!("round {} {app} {width} {arm} complete", round + 1);
+                    eprintln!("S0 round {} {app} {width} {arm} complete", round + 1);
                 }
             }
         }

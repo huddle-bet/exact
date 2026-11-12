@@ -1,4 +1,4 @@
-//! The neutral look's controls, painted. Each shape is
+//! The neutral look's controls, painted (LLP 1115.000 D17). Each shape is
 //! the one the page's sheet draws (`host/web/neutral.css`, and the shell's
 //! where the look keeps it): its lengths are the look's rows of the schema's
 //! `metrics` and its colours the role table's neutral column, so a page and
@@ -155,15 +155,17 @@ pub(super) fn switch(
 }
 
 /// A range: a thin track in the control's line across the box, and a round
-/// thumb in the accent, ringed in the field's ground, at `fraction` of the
-/// way. Nothing marks the part before the thumb, as on the page.
+/// thumb `d` across in the accent, ringed in the field's ground, `along`
+/// the track from its left. Nothing marks the part before the thumb, as on
+/// the page.
 pub(super) fn range(
     backend: &mut dyn Backend,
     node: &NodeRef<'_>,
     content: Rect4,
     ts: Transform,
     dark: bool,
-    fraction: f32,
+    d: f32,
+    along: f32,
 ) {
     let em = em(node);
     let (x, y, w, h) = content;
@@ -175,8 +177,6 @@ pub(super) fn range(
     let cy = y + h / 2.0;
     let track = Shape::new((x, cy - t / 2.0, w, t), [t / 2.0; 4]);
     backend.fill(&track, look::line(dark), ts);
-    let d = look::px(metric::MARK_SIZE, em).min(h).min(w);
-    let along = if rtl(node) { 1.0 - fraction } else { fraction };
     let thumb = Shape::new((x + (w - d) * along, cy - d / 2.0, d, d), [d / 2.0; 4]);
     let (accent, _) = look::accents(super::control::accent(node, dark), dark);
     backend.fill(
@@ -209,8 +209,8 @@ pub(super) fn spinner(
     if s <= 0.0 {
         return;
     }
-    // Its own `color`, else an authored accent, else the
-    // look's grey: an inherited colour is not the spinner's.
+    // Its own `color`, else an authored accent (LLP 1121 D9), else the
+    // look's grey: an inherited colour is not the spinner's (LLP 1115 D4).
     let ink = if node.style.written.has(StyleId::TextColor) {
         super::rgba(node.text_color().resolve(dark))
     } else if let Some(accent) = super::control::authored_accent(node, dark) {
@@ -263,8 +263,8 @@ pub(super) fn progress_bar(
 /// The look's ground under an enabled field.
 const GROUND: &str = "-exact-secondary-grouped-background";
 
-/// A field's ground: the design's `Field` where it overrides that role,
-/// else the look's `own` (a disabled field's is raised), as
+/// A field's ground: the design's `Field` where it overrides that role
+/// (LLP 1121 D9), else the look's `own` (a disabled field's is raised), as
 /// the web's sheet has it. A disabled field says so in its grey ink and
 /// line.
 fn field_ground(own: &str, dark: bool) -> [u8; 4] {
@@ -313,7 +313,7 @@ pub(super) fn field(
 }
 
 /// A field's ink: the design's FieldText (the label's where it doesn't
-/// override it), the grey when disabled, and the node's own
+/// override it, LLP 1121 D9), the grey when disabled, and the node's own
 /// `color` where its author wrote one. The page's `color` does not tint a
 /// surface the host paints.
 pub(super) fn field_ink(node: &NodeRef<'_>, dark: bool) -> [u8; 4] {
@@ -393,8 +393,13 @@ impl super::Painter {
         );
         let pad = look::px(metric::MENU_PADDING, em);
         let inset = look::px(metric::MENU_ROW_PADDING_INLINE, em);
+        let h = menu.rect.3;
+        self.backend.push_clip(&panel, ts);
         for (i, (label, disabled)) in menu.rows.iter().enumerate() {
-            let top = y + super::control::MENU_PAD + i as f32 * menu.row;
+            let top = y + super::control::MENU_PAD + i as f32 * menu.row - menu.offset;
+            if top + menu.row < y || top > y + h {
+                continue;
+            }
             if menu.chosen == Some(i) {
                 let row = Shape::new(
                     (x + pad, top, w - 2.0 * pad, menu.row),
@@ -423,6 +428,7 @@ impl super::Painter {
                 ts,
             );
         }
+        self.backend.pop_clip();
     }
 
     /// A file field: the outline button, and beside it the words for no
@@ -523,8 +529,8 @@ pub(super) fn caret(
     backend.pop_clip();
 }
 
-/// A grouped list's row's separator, in any look; then a
-/// list's row under the neutral look, as the page's
+/// A grouped list's row's separator, in any look (LLP 1084 D7); then a
+/// list's row under the neutral look (LLP 1115.000 D16), as the page's
 /// sheet draws it: over the row's own ground, the wash of what presses in
 /// it (where a pointer hovers, and a stronger one while it is held), then,
 /// under each row but the last, one line that only divides, inside the
@@ -584,7 +590,7 @@ mod field_ground_tests {
     use exact_kernel::ColorValue;
 
     /// A field's ground: the design's `Field` where it overrides that role,
-    /// else the look's, as the web's sheet has it.
+    /// else the look's, as the web's sheet has it (stage 8 C's gap 6).
     #[test]
     fn the_ground_reads_field_only_where_the_design_overrides_it() {
         roles::set_overrides(Vec::new());

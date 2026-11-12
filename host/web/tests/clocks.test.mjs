@@ -1,16 +1,17 @@
-// Synced animations in a real browser: navigation.js's
+import { hostFixtureFile as readFileSync } from './glue-fixture.mjs';
+// Synced animations in a real browser (LLP 1055.002): navigation.js's
 // `animationClocks` sets each joined animation's `startTime` once, so two
 // pulses that mounted apart share one phase; the CSS play state still
 // pauses and resumes them, and a resumed one rejoins the phase.
 import { test, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { cdpBrowser, chromium } from '../../../scripts/agent-launch.mjs';
 import { need } from '../../../scripts/coverage.mjs';
 import { readyPage } from './page.mjs';
+import { fileURLToPath } from 'node:url';
 
-const WEB = resolve(new URL('..', import.meta.url).pathname);
+const WEB = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const { unavailable } = chromium();
 const check = need('chrome', unavailable);
 

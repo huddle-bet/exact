@@ -4,8 +4,9 @@ use exact_logic_abi::{ABI, MAX_MESSAGE};
 use wasmi::{
     Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
+use wasmparser::{Validator, WasmFeatures};
 
-// A call's fuel is a base for any request plus an
+// @ref LLP 1029.000 — a call's fuel is a base for any request plus an
 // allowance for each byte the host hands it: a runaway loop stops at the
 // base, while decoding a large plan at activation is work in proportion to
 // what the host chose to send (Caltrain's 46 KB plan takes about 430 a byte).
@@ -22,6 +23,8 @@ struct Wasm {
         target_os = "android"
     ))]
     stateless: bool,
+    /// Set when the module traps; its memory and state are then undefined.
+    trapped: bool,
     store: Store<StoreLimits>,
     memory: Memory,
     session: u32,
@@ -35,7 +38,25 @@ struct Wasm {
 fn err(e: impl std::fmt::Display) -> String {
     format!("Rust wasm: {e}")
 }
+/// The proposals a module may use: wasmi's defaults without multi-memory,
+/// SIMD, relaxed SIMD and memory64. wasmi enables SIMD and memory64 whenever
+/// any crate of the app compiles in its feature for them, and without that
+/// feature its `Config` has no setter to disable them, so `load` validates
+/// against this set first.
+const PROPOSALS: WasmFeatures = WasmFeatures::MUTABLE_GLOBAL
+    .union(WasmFeatures::MULTI_VALUE)
+    .union(WasmFeatures::SATURATING_FLOAT_TO_INT)
+    .union(WasmFeatures::SIGN_EXTENSION)
+    .union(WasmFeatures::BULK_MEMORY)
+    .union(WasmFeatures::REFERENCE_TYPES)
+    .union(WasmFeatures::GC_TYPES)
+    .union(WasmFeatures::TAIL_CALL)
+    .union(WasmFeatures::EXTENDED_CONST)
+    .union(WasmFeatures::FLOATS);
 pub(crate) fn load(bytes: &[u8]) -> Result<Box<dyn Executor>, String> {
+    Validator::new_with_features(PROPOSALS)
+        .validate_all(bytes)
+        .map_err(err)?;
     let mut config = Config::default();
     config
         .consume_fuel(true)
@@ -100,6 +121,7 @@ pub(crate) fn load(bytes: &[u8]) -> Result<Box<dyn Executor>, String> {
             target_os = "android"
         ))]
         stateless,
+        trapped: false,
         memory,
         session,
         alloc: instance
@@ -132,6 +154,16 @@ impl Drop for Wasm {
         let _ = self.destroy.call(&mut self.store, self.session);
     }
 }
+impl Wasm {
+    fn trap(&mut self, e: wasmi::Error, fuel: u64, len: u32) -> String {
+        self.trapped = true;
+        if e.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel) {
+            format!("Rust wasm: the call used all of its {fuel} fuel ({len} input bytes)")
+        } else {
+            err(e)
+        }
+    }
+}
 impl Executor for Wasm {
     #[cfg(any(
         target_os = "macos",
@@ -142,6 +174,9 @@ impl Executor for Wasm {
     fn stateless(&self) -> bool {
         self.stateless
     }
+    fn trapped(&self) -> bool {
+        self.trapped
+    }
     fn call(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
         if bytes.len() > MAX_MESSAGE {
             return Err("Rust wasm request exceeds bound".into());
@@ -149,7 +184,10 @@ impl Executor for Wasm {
         let fuel = budget(bytes.len());
         self.store.set_fuel(fuel).map_err(err)?;
         let len = bytes.len() as u32;
-        let ptr = self.alloc.call(&mut self.store, len).map_err(err)?;
+        let ptr = self
+            .alloc
+            .call(&mut self.store, len)
+            .map_err(|e| self.trap(e, fuel, len))?;
         if ptr == 0 {
             return Err("Rust wasm allocation failed".into());
         }
@@ -159,27 +197,21 @@ impl Executor for Wasm {
         let result = self
             .call
             .call(&mut self.store, (self.session, ptr, len))
-            .map_err(|e| {
-                if e.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel) {
-                    format!("Rust wasm: the call used all of its {fuel} fuel ({len} input bytes)")
-                } else {
-                    err(e)
-                }
-            })?;
+            .map_err(|e| self.trap(e, fuel, len))?;
         self.dealloc
             .call(&mut self.store, (ptr, len))
-            .map_err(err)?;
+            .map_err(|e| self.trap(e, fuel, len))?;
         if result != 0 {
             return Err("Rust wasm refused the encoded call".into());
         }
         let ptr = self
             .output
             .call(&mut self.store, self.session)
-            .map_err(err)? as usize;
+            .map_err(|e| self.trap(e, fuel, len))? as usize;
         let len = self
             .length
             .call(&mut self.store, self.session)
-            .map_err(err)? as usize;
+            .map_err(|e| self.trap(e, fuel, len))? as usize;
         if len > MAX_MESSAGE {
             return Err("Rust wasm reply exceeds bound".into());
         }

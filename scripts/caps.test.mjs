@@ -186,13 +186,41 @@ function boot(html, files = {}) {
 for (const [name, html, files, expectCode, expect] of [
   ['boot sees a single-quoted src', "<script type='module' src='./glue.js'></script>", {}, 0, 'modules reachable before first pixel: 1'],
   ['boot sees an unquoted src', '<script type=module src=./glue.js></script>', {}, 0, 'modules reachable before first pixel: 1'],
+  ['boot counts listed sources as one shipped module', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': "import './wasm/commit.js';",
+    'host/web/wasm/commit.js': '',
+  }, 0, 'modules reachable before first pixel: 1'],
+  ['boot follows a listed source to an unlisted module', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': "import './wasm/commit.js';",
+    'host/web/wasm/commit.js': "import './unlisted.js';",
+    'host/web/wasm/unlisted.js': '',
+  }, 1, 'module before first pixel is outside the allowed host paths: host/web/wasm/unlisted.js'],
   ['boot follows re-exports', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': "export * from '../../apps/app.js';\n", 'apps/app.js': '' }, 1, 'app JS before first pixel'],
-  ['boot ignores comments', '<!-- <script src=../../apps/bypass.js></script> --><script src=./glue.js></script>', { 'host/web/glue.js': "// export * from '../../apps/bypass.js';\n/* import '../../apps/also.js'; */\n" }, 0, 'modules reachable before first pixel: 1'],
+  ['boot ignores HTML comments and commented static imports', '<!-- <script src=../../apps/bypass.js></script> --><script src=./glue.js></script>', { 'host/web/glue.js': "// export * from '../../apps/bypass.js';\n/* import '../../apps/also.js'; */\n" }, 0, 'modules reachable before first pixel: 1'],
   ['boot rejects malformed JavaScript', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': 'export const =' }, 1, 'invalid module syntax'],
   ['boot retains unused static imports', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': "import unused from '../../apps/app.js';", 'apps/app.js': 'export default 1;' }, 1, 'app JS before first pixel'],
   ['boot rejects computed dynamic imports', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': 'import(globalThis.modulePath);' }, 1, 'dynamic import before first pixel'],
+  ['boot rejects dynamic imports after quoted regular expressions', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': String.raw`const stripped = text => text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+      import(globalThis.modulePath);`,
+  }, 1, 'dynamic import before first pixel'],
+  ['boot rejects dynamic imports separated by comments', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': 'import /* a module */ // after paint\n (globalThis.modulePath);',
+  }, 1, 'dynamic import before first pixel'],
+  ['boot rejects dynamic imports after a long slash comment', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': '// import ' + '/'.repeat(44) + '\nimport(globalThis.modulePath);',
+  }, 1, 'dynamic import before first pixel'],
+  ['boot forbids dynamic import text in comments', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': '// import(globalThis.modulePath);',
+  }, 1, 'dynamic import before first pixel'],
+  ['boot forbids dynamic import text in literals', '<script type=module src=./glue.js></script>', {
+    'host/web/glue.js': 'const example = "import(path)";',
+  }, 1, 'dynamic import before first pixel'],
   ['document entry rejects an imported runtime', '<script type=module src=./glue.js></script>', { 'host/web/document-glue.js': "import './glue.js';" }, 1, 'document-glue.js must have no imports'],
   ['document entry rejects a dynamic app import', '<script type=module src=./glue.js></script>', { 'host/web/document-glue.js': 'import(globalThis.modulePath);' }, 1, 'document-glue.js must have no imports'],
+  ['document entry rejects a dynamic import after a quoted regex', '<script type=module src=./glue.js></script>', {
+    'host/web/document-glue.js': '/"/; import(globalThis.modulePath);',
+  }, 1, 'document-glue.js must have no imports'],
   ['boot rejects top-level return', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': 'return;' }, 1, 'invalid module syntax'],
   ['boot enforces module strict mode', '<script type=module src=./glue.js></script>', { 'host/web/glue.js': 'with ({}) {}' }, 1, 'invalid module syntax'],
   ['boot fails closed on malformed tags', '<script type=module src="./glue.js></script>', {}, 1, 'malformed HTML'],
@@ -620,7 +648,7 @@ for (const [name, html, files, expectCode, expect] of [
   const table = await classify({ app, opts: {}, origin, channel: 'prod', snapshot: { commit: '0'.repeat(40), dirty: false, changes: [] }, release: 'test', web: newWeb,
     bundle: {}, compat: {}, platforms: [], wantOrigin: true });
   whole &&= table.rows[0].files.removed.join(',') === '.well-known/apple-app-site-association,assets/removed.txt';
-  const directHeadRefused = await rejects(async () => await origin.put(`.exact/web/${'b'.repeat(64)}/exact.json`, Buffer.from('unguarded'), { immutable: true }), error => error.message.includes('stream heads require putHead'));
+  const directHeadRefused = await rejects(async () => await origin.put(`.exact/web/${'b'.repeat(64)}/exact.json`, Buffer.from('unguarded'), { immutable: true }), error => error.message.includes('stream heads and locks require the held stream lock'));
   whole &&= directHeadRefused;
   const rootChannel = await classify({ app, opts: {}, origin, channel: 'root', snapshot: { commit: '0'.repeat(40), dirty: false, changes: [] }, release: 'test', web: newWeb,
     bundle: { plan: { sha256: '0'.repeat(64), bytes: 3 }, assets: [] }, compat: { linux: { id: 'c'.repeat(32), inputs: { store: { L: 'A' }, executors: [] } } }, platforms: ['linux'], wantOrigin: false });
@@ -719,15 +747,15 @@ for (const [name, html, files, expectCode, expect] of [
   result('authored-test stores: a dead run\'s are swept, a live run\'s and other names stay',
     JSON.stringify(left)===JSON.stringify(['mine.r999999-ab12.t0','test','test.r'+process.pid+'-cd34.t0','test.t0','tests.r999999-ab12.t0'].sort()),JSON.stringify(left));
   result('authored-test stores live where the hosts keep them',storeBase('com.x','mac',{},'/h')==='/h/Library/Caches/exact/com.x/agent'&&storeBase('com.x','linux',{XDG_CACHE_HOME:'/c'},'/h')==='/c/exact/com.x/agent'&&storeBase('com.x','linux',{XDG_CACHE_HOME:'rel'},'/h')==='/h/.cache/exact/com.x/agent'&&storeBase('com.x','ios')===null);
-  // A web store is a kept Chrome profile and one origin, the same port each drive.
+  // dash, weather, kanban: a web store is a kept Chrome profile and one origin, the same port each drive.
   const x={id:'com.x',dir:'/apps/x'},dx=appDigest('/apps/x');
   const a=webStore(x,'pulse',{},'/h','darwin'),b=webStore(x,'pulse',{XDG_CACHE_HOME:'/c'},'/h','linux'),c=webStore(x,'other',{},'/h','darwin');
   result('a web drive\'s named store keeps its profile and port',a.profile===`/h/Library/Caches/exact/com.x/agent-web-${dx}/pulse`&&b.base===`/c/exact/com.x/agent-web-${dx}`&&a.port===b.port&&a.port>=20000&&a.port<48000&&c.port!==a.port&&/^[0-9a-f]{12}$/.test(dx),JSON.stringify([a,b,c]));
-  // The driver opens Chrome's store where runTests sweeps and removes it, under the drive's env.
+  // review b5-c 3: the driver opens Chrome's store where runTests sweeps and removes it, under the drive's env.
   const d=driveStore(x,'pulse',{XDG_CACHE_HOME:'/iso',HOME:'/hh'},'linux'),e=driveStore(x,'pulse',{HOME:'/hh'},'darwin');
   result('a drive\'s env places its web store',d.base===`/iso/exact/com.x/agent-web-${dx}`&&e.profile===`/hh/Library/Caches/exact/com.x/agent-web-${dx}/pulse`,JSON.stringify([d,e]));
-  // An app may share its default id and store name with an app in another directory (an earlier
-  // build's copy, say); a store is its app's directory's too, so neither its profile nor its origin is shared.
+  // LLP 1116.004 D8: contacts' drive read an earlier round's contacts.json, the same default id and store name in
+  // another directory; a store is its app's directory's too, so neither its profile nor its origin is shared.
   const y=webStore({id:'com.x',dir:'/rounds/r6/x'},'pulse',{},'/h','darwin');
   result('two apps of one id and one store name keep apart',y.profile!==a.profile&&y.port!==a.port&&!y.profile.startsWith(a.base+'/'),JSON.stringify([a,y]));
 }
@@ -831,7 +859,7 @@ for (const [name, html, files, expectCode, expect] of [
   result('Apple packages reject linked static files and roots', copied && appRefused && hostRefused && danglingRootRefused);
 }
 
-// Exercise the driver's actual method with a quantized wall clock.
+// Exercise the driver's actual method with a quantized wall clock (#285).
 test('clock +N real never seeks behind the last reply and ends at from + N', async () => {
   const source = readFileSync(new URL('./agent.mjs', import.meta.url), 'utf8');
   const start = source.indexOf("    async clock(spec = 'settle'"); // (its parameters after the spec are its own)

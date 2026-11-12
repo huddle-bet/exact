@@ -5,7 +5,7 @@ import Foundation
 import XCTest
 @testable import ExactKit
 
-// The dev client across its server's restarts,
+// The dev client across its server's restarts (LLP 1023 D3, LLP 1122 D4),
 // against a loopback stand-in for host/web/dev.mjs: a dropped stream, or a
 // server restarted on the same port, is subscribed and registered again
 // under the build's id, and the pin the channel holds for it comes back on
@@ -122,18 +122,19 @@ final class PlanURLReconnectTests: XCTestCase {
     #endif
 
     /// A loop whose producers are starting answers its dev status, not a
-    /// plan: the host says it once however often it asks, keeps asking, and
-    /// takes the generation once there is one, the status gone; a start
-    /// that failed is said once too, as the failure it is.
+    /// plan (dtool2's pass 3 #8, theme2's condition c): the host says it once
+    /// however often it asks, keeps asking, and takes the generation once
+    /// there is one, the status gone; a start that failed is said once too,
+    /// as the failure it is.
     func testAStartingLoopIsSaidOnceAndThePlanThatFollowsIsTaken() throws {
         let server = try DevServerStub()
         defer { server.stop() }
         try server.start(program: Self.program, plan: Data("plan one".utf8))
         server.status = ("503 Service Unavailable", #"{"exact":1,"status":"preparing","message":"building the module producer"}"#)
-        var said: [String] = [], shown: [PlanURL.DevStatus?] = []
+        var said: [String] = [], shown: [PlanURL.DevNotice?] = []
         let host = Host.open(server.page) { connection in
             connection.log = { said.append($0) }
-            connection.onDevStatus = { shown.append($0) }
+            connection.onDevNotice = { shown.append($0) }
         }
         defer { host.close() }
         settle { server.requests(in: server.epoch).filter { $0 == "GET /" }.count >= 3 }
@@ -144,7 +145,7 @@ final class PlanURLReconnectTests: XCTestCase {
         server.status = nil
         settle { host.applied.count == 1 }
         XCTAssertNil(host.connection?.devStatus)
-        XCTAssertEqual(shown, [.preparing("building the module producer"), nil])
+        XCTAssertEqual(shown, [.loop(.preparing("building the module producer")), nil])
 
         // A start that failed: its error, said once, and asked again later.
         server.status = ("500 Internal Server Error", #"{"exact":1,"status":"failed","message":"the resident loop exited 1: error: could not compile"}"#)
@@ -152,6 +153,48 @@ final class PlanURLReconnectTests: XCTestCase {
         settle { host.connection?.devStatus == .failed("the resident loop exited 1: error: could not compile") }
         settle { server.requests(in: server.epoch).filter { $0 == "GET /" }.count >= 6 }
         XCTAssertEqual(said.filter { $0.contains("failed to start") }.count, 1, "\(said)")
+    }
+
+    /// A save that did not build, and a host whose native code the server no
+    /// longer runs, are told to the window (LLP 1159.001): the error's first
+    /// line until a generation is taken, and the stale host over a later error.
+    func testARefusedSaveAndAStaleHostAreToldUntilAGenerationIsTaken() throws {
+        let server = try DevServerStub()
+        defer { server.stop() }
+        try server.start(program: Self.program, plan: Data("plan one".utf8))
+        var shown: [PlanURL.DevNotice?] = []
+        let host = Host.open(server.page) { $0.onDevNotice = { shown.append($0) } }
+        defer { host.close() }
+        // Its stream is open before a frame is pushed down it.
+        settle { host.applied.count == 1 && server.opened(in: server.epoch) == 1 }
+        XCTAssertEqual(shown, [])
+
+        // The compiler names the file by its whole path; the pill has two lines.
+        server.push(["error": "/Users/someone/apps/todo/app.contract:41:7 unknown attribute `colour`\n 41 |   box colour=1"])
+        settle { host.connection?.refused != nil }
+        XCTAssertEqual(shown, [.refused("app.contract:41:7 unknown attribute `colour`")])
+        XCTAssertEqual(host.applied.count, 1, "the last good plan stays")
+
+        _ = server.publish(program: Self.program, plan: Data("plan two".utf8))
+        settle { host.applied.count == 2 }
+        XCTAssertNil(host.connection?.refused)
+        XCTAssertEqual(shown, [.refused("app.contract:41:7 unknown attribute `colour`"), nil])
+
+        // Repaired back to the plan that runs: the same generation again clears it.
+        server.push(["error": "app.contract:2:1 expected a view"])
+        settle { host.connection?.refused != nil }
+        _ = server.publish(program: Self.program, plan: Data("plan two".utf8))
+        settle { host.connection?.refused == nil }
+        XCTAssertEqual(host.applied.count, 2, "nothing is applied twice")
+
+        server.push(["rebuilt": 1])
+        settle { host.connection?.terminal != nil }
+        server.push(["error": "app.contract:1:1 expected a component"])
+        settle { host.connection?.refused != nil }
+        XCTAssertEqual(host.connection?.notice, .stale)
+        XCTAssertEqual(shown, [.refused("app.contract:41:7 unknown attribute `colour`"), nil, .refused("app.contract:2:1 expected a view"), nil, .stale])
+        XCTAssertEqual(PlanURL.brief("error: could not compile `caltrain-data`"), "error: could not compile `caltrain-data`")
+        XCTAssertEqual(PlanURL.brief(""), "the save did not build")
     }
 
     /// The pin `revision` replayed on stream `nonce`: a pin frame the host

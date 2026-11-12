@@ -1,4 +1,4 @@
-// Paragraph text rasterized off the main thread.
+// Paragraph text rasterized off the main thread. @ref LLP 1044 F4, LLP 1008 §3
 //
 // AppKit paints a layer-backed view only where it is visible, so a paragraph
 // scrolling into view is painted in strips: a backing buffer, a display-list
@@ -37,6 +37,8 @@ final class TextRasterizer {
     // free, so navigation and resize cannot queue obsolete document pixels.
     private var active = 0
     private static let maxConcurrent = 2
+    /// A freed slot resumes admission even when its pixels were discarded.
+    var slotFreed: (() -> Void)?
 
     private func key(_ node: NodeView) -> TextRasterKey {
         TextRasterKey(spec: node.paragraphSpec(), size: node.bounds.size,
@@ -89,6 +91,7 @@ final class TextRasterizer {
             DispatchQueue.main.async { [weak self, weak node] in
                 self?.active -= 1
                 node?.showTextRaster(image?.surface, for: key, frame: image?.frame, cast: image?.cast, deferOffscreen: true)
+                self?.slotFreed?()
             }
         }
         return true
@@ -127,7 +130,9 @@ final class TextRasterizer {
             let port = node.presenter?.textScrollportRect(node) ?? node.visibleRect
             if replacing || active > 0 || (node.inLiveResize && port.height < node.bounds.height * 0.5) {
                 node.useTextStrips()
-                deferred = true
+                // Busy workers request the next pass when they finish.
+                // Occluded live-resize text still needs a later frame.
+                deferred = deferred || active == 0
                 continue
             }
             if let job = prepare(node, key: key) { jobs.append((node, key, job)) }
@@ -160,8 +165,7 @@ final class TextRasterizer {
                 entry.0.showTextRaster(image?.surface, for: entry.1, frame: image?.frame, cast: image?.cast)
             }
             CATransaction.commit()
-            // A later width may have superseded this entire group.
-            jobs.first?.0.presenter?.requestTextPublication()
+            self?.slotFreed?()
         }
         if result.group.wait(timeout: .now() + max(0, wait)) == .success {
             publish()
@@ -211,7 +215,7 @@ extension NodeView {
     /// Too few pixels to repay a surface. Such text draws whole rather than in
     /// bands admitted as it scrolls: bands, and their visit per frame, are for
     /// paragraphs too large to paint at once. HDR text is never small: only a
-    /// raster's layers follow `dynamic-range-limit`.
+    /// raster's layers follow `dynamic-range-limit` (LLP 1100 D8).
     var textIsSmall: Bool {
         let scale = pixelScale ?? 2
         guard bounds.width * bounds.height * scale * scale < TextRasterizer.minPixels else { return false }
@@ -293,9 +297,9 @@ extension NodeView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         // A `text-shadow` is cast by a sublayer of its own: the view's layer
-        // would cast its box too.
+        // would cast its box too (LLP 1077 D3).
         let shadow = textRasterKey.flatMap { $0.spec.hdrShadow == nil ? $0.spec.shadow : nil }
-        // HDR ink too needs its own layer, for its range.
+        // HDR ink too needs its own layer, for its range (LLP 1100 D8).
         let headroom = TextRasterJob.headroom(of: surface)
         if textRasterFrame == CGRect(origin: .zero, size: bounds.size), shadow == nil, headroom <= 1, textRasterCast == nil {
             textRasterOverflowLayer?.dropTextCast(); textRasterOverflowLayer?.removeFromSuperlayer()

@@ -1,4 +1,4 @@
-//! The compiler reads the app's design:
+//! @ref LLP 1121 D2, D3, D7 — the compiler reads the app's design:
 //! `app.tamber` beside `app.contract` (or `app.json`'s `"tamber"`), checked
 //! and folded by `exact-tamber` as an inline `theme` is; names checked in
 //! the rows; an expression over tokens a synthetic token; the plan keeps
@@ -40,7 +40,6 @@ fn colour(plan: Plan, id: &str, row: StyleId) -> ColorValue {
     let key = r.kernel().find_by_test_id(id)[0];
     match r.kernel().node_by_key(key).unwrap().computed(row) {
         RowValue::ColorValue(c) => c,
-        RowValue::Color(c) => ColorValue::Fixed(c),
         other => panic!("{id}: {other:?}"),
     }
 }
@@ -84,7 +83,7 @@ fn app_tamber_beside_the_app_is_its_design_and_the_plan_keeps_what_the_view_name
         colour(plan.clone(), "brand", StyleId::TextColor),
         parsed("#c8102e")
     );
-    // The default app tuple until the plan carries the axes.
+    // The default app tuple until the plan carries the axes (stage 2, commit 3).
     assert_eq!(
         colour(plan, "card", StyleId::BackgroundColor),
         parsed("light-dark(#ffffff, #000000)")
@@ -203,7 +202,7 @@ fn a_row_names_a_token_of_its_kind_and_a_computed_colour_keeps_every_token() {
     ))
     .unwrap_err();
     assert_eq!(e.id, "tamber-kind", "{e:?}");
-    // A string from state may name any token: all are kept.
+    // A string from state may name any token: all are kept (D7).
     let plan = contract::compile(&format!(
         "{theme}component App\n  state c: string = \"brand\"\n  view\n    text \"a\" color=c\n"
     ))
@@ -458,7 +457,6 @@ pub(super) fn row(r: &Runner<NoData>, id: &str, style: StyleId) -> ColorValue {
     let key = r.kernel().find_by_test_id(id)[0];
     match r.kernel().node_by_key(key).unwrap().computed(style) {
         RowValue::ColorValue(c) => c,
-        RowValue::Color(c) => ColorValue::Fixed(c),
         other => panic!("{id}: {other:?}"),
     }
 }
@@ -498,7 +496,7 @@ fn a_changed_pin_sets_its_subtrees_themed_rows_again() {
     assert_eq!(row(&r, "deep", StyleId::BackgroundColor), black);
 }
 
-/// A one-token edit on a
+/// LLP 1121 stage 2's gate (theme1's condition): a one-token edit on a
 /// 1,000-row list sets only the rows that read the token, moves no
 /// geometry, and costs no more than a mode switch over the same list.
 #[test]
@@ -704,7 +702,7 @@ fn a_token_edit_skips_retired_rows_sets_roles_and_stays_its_plans() {
     let (_, set) = r.set_token("ink", "#ff0000", &[]).unwrap();
     assert_eq!(set, 1, "the retired row is not set");
     assert_eq!(row(&r, "kept", StyleId::TextColor), parsed("#ff0000"));
-    // A role's edit sets the session's overrides.
+    // A role's edit sets the session's overrides (LLP 1121 stage 5).
     let canvas = exact_kernel::style::roles::role("Canvas").unwrap();
     let overridden = |r: &Runner<NoData>| {
         let _roles = r.bind_roles();
@@ -902,7 +900,8 @@ fn set_mode_takes_one_axis_and_value_and_the_last_of_an_action_wins() {
     assert_eq!(row(&r, "text", StyleId::TextColor), parsed("#111111"));
 }
 
-/// A reload keeps the window's modes the new design still has: an axis whose value is gone starts again, the others hold.
+/// A reload keeps the window's modes the new design still has (LLP 1007
+/// §6): an axis whose value is gone starts again, the others hold.
 #[test]
 fn a_reload_carries_the_windows_modes_the_new_design_has() {
     let view = "component App\n  view\n    text \"a\" testId=\"text\" color=\"ink\"\n";
@@ -943,7 +942,7 @@ fn a_reload_carries_the_windows_modes_the_new_design_has() {
     assert_eq!(row(&r, "text", StyleId::TextColor), parsed("#222222"));
 }
 
-/// A `setMode` that changes only colour
+/// LLP 1121 stage 2's gate line: a `setMode` that changes only colour
 /// tokens on a 1,000-row list moves no geometry.
 #[test]
 fn a_colour_only_set_mode_on_a_thousand_rows_lays_nothing_out() {
@@ -995,7 +994,7 @@ fn a_mode_is_written_axis_equals_value_and_a_colon_is_refused() {
     );
 }
 
-/// `layout <node>` shows the token beside each row's value,
+/// LLP 1121 D7 — `layout <node>` shows the token beside each row's value,
 /// from the runner's index: what it named, its text, the tuple it was set
 /// in, and whether a boundary set it.
 #[test]
@@ -1049,7 +1048,7 @@ fn layout_names_exactly_the_tokens_a_row_read() {
     assert!(role.contains("\"names\":[\"secondary-label\"]"), "{role}");
 }
 
-/// What publishing a
+/// LLP 1121 stage 4, commit 1 (theme2's condition): what publishing a
 /// kernel's wide-colour mark after every changed commit costs on the normal
 /// write path. Run in release, by hand: `cargo test --release -p contract
 /// --test it wide_mark_cost -- --ignored --nocapture`.
@@ -1128,14 +1127,25 @@ fn wide_mark_cost() {
     );
 }
 
-/// A plan's structure leaves the design's values
-/// out, so a value-only edit has the same structure; a role override's
-/// value, a token's slices and a view changed do not.
+/// LLP 1121 stage 4, commit 3: a plan's structure leaves the design's values
+/// out, including a role override's. Changing the slice count or view changes
+/// the structure.
 #[test]
 fn a_value_only_edit_keeps_the_plans_structure() {
     let view = "component App\n  view\n    column background-color=\"page\"\n      text \"a\" color=\"ink\"\n";
     let structure = |name: &str, design: &str, view: &str| {
-        let path = app(name, &[("app.tamber", design), ("app.contract", view)]);
+        let path = app(
+            name,
+            &[
+                ("app.tamber", design),
+                ("app.contract", view),
+                // The app pass interns these words after the design values.
+                (
+                    "app.json",
+                    r#"{"name":"T","app":{"id":"com.exact.t","name":"T"},"hatches":["badge","none"]}"#,
+                ),
+            ],
+        );
         contract::compile_path(&path).unwrap().structure()
     };
     let design = format!("{MODES}  Canvas = #fafafa\n");
@@ -1163,6 +1173,15 @@ fn a_value_only_edit_keeps_the_plans_structure() {
         structure("structure-together", &together, &view_edge),
         base_edge
     );
+    // A value shared with a manifest word changes the retained pool's order.
+    let shadow = format!("{design}  shadow.card: box-shadow = none\n");
+    let view_shadow = view.replace("column ", "column box-shadow=\"shadow.card\" ");
+    let base_shadow = structure("structure-shadow-none", &shadow, &view_shadow);
+    let raised = shadow.replace("box-shadow = none", "box-shadow = 0 1px 2px #000");
+    assert_eq!(
+        structure("structure-shadow-raised", &raised, &view_shadow),
+        base_shadow
+    );
     // Code that pushes a value's text keeps that string: the literal and the
     // token changed together is no value-only edit.
     let literal = |text: &str| {
@@ -1188,7 +1207,7 @@ fn a_value_only_edit_keeps_the_plans_structure() {
         structure("structure-code-c", &with("#222222"), &literal("#111111ff")),
         shared_code
     );
-    // A role override's value is a value; an override
+    // A role override's value is a value (LLP 1121 stage 5); an override
     // gained is structure.
     let role = design.replace("Canvas = #fafafa", "Canvas = #f0f0f0");
     assert_eq!(structure("structure-role", &role, view), base);
@@ -1209,7 +1228,7 @@ fn a_value_only_edit_keeps_the_plans_structure() {
     assert_ne!(structure("structure-view", &design, &other), base);
 }
 
-/// A value-only edit reaches a running build as
+/// LLP 1121 stage 4, commit 4: a value-only edit reaches a running build as
 /// a batch, with no plan: its rows, a synthetic token's included, set in one
 /// commit with no layout. A stale base is refused (the build asks for a
 /// snapshot), a snapshot applies whole, and another structure is refused.
@@ -1297,7 +1316,7 @@ fn an_empty_pin_declares_nothing() {
     assert_eq!(colour(plan, "arm", StyleId::BackgroundColor), black);
 }
 
-/// A role override's value edit is a batch, not
+/// LLP 1121 stage 5, commit 2: a role override's value edit is a batch, not
 /// a plan. The build sets its session's overrides (a new table its host
 /// re-presents) and the rows that name the role; a snapshot of the same
 /// overrides moves nothing.
@@ -1350,7 +1369,7 @@ fn a_batch_sets_a_role_override_without_a_plan() {
     assert_eq!(row(&r, "page", StyleId::BackgroundColor), parsed("#fafafa"));
 }
 
-/// A role override named bare (`secondary-label`), its row
+/// A role override named bare (`secondary-label`, LLP 1095 D4), its row
 /// naming the role's spelling (`-exact-secondary-label`): a live edit sets
 /// that row too.
 #[test]

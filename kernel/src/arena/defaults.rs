@@ -1,4 +1,4 @@
-//! Live platform defaults below authored rows.
+//! Live platform defaults below authored rows. @ref LLP 1115.000 D2, D4.13, D17.
 use super::*;
 use crate::style::metrics::{self, Column};
 use std::borrow::Cow;
@@ -54,6 +54,40 @@ static TAB_BAR: std::sync::LazyLock<StyleProps> = std::sync::LazyLock::new(|| {
     style
 });
 
+/// The neutral segmented control's track (`host/web/neutral.css`, "A
+/// segmented control"): a `radiogroup` of radios on a fill, round at the
+/// control's radius, its radios inside its padding ([`crate::segmented`]).
+static SEGMENTED: std::sync::LazyLock<StyleProps> = std::sync::LazyLock::new(|| {
+    let role =
+        |name| crate::ColorValue::Role(crate::style::roles::role(name).expect("schema role"));
+    let length = |index| {
+        let px = metrics::length_in(index, Column::Neutral, 1.0, 1.0).expect("neutral row");
+        crate::StyleValue::Number(px as f64)
+    };
+    let mut style = StyleProps {
+        background_color: Some(role("-exact-tertiary-fill")),
+        ..StyleProps::default()
+    };
+    style.mask.set(StyleId::BackgroundColor);
+    let padding = length(crate::generated::metric::SEGMENTED_PADDING);
+    let radius = length(crate::generated::metric::CONTROL_RADIUS);
+    for (id, value) in [
+        (StyleId::PaddingTop, &padding),
+        (StyleId::PaddingRight, &padding),
+        (StyleId::PaddingBottom, &padding),
+        (StyleId::PaddingLeft, &padding),
+        (StyleId::BorderRadiusTopLeft, &radius),
+        (StyleId::BorderRadiusTopRight, &radius),
+        (StyleId::BorderRadiusBottomRight, &radius),
+        (StyleId::BorderRadiusBottomLeft, &radius),
+    ] {
+        style
+            .set_dynamic(id, value)
+            .expect("schema segmented value");
+    }
+    style
+});
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DefaultContext {
     pub alert: u8,
@@ -62,6 +96,7 @@ pub(crate) struct DefaultContext {
     pub tab_bar: bool,
     pub tab: bool,
     pub native_tab: bool,
+    pub segmented: bool,
     /// [`NodeArena::said_style_rows`].
     pub said_style: StyleMask,
     /// [`NodeArena::ink_said`]: a move can change it with the colour equal.
@@ -140,6 +175,7 @@ impl NodeArena {
             tab_bar: self.is_neutral_tab_bar(slot),
             tab: self.is_neutral_tab(slot),
             native_tab: self.neutral_tab_root(slot).is_some(),
+            segmented: self.is_neutral_segmented(slot),
             said_style: self.said_style_rows(slot),
             ink_said: self.ink_said(slot),
         }
@@ -153,12 +189,23 @@ impl NodeArena {
         TAB_BAR.mask
     }
 
+    pub(crate) fn segmented_rows() -> StyleMask {
+        SEGMENTED.mask
+    }
+
+    fn is_neutral_segmented(&self, slot: u32) -> bool {
+        metrics::column() == Column::Neutral
+            && self.segmented_radios(slot).is_some()
+            && !self.grouped_row(slot)
+    }
+
     fn structural_starts(&self, slot: u32) -> impl Iterator<Item = &StyleProps> {
         // A route header can also be a tablist. The later header rule wins
         // shared rows while the tab bar's top edge still accompanies its bottom.
         [
             self.is_neutral_header(slot).then(|| &*HEADER),
             self.is_neutral_tab_bar(slot).then(|| &*TAB_BAR),
+            self.is_neutral_segmented(slot).then(|| &*SEGMENTED),
         ]
         .into_iter()
         .flatten()
@@ -189,7 +236,7 @@ impl NodeArena {
     /// The slot whose own row supplies `id` for `slot`: the slot itself when
     /// it sets the row; for a row the schema marks inherited, the nearest
     /// logical ancestor that does; `None` when the initial value applies
-    /// (CSS inheritance).
+    /// (CSS inheritance, LLP 1035.000 D1).
     pub fn inherited_source(&self, slot: u32, id: StyleId) -> Option<u32> {
         let mut cur = Some(slot);
         while let Some(s) = cur {
@@ -230,8 +277,8 @@ impl NodeArena {
         out
     }
 
-    /// [`Self::computed_style`] as CSS computes it, before Bold Text: what a
-    /// cascade of its own (an SVG's) starts from.
+    /// [`Self::computed_style`] as CSS computes it, before Bold Text (LLP
+    /// 1115.000 D12.3): what a cascade of its own (an SVG's) starts from.
     pub(crate) fn computed_rows(&self, slot: u32, rows: StyleMask) -> StyleProps {
         let mut out = self.effective_style(slot).into_owned();
         self.copy_inherited(slot, rows, |from, mask| out.copy_rows(from, mask));
@@ -258,7 +305,8 @@ impl NodeArena {
             }
             cur = self.parents[s as usize];
         }
-        // A bare `font-size` style fills what nothing above says.
+        // A bare `font-size` style fills what nothing above says (LLP
+        // 1115.000 D12.2).
         if let Some((_, style)) = self.bare_text_style(slot, id) {
             return style;
         }
@@ -268,8 +316,8 @@ impl NodeArena {
         &self.styles[slot as usize]
     }
 
-    /// The slot whose text style supplies inherited row `id` for `slot`:
-    /// one that names it through the `font`
+    /// The slot whose text style supplies inherited row `id` for `slot`
+    /// (LLP 1115.000 D12.2): one that names it through the `font`
     /// shorthand, where nothing written stops the walk first, or the
     /// nearest bare `font-size` style when nothing above says the row.
     pub fn text_style_source(&self, slot: u32, id: StyleId) -> Option<u32> {
@@ -336,7 +384,7 @@ impl NodeArena {
             .minus(self.styles[slot as usize].mask);
         let mut cur = Some(slot);
         // Per row, the nearest bare `font-size` style on the way up whose
-        // node does not write the row: a style gives
+        // node does not write the row (LLP 1115.000 D12.2): a style gives
         // two rows, so two fills at most.
         let mut bare: [Option<(&StyleProps, StyleMask)>; 2] = [None, None];
         let mut claimed = StyleMask::default();

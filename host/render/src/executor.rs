@@ -2,12 +2,14 @@
 //! (grant-checked transport, ordered and independent lanes, continuations on
 //! its workers), with a wake the rendering thread waits on instead of a UI
 //! loop. Dropping it aborts whatever is still in flight.
-use exact_runner::{Outcome, RequestOut, Work};
+use exact_runner::{CompletionTiming, Outcome, RequestOut, Work};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 #[path = "../../apple/src/executor_core.rs"]
 #[allow(dead_code)] // `run` is the core's own tests' entry
 mod core;
+#[path = "../../apple/src/executor_pump.rs"]
+pub mod pump;
 /// A new executor waits for a native-worker slot under test: the crate's own
 /// tests, and the integration binary, whose every test's servers and renders
 /// share one process's bound (`test-wait`, which only the dev-dependency on
@@ -24,9 +26,9 @@ impl Executor {
     /// Start the core's owners under `grants` (the render's, never more
     /// than the app's).
     pub fn start(grants: &str) -> Self {
-        // A server, not an app on a device: its fetches go over rustls on
-        // macOS too, not NSURLSession, whose per-call cost was ~30% of a
-        // RealWorld page's CPU.
+        // @ref LLP 1048.000 D10 — a server, not an app on a device: its
+        // fetches go over rustls on macOS too (Charlie, 2026-09-29), not
+        // NSURLSession, whose per-call cost was ~30% of a RealWorld page's CPU.
         // `EXACT_RENDER_TRANSPORT=platform` keeps the platform's (a check
         // against the platform, or a way back).
         let platform = std::env::var("EXACT_RENDER_TRANSPORT").as_deref() == Ok("platform");
@@ -69,7 +71,7 @@ impl Executor {
     }
 
     /// Where an app's files are, for a request whose body is one of them
-    /// A render serves no app files and never sets them,
+    /// (LLP 1108 D6 R2). A render serves no app files and never sets them,
     /// so such a request is refused; an embedder that has them may.
     pub fn set_app_roots(&self, roots: [std::path::PathBuf; 3]) {
         self.core.set_app_roots(roots);
@@ -80,9 +82,13 @@ impl Executor {
         self.core.run_owned(request, work)
     }
 
-    /// At most one completion, oldest ordered first; more rewake.
-    pub fn drain(&self) -> Vec<(u64, Outcome, Option<u64>)> {
+    /// Acknowledge the wake before draining a bounded group of replies.
+    pub fn begin_pump(&self) {
         self.core.begin_pump();
+    }
+
+    /// Take the next ready completion; more ready outcomes wake again.
+    pub fn drain(&self) -> Vec<(u64, Outcome, Option<CompletionTiming>)> {
         self.core.drain()
     }
 
@@ -98,7 +104,8 @@ impl Executor {
     }
 
     /// Settle a re-ask (`Dispatch::Again`) in its ordered place, with no
-    /// work; kept pending while the window is full. An error is terminal, for the host to record.
+    /// work (LLP 1041 §8.4, amended 2026-10-09); kept pending while the
+    /// window is full. An error is terminal, for the host to record.
     pub fn again(&self, request: &RequestOut) -> Result<(), &'static str> {
         self.core.again(request.ticket)
     }
@@ -107,7 +114,7 @@ impl Executor {
         self.core.forget(held);
     }
     /// The uploads let go that had begun to go out, for
-    /// `Runner::uploads_started`.
+    /// `Runner::uploads_started` (LLP 1016.000 D10).
     pub fn let_go_started(&self, held: impl Fn(u64) -> bool) -> Vec<u64> {
         self.core.let_go_started(held)
     }
@@ -118,6 +125,9 @@ impl Executor {
 
     /// Wait until the core has news, or until `until`.
     pub fn wait(&self, until: Instant) {
+        // A direct drain may have consumed the wake: rearm before a later
+        // stream message must wake this waiter (LLP 1162 D3).
+        self.core.begin_pump();
         let (woken, ready) = &*self.wake;
         let mut guard = woken.lock().unwrap();
         while !*guard {

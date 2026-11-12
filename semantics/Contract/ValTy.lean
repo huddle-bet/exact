@@ -4,7 +4,8 @@ Types as sets of values, and the order the checker's `?` induces on them.
 `ValTy p v τ` says the value `v` has the type `τ` in program `p`. It is
 `conforms` without finiteness: a number inside an evaluation may be an
 infinity or NaN (`1 / 0` is a value), and only a boundary — a slot written,
-a derive settled, a source's answer — refuses a non-finite one, at run time.
+a derive settled, a source's argument or answer — refuses a non-finite one,
+at run time.
 
 The checker's `?` (`Ty.unknown`) is the empty type here: `[]` is a
 `list<?>` and `none` an `option<?>` because nothing is in the list or the
@@ -103,8 +104,8 @@ theorem unify_le : ∀ {a b u : Ty}, unify a b = .some u → le a u = true ∧ l
     case record s' => obtain ⟨rfl, rfl⟩ := h; simp [le]
     case unknown => subst h; simp [le]
 
-/-- A list literal's items met in turn (`Ty::unify`, item by item):
-`?` for `[]`. -/
+/-- A list literal's items met in turn (`Ty::unify`, item by item, LLP
+1088 §9.1): `?` for `[]`. -/
 def unifyAll : List Ty → Option Ty
   | [] => .some .unknown
   | t :: ts => (unifyAll ts).bind (unify t)

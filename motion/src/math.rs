@@ -1,5 +1,7 @@
 //! The pinned deterministic-math profile.
 //!
+//! @ref LLP 1003 §5 (determinism)
+//!
 //! Every transcendental the evaluator calls routes through this module, so the
 //! same transition advanced to the same time produces the same bits on every
 //! target this crate compiles for. Rust does not contract separate

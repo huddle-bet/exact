@@ -14,7 +14,7 @@ import java.io.File
 import java.nio.ByteOrder
 import java.nio.IntBuffer
 
-/** Canvas reader for exact2's op stream (host/linux/src/canvas.rs).
+/** Canvas reader for exact2's op stream (host/linux/src/canvas.rs; LLP 1076 §3.3).
  * Rows are RenderNodes recorded on a worker (async=0: main) and retained until freed.
  * A scroll frame translates the scroller's row group without repainting it.
  */
@@ -23,11 +23,11 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     var keys: Keys? = null
     /** The stream's platform elements (op 28). */
     var natives: Natives? = null
-    /** The app's text fields, each the platform's own ([Fields]): op 28, kind 4, draws one. */
+    /** The app's text fields, each the platform's own ([Fields], LLP 1115.001 D8): op 28, kind 4, draws one. */
     internal var fields: Fields? = null
-    /** The app's bars, over this view ([Bars]): told with the stream they belong to. */
+    /** The app's bars, over this view ([Bars], LLP 1115.001 D11): told with the stream they belong to. */
     internal var bars: Bars? = null
-    /** Delivers the stream's accessibility tree ([Access]); owner=0 also checks service availability. */
+    /** Delivers the stream's accessibility tree ([Access], LLP 1115.001 D13); owner=0 also checks service availability. */
     internal var access: ((IntArray) -> Unit)? = null
     private var accessible = false
     private var accessAgain = false
@@ -59,7 +59,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
         return at + rowTall.get(row, height) > -margin && at < height + margin
     }
     private val unrowedSeen = HashSet<Int>()
-    private var started = false
+    internal var started = false
     private var ops: IntBuffer? = null
     private var first = true
     private val fonts = java.util.concurrent.ConcurrentHashMap<Int, Font>()
@@ -123,7 +123,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     var window = 0 to 0
     /** What the host says to draw around the page ([Native.chrome]), when exact2 runs here: told as it changes. */
     var chrome: (IntArray) -> Unit = {}
-    /** What exact2 asks of the platform ([Native.requests]), when it runs here: taken after each
+    /** What exact2 asks of the platform ([Native.requests], LLP 1115.001 D5), when it runs here: taken after each
      * turn and whenever it wakes this thread ([asking]). With an [owner], the owner takes them. */
     internal var asked: (IntArray) -> Unit = {}
     private fun asking() { Native.requests()?.let(asked) }
@@ -167,7 +167,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     /** The last stream applied changed only nodes the view's drawing references: no need to draw the view again. */
     private var quiet = false
 
-    /** The view's size is never told to exact2: the activity tells it the window and its insets,
+    /** The view's size is never told to exact2 (LLP 1115.001 D3.3): the activity tells it the window and its insets,
      * the presenter places the page in it, and the view is laid out there ([ExactActivity.chrome]). */
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         main.width = w; main.height = h
@@ -198,7 +198,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
      * made after it (the activity made again) watches its own, and this one must not take that one's streams. */
     private var wakes: Wakes? = null
 
-    /** Whether the activity is started. Stopped, the view asks for no frame: no turn at a vsync,
+    /** Whether the activity is started. Stopped, the view asks for no frame (LLP 1115.001 D15.2): no turn at a vsync,
      * no timer, no layer sampled; the first frame after it starts again shows what changed meanwhile. */
     private var running = true
 
@@ -222,12 +222,13 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
         removeCallbacks(timer); removeCallbacks(refiner)
     }
 
-    /** A finger's scroll, its fling and its ends ([Scrolling]). */
+    /** A finger's scroll, its fling and its ends ([Scrolling], LLP 1115.001 D7), and the fingers past a touch's first. */
     private val scrolling = Scrolling(this)
+    internal val fingers = Fingers(this)
 
     /** The touch that is down becomes a long press once it has been held still for the system's own time
      * ([android.view.ViewConfiguration.getLongPressTimeout], which follows the person's touch and hold delay):
-     * exact2 is told so (action 4), and what names a context menu under it opens it. A touch
+     * exact2 is told so (action 4), and what names a context menu under it opens it (LLP 1115.001 D10). A touch
      * that moves past the system's slop, scrolls, lifts or is a hosted field's is none. */
     private val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
     private var heldX = 0f
@@ -248,7 +249,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
             }
         }
     }
-    private fun hold(e: MotionEvent?) {
+    internal fun hold(e: MotionEvent?) {
         removeCallbacks(held)
         if (e == null) return
         heldX = e.x; heldY = e.y; heldTool = e.getToolType(0)
@@ -299,6 +300,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
             // A new contact cannot borrow the previous contact's delayed hit answer.
             forgetModuleTap(replayRelease = true)
             moduleDownX = e.x; moduleDownY = e.y
+            fingers.began(e)
         }
         // A touch that scrolls is the reader's and exact2 hears no more of it; any other goes on to exact2.
         if (started && scrolling.touch(e)) { forgetModuleTap(); hold(null); return true }
@@ -317,23 +319,21 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
         if (e.actionMasked == MotionEvent.ACTION_CANCEL || e.actionMasked == MotionEvent.ACTION_UP ||
             e.actionMasked == MotionEvent.ACTION_POINTER_DOWN || e.actionMasked == MotionEvent.ACTION_POINTER_UP) forgetModuleTap()
         // A touch in a hosted text field's box is held for the field, and is the field's own once exact2 says the
-        // field is what is under it ([Fields]): exact2 hears of the focus, not of the touch.
+        // field is what is under it ([Fields], LLP 1115.001 D8): exact2 hears of the focus, not of the touch.
         val hosted = fields
         if (started && hosted != null && hosted.touch(e)) {
             hold(null)
             if (down) { val touch = hosted.serial; under(e.x, e.y) { hosted.under(touch, it.getOrElse(2) { 0 }) } }
             return true
         }
-        val action = when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> 0; MotionEvent.ACTION_UP -> 1; MotionEvent.ACTION_MOVE -> 2; else -> 3
-        }
+        val action = fingers.touch(e).takeIf { it >= 0 } ?: return true
         when (action) {
             0 -> if (started) hold(e)
             2 -> if (Math.abs(e.x - heldX) > slop || Math.abs(e.y - heldY) > slop) hold(null)
             else -> hold(null)
         }
         if (action == 1) Exact.touched = e.eventTime
-        forward(action, e.x, e.y, e.getToolType(0), -1L)
+        fingers.forward(e, action)
         if (down && started) {
             val serial = moduleSerial
             moduleAwaiting = 1
@@ -370,7 +370,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     internal fun fieldKeeps() = fields?.keeps == true
 
     /** exact2 asks the software keyboard ([Requests], kind 6): hidden ([state] 0), or shown for an input (1) or a
-     * textarea (3). For a hosted field ([field]) the field takes the focus and shows its own; for
+     * textarea (3). For a hosted field ([field], LLP 1115.001 D8) the field takes the focus and shows its own; for
      * one exact2 paints, this view's ([Keys]). */
     internal fun keyboard(state: Int, field: Int) {
         val hosted = fields
@@ -480,7 +480,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     fun onPublished() { publish() }
 
     /** What the owner published, drawn; whether there was any. */
-    private fun publish(): Boolean {
+    internal fun publish(): Boolean {
         if (!started) return false
         if (!takeOwned()) return false
         if (moved || quiet) ticker?.invalidate() else invalidate()
@@ -505,7 +505,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     private val HOLD_MS = 400L
     private val warmer = Warm()
     /** wait=N: a release waits N ms for exact2's answer (Exact.WAIT_MS by default), to compare. */
-    private val releaseWait = (context as Activity).intent.getStringExtra("wait")?.toLongOrNull() ?: Exact.WAIT_MS
+    internal val releaseWait = (context as Activity).intent.getStringExtra("wait")?.toLongOrNull() ?: Exact.WAIT_MS
     override fun onDetachedFromWindow() {
         forgetModuleTap()
         warmer.destroy()
@@ -1028,7 +1028,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
     }
 
     /** A wake (a reply, a picture, a timer): draw only when the stream changed. */
-    private fun pump() {
+    internal fun pump() {
         if (owner != null || !running) return // the owner publishes what a key or a reply changed
         if (take()) { if (moved) ticker?.invalidate() else { taken = true; invalidate() } } else schedule()
     }
@@ -1085,15 +1085,6 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
         var i = from
         while (i < n) {
             when (b.get(i)) {
-                1 -> i += 7
-                2 -> i += 14
-                3 -> i = skipPath(b, i + 3)
-                4 -> i += 13
-                5 -> i = skipPath(b, i + 2)
-                6 -> i += 1
-                7 -> i += 2
-                8 -> i += 6
-                9 -> i += 6 + 3 * b.get(i + 5)
                 10, 41 -> { fonts[b.get(i + 1)] = fontAt(b, i); i = fontEnd(b, i) }
                 11 -> {
                     val id = b.get(i + 1)
@@ -1119,14 +1110,6 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
                     }
                     i += 2
                 }
-                13 -> i = skipPath(b, i + 5)
-                14 -> i += 18
-                25 -> i += 3 + b.get(i + 2)
-                43 -> i += 2 + b.get(i + 1)
-                44 -> i += 2
-                27 -> i += 14
-                42 -> i += 14 + 2 * b.get(i + 1)
-                40 -> i += 27
                 28 -> {
                     val id = b.get(i + 1); val kind = b.get(i + 2) and 255; val len = b.get(i + 15)
                     val bytes = ByteArray(len)
@@ -1194,10 +1177,8 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
                     } else makeRow(b, i, shown)
                     i = j
                 }
-                16 -> i += 1
                 17 -> { if (ingestRow == 0) { rowTop.put(b.get(i + 1), b.get(i + 3)); rowGroup.put(b.get(i + 1), ingestGroup) }; i += 4 }
                 18 -> { freeing.add(b.get(i + 1)); i += 2 }
-                19 -> i += 26
                 20 -> { if (ingestRow == 0) ingestGroup = b.get(i + 1); i += 2 }
                 21 -> { if (ingestRow == 0) ingestGroup = 0; i += 1 }
                 23 -> {
@@ -1249,7 +1230,7 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
                     slots.set(id, b, i + 3, i + 3 + len, main)
                     i += 3 + len
                 }
-                else -> throw IllegalStateException("op ${b.get(i)} at $i")
+                else -> i = structure.end(b, i)
             }
         }
     }
@@ -1476,14 +1457,6 @@ class ExactView(context: Context, private val live: Boolean, private val onFirst
         slotOwner = Slots.layer(b.get(at + 1))
         slots.again(slotOwner) { ingest(b, at + 19, at + 3 + len) }
         slotOwner = outer
-    }
-
-    private fun skipPath(b: IntBuffer, at: Int): Int {
-        var i = at + 1
-        repeat(b.get(at)) {
-            i += when (b.get(i)) { 0, 1 -> 3; 2 -> 7; else -> 1 }
-        }
-        return i
     }
 }
 

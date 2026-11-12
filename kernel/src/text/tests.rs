@@ -13,6 +13,7 @@ fn style(font_size: f32) -> TextStyle {
         letter_spacing: 0.0,
         font_variant_numeric: 0,
         font_variant_ligatures: 0,
+        font_features: Default::default(),
         bold_text: false,
     }
 }
@@ -252,7 +253,7 @@ fn explicit_newlines_break_only_preserved_lines() {
 
 #[test]
 fn pre_line_breaks_at_line_feeds_and_collapses_the_rest() {
-    // Max-content is the longest forced line,
+    // @ref LLP 1053 §0 G5 — max-content is the longest forced line,
     // min-content the longest word.
     let text = "  one   two  \n  three";
     let m = measure_in(text, AxisOffer::MaxContent, crate::WhiteSpace::PreLine);
@@ -265,6 +266,7 @@ fn pre_line_breaks_at_line_feeds_and_collapses_the_rest() {
 
 #[test]
 fn nowrap_min_content_is_the_unwrapped_line() {
+    // @ref LLP 1053 §0 G5
     for width in [
         AxisOffer::MinContent,
         AxisOffer::Definite(10.0),
@@ -277,7 +279,7 @@ fn nowrap_min_content_is_the_unwrapped_line() {
 
 #[test]
 fn pre_keeps_spaces_and_breaks_only_at_line_feeds() {
-    // Preserve × nowrap: min-content is max-content.
+    // @ref LLP 1053 G5 — preserve × nowrap: min-content is max-content.
     for width in [
         AxisOffer::MinContent,
         AxisOffer::Definite(10.0),

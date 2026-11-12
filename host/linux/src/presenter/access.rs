@@ -1,9 +1,9 @@
-//! What a shell answers its platform's accessibility services with.
-//! Android's reader has one view, and what is in it is
+//! What a shell answers its platform's accessibility services with (LLP
+//! 1115.001 D13). Android's reader has one view, and what is in it is
 //! painted, so TalkBack sees nothing unless the reader's view answers for
 //! it: an `AccessibilityNodeProvider` whose virtual nodes are these
 //! (`host/android/canvas`, `Access.kt`). Desktop Linux has no shell that
-//! asks (there is no AT-SPI tree), and nothing here runs there.
+//! asks (LLP 1015 §7: no AT-SPI tree), and nothing here runs there.
 //!
 //! **Nothing is built until the shell asks.** The tree is made in
 //! [`Presenter::reader_access`], which the reader calls only while an
@@ -29,19 +29,23 @@
 //! the page (`bars.rs`): their nodes are read from the bars, first and
 //! last, so the order is bar, content, navigation bar. While a surface of
 //! the top layer is open (`top.rs`) the tree is that surface alone, in its
-//! own window's space: the page under it cannot be reached.
+//! own window's space: the page under it cannot be reached. While a
+//! select's menu is open the tree is that select and the menu's listbox
+//! (`access/menu.rs`).
 //!
 //! **Identity** ([`identity`]) is what a platform keeps its place by, so it
 //! must outlive a commit, a scroll, and a row that leaves and returns. A
 //! node's is its view id, which the runner keeps while the view lives.
 //! Under a list's row it is derived from the list's own identity, the
 //! row's item key and the node's place in the row, since a row's views are
-//! given to another item when it scrolls away.
+//! given to another item when it scrolls away (LLP 1078).
 //!
-//! **A hosted text field** is the reader's own view and reports
+//! **A hosted text field** is the reader's own view (D8) and reports
 //! itself: its node here says only where it stands in the order and what
 //! its author named it.
+mod menu;
 mod surface;
+mod walk;
 
 use super::requests::string;
 use super::scrollers::Scroller;
@@ -90,7 +94,7 @@ pub mod role {
     pub const TOGGLE: i32 = 17;
     /// The top app bar's Up arrow, which the platform names.
     pub const UP: i32 = 18;
-    /// A `table`: ARIA's `table`.
+    /// A `table` (LLP 1153 D7.3): ARIA's `table`.
     pub const TABLE: i32 = 19;
     /// A table's `tr`: ARIA's `row`. A row group is no node.
     pub const ROW: i32 = 20;
@@ -108,6 +112,10 @@ pub mod role {
     pub const TERM: i32 = 26;
     /// A `dd`: ARIA's `definition`.
     pub const DEFINITION: i32 = 27;
+    /// An open `select`'s menu: ARIA's `listbox`, under its dropdown.
+    pub const LIST_BOX: i32 = 28;
+    /// A row of an open `select`'s menu: ARIA's `option`.
+    pub const OPTION: i32 = 29;
 }
 
 /// A table's or a description list's element as its role (HTML-AAM): a
@@ -263,6 +271,7 @@ struct Key {
     surface: Option<(u32, u32)>,
     bars: u32,
     frame: [i32; 4],
+    menu: Option<(ViewId, u32)>,
 }
 
 fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -288,7 +297,7 @@ fn rowed(hash: u64) -> i32 {
 /// which the runner keeps for as long as the view lives, through every
 /// commit and scroll. Under a list's row (a node whose ancestor carries a
 /// `listItemKey`) the view is not the item's own: the row's views are
-/// given to another item when it scrolls away, and a row that
+/// given to another item when it scrolls away (LLP 1078), and a row that
 /// returns is built from others. So there it is a hash of the list's own
 /// identity, the row's item key, and the node's place in the row (its
 /// index among its siblings at each level down from the row).
@@ -352,7 +361,7 @@ struct Build {
     boxes: BTreeMap<ViewId, PaintedBox>,
     /// The page's place in the window.
     origin: (f32, f32),
-    /// A row's place, waiting for the first node emitted under it.
+    /// A row's place, waiting for the first node emitted in its subtree.
     item: (i32, i32),
     /// How far each list scrolls, read once.
     limits: BTreeMap<ViewId, f32>,
@@ -459,8 +468,14 @@ impl<D: DataSource> Presenter<D> {
     }
 
     fn access_inline_words(&self, node: &NodeRef<'_>) -> String {
-        if node.props.str(PropId::Text).is_some() {
-            return self.host.kernel().bar_text(node.id).unwrap_or_default();
+        if let Some(text) = node.props.str(PropId::Text) {
+            // A Markdown text reads as the pieces `markup::expand` draws,
+            // which has no atoms: one is drawn and read as its source
+            // (LLP 1045.000's host table).
+            return match node.props.str(PropId::Markup) {
+                Some("markdown") => exact_markdown::spoken(&exact_markdown::pieces(text)),
+                _ => self.host.kernel().bar_text(node.id).unwrap_or_default(),
+            };
         }
         type RunLabel<'a> = (bool, Option<(ViewId, &'a str)>);
         fn collect<'a>(
@@ -666,7 +681,11 @@ impl<D: DataSource> Presenter<D> {
             ControlKind::Select => {
                 let shown = self.host.kernel().select_chosen(node.id);
                 let label = shown.map(|c| c.label).unwrap_or_else(value);
-                (role::DROPDOWN, flag::CLICK, [0.0; 3], label)
+                let mut flags = flag::CLICK | flag::EXPANDABLE;
+                if self.menu == Some(node.id) {
+                    flags |= flag::EXPANDED;
+                }
+                (role::DROPDOWN, flags, [0.0; 3], label)
             }
             _ => (role::BUTTON, flag::CLICK, [0.0; 3], value()),
         }
@@ -726,228 +745,6 @@ impl<D: DataSource> Presenter<D> {
             flags |= flag::BACKWARD;
         }
         (flags, [at, max, 0.0])
-    }
-
-    /// Walk `id` and what is under it into the tree.
-    fn access_walk(&self, b: &mut Build, id: ViewId, scope: Scope) {
-        let Some(node) = self.host.kernel().node(id) else {
-            return;
-        };
-        self.access_walk_node(b, node, scope);
-    }
-
-    fn access_walk_node(&self, b: &mut Build, node: NodeRef<'_>, mut scope: Scope) {
-        let id = node.id;
-        // An open popover is drawn in the top layer: it is walked after the
-        // page, under no clip or scroll of its page ancestors.
-        if b.top == Some(id) {
-            return;
-        }
-        let (hidden, inert) = self.host.route_visibility(id);
-        if hidden
-            || inert
-            || node.style.display == Display::None
-            || node.props.bool(PropId::AccessibilityElementsHidden) == Some(true)
-        {
-            return;
-        }
-        if let Some(said) = node.props.bool(PropId::AccessibilityDisabled) {
-            scope.disabled = said;
-        }
-        // A split's list route keeps the window's width; what shows of it is
-        // its column, the clip paint gave its box, which no scroll inside it moves.
-        if self.host.navigation.split.active.as_ref().map(|s| s.root) == Some(id) {
-            if let Some((x, y, w, h)) = b.boxes.get(&id).and_then(|p| p.clip) {
-                let column = (x + scope.shift.0, y + scope.shift.1, w, h);
-                let Some(clip) = intersect(column, scope.clip) else {
-                    return;
-                };
-                scope.clip = clip;
-            }
-        }
-        let position = |prop| node.props.get(prop).and_then(|v| v.as_int());
-        if let Some(at) = position(PropId::AccessibilityPosInSet) {
-            let size = position(PropId::AccessibilitySetSize).unwrap_or(0);
-            b.item = (at as i32, size as i32);
-        }
-        let aria = node.props.str(PropId::AccessibilityRole);
-        let control = ControlKind::of(node.node_type, node.props);
-        // What is one node, with nothing under it.
-        let leaf = match (node.node_type, control) {
-            (NodeType::TextInput, _) => {
-                let hosted = self.hosts_field(id);
-                let role = if hosted { role::FIELD } else { role::EDIT };
-                let name = self.access_label(&node).unwrap_or_default();
-                let value = match hosted {
-                    true => node
-                        .props
-                        .str(PropId::Placeholder)
-                        .unwrap_or_default()
-                        .into(),
-                    false => self.field_text(id),
-                };
-                Some((role, flag::CLICK, [0.0; 3], (name, value)))
-            }
-            (_, Some(kind)) if kind != ControlKind::Button => {
-                let (role, flags, range, value) = self.access_control(&node, kind);
-                let name = self.access_label(&node).unwrap_or_default();
-                Some((role, flags, range, (name, value)))
-            }
-            _ => None,
-        };
-        if let Some((role, flags, range, words)) = leaf {
-            self.access_emit(b, &scope, &node, role, flags, range, || Some(words));
-            return;
-        }
-        if self.access_pressable(&node) {
-            let (role, flags) = self.access_pressed(&node);
-            let name = || Some((self.access_name(&node), String::new()));
-            let Some(own) = self.access_emit(b, &scope, &node, role, flags, [0.0; 3], name) else {
-                return;
-            };
-            scope.parent = own;
-            scope.inside = true;
-        } else if matches!(
-            node.node_type,
-            NodeType::Text | NodeType::Image | NodeType::Svg
-        ) {
-            if scope.inside {
-                return;
-            }
-            let text = node.node_type == NodeType::Text;
-            let name = || {
-                let label = self.access_label(&node);
-                let name = label.unwrap_or_else(|| match text {
-                    true => self.access_inline_words(&node),
-                    false => String::new(),
-                });
-                (!name.trim().is_empty()).then_some((name, String::new()))
-            };
-            // A heading by its role, never by an
-            // `aria-level` alone (the kernel's `Props::heading`).
-            let heading = node.props.heading().is_some();
-            let role = match (text, heading) {
-                (true, true) => role::HEADING,
-                (true, false) => role::TEXT,
-                _ => role::IMAGE,
-            };
-            if let Some(own) = self.access_emit(b, &scope, &node, role, 0, [0.0; 3], name) {
-                scope.parent = own;
-            }
-            if text {
-                self.access_inline_controls(b, &node, scope);
-            }
-            return;
-        } else if let Some(now) =
-            number(node.props.str(PropId::AccessibilityValueNow)).filter(|_| {
-                matches!(
-                    aria,
-                    Some("progressbar" | "slider" | "meter" | "scrollbar" | "spinbutton")
-                )
-            })
-        {
-            // A range role is one element, its children presentational.
-            let min = number(node.props.str(PropId::AccessibilityValueMin)).unwrap_or(0.0);
-            let max = number(node.props.str(PropId::AccessibilityValueMax)).unwrap_or(100.0);
-            let role = if aria == Some("slider") {
-                role::SLIDER
-            } else {
-                role::PROGRESS
-            };
-            let text = node
-                .props
-                .str(PropId::AccessibilityValueText)
-                .unwrap_or_default();
-            let words = (
-                self.access_label(&node).unwrap_or_default(),
-                text.to_string(),
-            );
-            self.access_emit(b, &scope, &node, role, flag::RANGE, [min, max, now], || {
-                Some(words)
-            });
-            return;
-        } else {
-            // A swipe row is written as a scroller, and is the presenter's
-            // own gesture: its actions are not a place to scroll to. What
-            // scrolls is what the painter and the wheel scroll, a neutral
-            // alert's message box by the alert's defaults too.
-            let (ox, oy) = crate::paint::effective_overflow(&node);
-            let may = !scope.inside
-                && node.props.str(PropId::SwipeContent).is_none()
-                && [ox, oy]
-                    .iter()
-                    .any(|o| matches!(o, Overflow::Scroll | Overflow::Auto));
-            let scroller = (may.then(|| self.scroller(id, &b.limits)).flatten())
-                .filter(|s| s.axes.0 || s.axes.1);
-            let label = self.access_label(&node);
-            if let Some(s) = scroller {
-                let (flags, range) = Self::access_scroll(&s);
-                let words = (label.unwrap_or_default(), String::new());
-                let painted = b.boxes.get(&id).copied();
-                let Some(own) =
-                    self.access_emit(b, &scope, &node, role::SCROLLER, flags, range, || {
-                        Some(words)
-                    })
-                else {
-                    return;
-                };
-                if let Some(painted) = painted {
-                    // What is in it was painted at the offset it had then.
-                    let was = painted.scroll.unwrap_or(s.offset);
-                    let port = (
-                        painted.rect.0 + scope.shift.0,
-                        painted.rect.1 + scope.shift.1,
-                        painted.rect.2,
-                        painted.rect.3,
-                    );
-                    scope.clip = intersect(port, scope.clip).unwrap_or(scope.clip);
-                    scope.shift.0 += was.0 - s.offset.0;
-                    scope.shift.1 += was.1 - s.offset.1;
-                }
-                scope.parent = own;
-            } else if let Some(role) = structure_role(&node).filter(|_| aria.is_none()) {
-                let words = (label.unwrap_or_default(), String::new());
-                if let Some(own) =
-                    self.access_emit(b, &scope, &node, role, 0, [0.0; 3], || Some(words))
-                {
-                    scope.parent = own;
-                }
-            } else if aria == Some("tablist")
-                || Self::access_live(&node) != 0
-                || (label.is_some()
-                    && matches!(
-                        aria,
-                        Some("group" | "radiogroup" | "region" | "dialog" | "alertdialog")
-                    ))
-            {
-                let role = if aria == Some("tablist") {
-                    role::TABLIST
-                } else {
-                    role::GROUP
-                };
-                let words = (label.unwrap_or_default(), String::new());
-                if let Some(own) =
-                    self.access_emit(b, &scope, &node, role, 0, [0.0; 3], || Some(words))
-                {
-                    scope.parent = own;
-                }
-            }
-        }
-        let own = match scope.hash {
-            Some(hash) => rowed(hash),
-            None => (id & 0x3fff_ffff) as i32,
-        };
-        for (index, child) in node.child_nodes().enumerate() {
-            let key = child.props.str(PropId::ListItemKey);
-            let mut under = scope;
-            under.hash = match key.filter(|key| !key.is_empty()) {
-                Some(key) => Some(row_hash(own, key)),
-                None => scope
-                    .hash
-                    .map(|hash| fnv(hash, &(index as u32).to_le_bytes())),
-            };
-            self.access_walk_node(b, child, under);
-        }
     }
 
     /// A node a bar stands for, at `rect` in the bar at `frame`.
@@ -1114,6 +911,7 @@ impl<D: DataSource> Presenter<D> {
             surface,
             bars,
             frame: self.chrome().frame.map(ten),
+            menu: (self.menu).map(|id| (id, self.menu_scroll.to_bits())),
         }
     }
 
@@ -1147,6 +945,8 @@ impl<D: DataSource> Presenter<D> {
                     disabled: false,
                 },
             );
+            self.access_menu(&mut b);
+            Self::access_sets(&mut b.out);
             return (b.out, 0, (0, String::new()));
         }
         if self.page_inert() {
@@ -1194,6 +994,7 @@ impl<D: DataSource> Presenter<D> {
             self.access_walk(&mut b, top, scope);
         }
         self.access_bottom(&mut b);
+        self.access_menu(&mut b);
         Self::access_sets(&mut b.out);
         (b.out, 0, pane)
     }
@@ -1421,7 +1222,8 @@ impl<D: DataSource> Presenter<D> {
     /// node's middle, as the agent's `tap` is; a held press opens the
     /// node's context menu, as a finger held on it does; a scroller scrolls
     /// by what it shows, less a little kept in view; a range steps, or is
-    /// set to `value`.
+    /// set to `value`. A press on a select opens or closes its menu, and on
+    /// one of the menu's options chooses it, as a press on its row does.
     pub fn access_act(&mut self, id: i32, action: i32, value: f32, now_ms: f64) -> bool {
         let Some(node) = self.access.nodes.iter().find(|n| n.id == id).cloned() else {
             return false;
@@ -1429,6 +1231,10 @@ impl<D: DataSource> Presenter<D> {
         let live = |p: &Self| node.view != 0 && p.host.kernel().node(node.view).is_some();
         match (action, node.role) {
             (act::CLICK, role::UP) => self.system_back(now_ms),
+            (act::CLICK, role::OPTION) => self.access_choose(node.view),
+            (act::FORWARD | act::BACKWARD, role::LIST_BOX) => {
+                self.access_menu_scroll(action == act::FORWARD)
+            }
             (act::CLICK, _) if node.flags & flag::CLICK != 0 && live(self) => {
                 let done = self.tap(node.view);
                 if let Err(e) = &done {

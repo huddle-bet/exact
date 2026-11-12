@@ -1,4 +1,4 @@
-//! `-exact-fit: shrink`: a text whose longest unbreakable
+//! `-exact-fit: shrink` (LLP 1116.001 D1.4): a text whose longest unbreakable
 //! run (its whole line under `white-space: nowrap`) is wider than its content
 //! box is measured at the scale that fits, down to a floor, as UIKit's
 //! `adjustsFontSizeToFitWidth` with a `minimumScaleFactor` draws it. The
@@ -9,8 +9,8 @@ use super::*;
 
 /// A leaf's request at its own size, flowed around `exclusions`. Direction
 /// and alignment inherit (a paragraph inside a centred column centres, as in
-/// CSS); the rest are its own, a Markdown leaf's atoms among them, which a
-/// label's width depends on.
+/// CSS); the rest are its own, a Markdown leaf's atoms among them (LLP
+/// 1045.000 D2), which a label's width depends on.
 pub(super) fn request<'a>(
     arena: &'a NodeArena,
     slot: u32,
@@ -125,9 +125,12 @@ pub(super) fn settle(arena: &mut NodeArena, tree: &mut LayoutTree) -> Vec<NodeKe
     let mut moved = Vec::new();
     let slots: Vec<u32> = tree.fitting.iter().copied().collect();
     for slot in slots {
-        let node = arena
-            .taffy(slot)
-            .filter(|_| arena.is_live(slot) && fits(arena, slot));
+        if !arena.is_live(slot) {
+            tree.fitting.remove(&slot);
+            arena.fit_scales.remove(&slot);
+            continue;
+        }
+        let node = arena.taffy(slot).filter(|_| fits(arena, slot));
         let scale = match node {
             None => {
                 tree.fitting.remove(&slot);
@@ -163,10 +166,7 @@ pub(super) fn settle(arena: &mut NodeArena, tree: &mut LayoutTree) -> Vec<NodeKe
                     .unwrap_or(1.0)
             }
         };
-        if arena.fit_scale(slot).to_bits() == scale.to_bits() || !arena.is_live(slot) {
-            if !arena.is_live(slot) {
-                arena.fit_scales.remove(&slot);
-            }
+        if arena.fit_scale(slot).to_bits() == scale.to_bits() {
             continue;
         }
         if scale < 1.0 {

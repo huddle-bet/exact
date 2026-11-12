@@ -1,5 +1,5 @@
 // The web JS target's half of a differential run (`difftest --js`): each
-// case's program compiled by `exact-web-js` (host/web-js), the
+// case's program compiled by `exact-web-js` (host/web-js, LLP 1071), the
 // module bundled with its runtime and run headless under Bun, in a fresh VM
 // context per case over the render DOM (host/web-js/dom.js) given event
 // listeners, its data sources answered synchronously from the runner's
@@ -19,7 +19,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { createDocument } from '../../../host/web-js/dom.js';
-import { driverRuntime, localImports } from '../../../host/web-js/glue.mjs';
+import { bundleHostModule, driverRuntime, localImports } from '../../../host/web-js/glue.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
@@ -76,6 +76,20 @@ Object.assign(ElementProto, {
   closest() { return null; }, focus() {}, blur() {}, click() {}, scrollTo() {},
   contains(n) { for (; n; n = n.parentNode) if (n === this) return true; return false; },
 });
+// A `<style>`'s sheet, as much as lower.js's arms sheet uses: each rule one nested
+// rule's declarations, kept unread, since a drive observes no style.
+const Declarations = probe.createElement('i').style.constructor;
+Object.defineProperty(ElementProto, 'sheet', {
+  get() {
+    if (this.localName !== 'style') return undefined;
+    return this.$sheet ??= {
+      cssRules: [],
+      insertRule(_, at) { this.cssRules.splice(at, 0, { cssRules: [{ style: new Declarations() }] }); return at; },
+      deleteRule(at) { this.cssRules.splice(at, 1); },
+    };
+  },
+  configurable: true,
+});
 // A date, time or datetime-local input holds HTML's value format, within its
 // `min` and `max`, or nothing (runner/src/runner/control.rs).
 const DATE = '\\d{4,}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])', TIME = '([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d(\\.\\d{1,3})?)?';
@@ -91,10 +105,15 @@ const fire = (e, type) => { for (const f of [...(e.$listeners?.[type] ?? [])]) f
 
 // ---------------------------------------------------------------- the runtime
 // Every file the bundle may reach, as host/web-js/build.mjs lays them out.
-function runtime(dir) {
+async function runtime(dir) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  for (const f of driverRuntime(root)) cpSync(resolve(root, f), resolve(dir, basename(f)));
+  for (const f of driverRuntime(root)) {
+    if (f.startsWith('host/web/navigation/') || ['host/web/navigation.js', 'host/web/grant-admission.js'].includes(f)) continue;
+    cpSync(resolve(root, f), resolve(dir, basename(f)));
+  }
+  writeFileSync(resolve(dir, 'navigation.js'), await bundleHostModule(root, 'navigation.js', { grants: true }));
+  writeFileSync(resolve(dir, 'grant-admission.js'), await bundleHostModule(root, 'grant-admission.js'));
   // `sin` and `cos` answer the runner's bits (`trig` below), not `Math`'s.
   const roster = resolve(dir, 'roster.js'), engine = 'export const x_sin = Math.sin, x_cos = Math.cos;';
   const text = readFileSync(roster, 'utf8');
@@ -125,8 +144,16 @@ async function build(compiler, dir, file) {
   for (const f of ['app.js', 'names.js']) rmSync(resolve(dir, f), { force: true });
   const c = spawnSync(compiler, ['js', file, '-o', dir], { encoding: 'utf8' });
   if (c.status !== 0) return { outside: (c.stderr || c.stdout || `exit ${c.status}`).trim() };
+  // Each native extension's chunk, which the module's loaders import: here
+  // without a web implementation, as build.mjs writes one that has none.
+  const modules = resolve(dir, 'modules.flag');
+  for (const extension of existsSync(modules) ? Object.keys(JSON.parse(readFileSync(modules, 'utf8')).extensions) : []) {
+    writeFileSync(resolve(dir, `ext-${extension}.js`), 'export const implementation = null;\n');
+  }
   entry(dir);
-  const r = await Bun.build({ entrypoints: [resolve(dir, 'entry.js')], format: 'iife', target: 'browser', define: { 'import.meta.url': '"http://difftest.invalid/app.js"' } });
+  // A failed bundle throws an AggregateError whose message is only "Bundle failed": its causes are its `errors`.
+  const r = await Bun.build({ entrypoints: [resolve(dir, 'entry.js')], format: 'iife', target: 'browser', define: { 'import.meta.url': '"http://difftest.invalid/app.js"' } })
+    .catch(e => { throw new Error((e.errors ?? [e]).map(String).join('\n')); });
   if (!r.success) throw new Error(r.logs.map(String).join('\n'));
   return { code: await r.outputs[0].text() };
 }
@@ -134,7 +161,7 @@ async function build(compiler, dir, file) {
 // ---------------------------------------------------------------- one case
 async function drive(code, c, hostSources) {
   const document = createDocument();
-  // The page's storage: the device's store at launch, which
+  // The page's storage: the device's store at launch (LLP 1116 D5), which
   // persist.js reads as a slot is made and writes after each commit.
   const kept = new Map(Object.entries(c.stored ?? {}));
   const localStorage = {
@@ -148,7 +175,7 @@ async function drive(code, c, hostSources) {
     addEventListener() {}, removeEventListener() {}, navigator: {},
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }),
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
-    setTimeout, clearTimeout, queueMicrotask, performance, console: quiet, fetch: () => Promise.reject(new Error('no network in a drive')), URL, URLSearchParams, TextEncoder, TextDecoder,
+    setTimeout, clearTimeout, queueMicrotask, performance, structuredClone, console: quiet, fetch: () => Promise.reject(new Error('no network in a drive')), URL, URLSearchParams, TextEncoder, TextDecoder,
     Event: class {}, CustomEvent: class {},
     // No browser layout runs here; symbol projection's observer has nothing to report.
     MutationObserver: class { observe() {} disconnect() {} },
@@ -158,7 +185,7 @@ async function drive(code, c, hostSources) {
   });
   ctx.globalThis = ctx; ctx.self = ctx; ctx.window = ctx;
   // The JS target's `sin` and `cos` are the engine's `Math.sin` and
-  // `Math.cos`, held to the runner's libm by value, not by bits.
+  // `Math.cos`, held to the runner's libm by value, not by bits (LLP 1003 §7).
   // Here they answer the runner's bits for each input the harness computed
   // (`c.trig`, by `sin:`/`cos:` and the input's bits); an input it has not
   // computed yet is asked for (`asked`) and the case is driven again.
@@ -194,9 +221,15 @@ async function drive(code, c, hostSources) {
   let commands = [];
   const record = name => (...args) => { commands.push(`command ${name}${args.map(a => ' ' + untyped(a)).join('')}`); };
   for (const k of Object.keys(Hosts)) Hosts[k] = record(k);
-  // `setMode` is the runtime's own, as the runner's: no host is
+  // `setMode` is the runtime's own, as the runner's (LLP 1121 D5): no host is
   // told, and the window's mode selects presentation, which no line shows.
   Hosts.setMode = () => {};
+  // So is the row form of `scrollIntoView`, seven arguments (list.js; LLP
+  // 1070.000 §12–13); an element's, four, is a host's (`hostCommands` in the
+  // Lean semantics).
+  const rowScroll = (name, args) => name === 'scrollIntoView' && args.length === 7;
+  const toldScroll = record('scrollIntoView');
+  Hosts.scrollIntoView = (...args) => { if (!rowScroll('scrollIntoView', args)) toldScroll(...args); };
   // The voice table's commands are the runtime's own (rt.js `Sounds.own`): they reach `Sounds.apply`
   // with the commit's whole command list, in order, not `Hosts`. Record the list as the runner does:
   // the host commands just recorded from it are replaced by the whole of it.
@@ -204,8 +237,8 @@ async function drive(code, c, hostSources) {
   Object.defineProperty(Sounds, 'apply', {
     configurable: true,
     get: () => cmds => {
-      // `setMode` was never recorded (above), and the runner tells no host of it.
-      const shown = cmds.filter(([name]) => name !== 'setMode');
+      // `setMode` and a row's `scrollIntoView` were never recorded (above), and the runner tells no host of them.
+      const shown = cmds.filter(([name, args]) => name !== 'setMode' && !rowScroll(name, args));
       if (shown.some(([name]) => Sounds.own.has(name))) {
         const hosts = shown.filter(([name]) => !Sounds.own.has(name)).length;
         commands.splice(commands.length - hosts, hosts, ...shown.map(([name, args]) => `command ${name}${args.map(a => ' ' + untyped(a)).join('')}`));
@@ -214,7 +247,11 @@ async function drive(code, c, hostSources) {
     },
     set: f => { applySounds = f; },
   });
-  Object.setPrototypeOf(Hosts, new Proxy({}, { get: (_, name) => typeof name === 'string' ? record(name) : undefined }));
+  Object.setPrototypeOf(Hosts, new Proxy({}, {
+    get: (_, name) => typeof name === 'string' ? record(name) : undefined,
+    // Commands linked at boot must keep the recorder instead of running their host effects.
+    set: () => true,
+  }));
 
   const out = ['== boot'];
   const mark = () => journal.start + journal.length;
@@ -261,7 +298,7 @@ async function drive(code, c, hostSources) {
         out.push(`${['slot', 'derive', 'resource'][g]} ${name} ${typed(v, types[g][i])}`);
       });
     });
-    // Each queue's waiting sends, in declaration order, as observe.rs writes them.
+    // Each queue's waiting sends (LLP 1092 D12), in declaration order, as observe.rs writes them.
     for (const m of Mutations) if (m.queue) out.push(`queued ${m.name} ${m.wait?.length ?? 0}`);
     out.push(...commands); commands = [];
     walk(root, e => {
@@ -322,7 +359,7 @@ async function drive(code, c, hostSources) {
 process.on('unhandledRejection', () => {});
 const quiet = process.env.DIFFTEST_JS_DEBUG ? console : { ...console, error() {}, warn() {} };
 const batch = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-runtime(batch.work);
+await runtime(batch.work);
 for (const c of batch.cases) {
   let result;
   try {

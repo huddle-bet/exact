@@ -1,6 +1,6 @@
-//! Box-dependent gradient stops for both Apple presenters.
+//! Box-dependent gradient stops for both Apple presenters (LLP 1066).
 #![allow(unsafe_code)]
-use exact_kernel::gradient::{BackgroundImage, Geometry};
+use exact_kernel::gradient::{BackgroundImage, Extent, Geometry, GradientKind, RadialSize};
 
 /// Resolve one gradient into the existing presenter ramp plus its geometry.
 ///
@@ -30,7 +30,12 @@ pub unsafe fn resolve(
     };
     // No session's overrides: the batch that carried it resolved its own.
     let _roles = exact_kernel::style::roles::bind(&Default::default());
-    let (ramp, geometry) = g.placed(size[0], size[1], dark);
+    let (mut ramp, geometry) = g.placed(size[0], size[1], dark);
+    // The placement crosses resolved, below; explicit radii in the shape
+    // would send the gradient back as CSS.
+    if let GradientKind::Radial { size, .. } = &mut ramp.kind {
+        *size = RadialSize::Extent(Extent::FarthestCorner);
+    }
     let placement = match geometry {
         Geometry::Linear { start, end } => {
             format!("\"line\":[{},{},{},{}]", start.0, start.1, end.0, end.1)
@@ -78,19 +83,28 @@ macro_rules! gradient_exports {
 }
 
 use crate::style::num;
-/// A gradient for the presenter: its shape — `linear` degrees,
+/// A gradient for the presenter (LLP 1066): its shape — `linear` degrees,
 /// a `to <corner>` as `[right, bottom]`, or `radial` as `[circle, extent,
 /// x%, xpx, y%, ypx]` (extent: closest-side, closest-corner, farthest-side,
 /// farthest-corner) — and `stops` flat as `t, r, g, b, a`, positions 0–1.
+/// A gradient whose stops need the box, or a radial one with explicit radii,
+/// crosses as its CSS instead, and the presenter has the kernel place it.
 /// The box, so the placement, is the presenter's. Stops are already expanded
 /// to mix as CSS's premultiplied ones do (Core Graphics and Core Animation
 /// mix unpremultiplied); a `light-dark()` gradient also carries `dark`, and
-/// the view picks by its own appearance.
+/// the view picks by its own appearance (LLP 1034 D2).
 pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
-    use exact_kernel::gradient::{premultiplied_ramp, Direction, GradientKind, Length};
-    if g.needs_box() {
+    use exact_kernel::gradient::{premultiplied_ramp, Direction, Length};
+    let radii = matches!(
+        g.kind,
+        GradientKind::Radial {
+            size: RadialSize::Radii(_),
+            ..
+        }
+    );
+    if g.needs_box() || radii {
         // Its session's overrides now, while that session is bound: the
-        // presenter resolves the rest later, outside any.
+        // presenter resolves the rest later, outside any (LLP 1121 stage 5).
         let mut g = g.clone();
         for stop in &mut g.stops {
             // A tint role (`LinkText`) the theme's `AccentColor` too.
@@ -102,7 +116,7 @@ pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
         exact_runner::agent::quote(&g.wire(), &mut css);
         return format!("{{\"css\":{css}}}");
     }
-    // Interpolated outside sRGB, the ramp crosses as unclipped
+    // LLP 1100 D2: interpolated outside sRGB, the ramp crosses as unclipped
     // extended linear sRGB floats, alpha 0–1.
     let stops = |dark: bool| {
         if let Some(ramp) = g.interpolated(dark) {
@@ -132,7 +146,7 @@ pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
         GradientKind::Linear(Direction::Corner { right, bottom }) => {
             format!("\"corner\":[{},{}]", u8::from(right), u8::from(bottom))
         }
-        // `[from, x%, xpx, y%, ypx]`.
+        // @ref LLP 1077 D5 — `[from, x%, xpx, y%, ypx]`.
         GradientKind::Conic { from, at } => {
             let axis = |l: Length| match l {
                 Length::Percent(p) => format!("{},0", num(p)),
@@ -140,7 +154,11 @@ pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
             };
             format!("\"conic\":[{},{},{}]", num(from), axis(at[0]), axis(at[1]))
         }
-        GradientKind::Radial { circle, extent, at } => {
+        GradientKind::Radial {
+            circle,
+            size: RadialSize::Extent(extent),
+            at,
+        } => {
             let axis = |l: Length| match l {
                 Length::Percent(p) => format!("{},0", num(p)),
                 Length::Px(px) => format!("0,{}", num(px)),
@@ -153,6 +171,10 @@ pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
                 axis(at[1])
             )
         }
+        GradientKind::Radial {
+            size: RadialSize::Radii(_),
+            ..
+        } => unreachable!("sent as CSS above"),
     };
     let dark = if g.is_scheme_aware() {
         format!(",\"dark\":{}", stops(true))
@@ -177,6 +199,32 @@ pub(crate) fn gradient_json(g: &exact_kernel::gradient::Gradient) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_radii_cross_as_css_and_the_kernel_places_them() {
+        let css = "radial-gradient(120% 90% at 8% 0%, #FFCFA8 0%, #FFCFA800 58%)";
+        let image = exact_kernel::gradient::BackgroundImage::parse(css).unwrap();
+        let sent: serde_json::Value =
+            serde_json::from_str(&super::gradient_json(image.gradient().unwrap())).unwrap();
+        let css = sent["css"].as_str().unwrap().as_bytes();
+        let mut out = vec![0; 4096];
+        // SAFETY: both buffers have the lengths passed.
+        let n = unsafe {
+            super::resolve(
+                css.as_ptr(),
+                css.len(),
+                [200.0, 100.0],
+                false,
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        let value: serde_json::Value = serde_json::from_slice(&out[..n]).unwrap();
+        assert_eq!(value["ellipse"], serde_json::json!([16, 0, 240, 90]));
+        // Placed, it crosses as stops: CSS again would be resolved again, forever.
+        assert!(value.get("css").is_none(), "{value}");
+        assert_eq!(value["stops"].as_array().unwrap().len(), 15, "{value}");
+    }
+
     #[test]
     fn lengths_cross_the_apple_seam_after_the_box_is_known() {
         let css = b"linear-gradient(to right, red 20px, blue 80%)";

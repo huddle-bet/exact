@@ -58,7 +58,7 @@ final class PresentedText: TextPresentation {
         if r.hidden { a[.exactHidden] = true }
         if r.fixedInk, r.color != nil { a[.exactFixedInk] = true }
         // A centred stroke over the fill: Core Text's negative width,
-        // in percent of the run's size. Each run's own.
+        // in percent of the run's size (LLP 1077 D7). Each run's own.
         // Its colour four channels, or nine in its own space (a wide colour).
         if let st = r.stroke, st.count == 5 || st.count == 10, st[0] > 0, r.size > 0 {
             a[.strokeWidth] = -st[0] / Double(r.size) * 100
@@ -133,7 +133,7 @@ extension TextEngine {
     }
     /// A baseline on the raster's device pixels (`scale`). On macOS, on the
     /// device pixels its line box was rounded to (`Paragraph.lineScale`) as
-    /// well: whole points where text is laid out at 1.
+    /// well: whole points where text is laid out at 1 (LLP 1008 §3).
     static func paintedBaseline(_ baseline: CGFloat, scale: CGFloat, lineScale: CGFloat = 1) -> CGFloat {
         #if os(iOS) || os(tvOS)
         let scale = max(1, scale)
@@ -169,25 +169,26 @@ extension TextEngine {
     /// Paint a paragraph into a y-down context (a flipped NSView's, a
     /// UIView's): one CTLineDraw per line, on device-pixel baselines
     /// (`paintedBaseline`), flush by alignment.
-    static func draw(_ p: Paragraph, spec: Spec, in bounds: CGRect, context ctx: CGContext, dirty: CGRect? = nil) {
-        // Font smoothing is graphics state.
+    static func draw(_ p: Paragraph, spec: Spec, in bounds: CGRect, context ctx: CGContext, dirty: CGRect? = nil, pass: TextLinePaint.Pass = .all) {
+        // Font smoothing is graphics state (LLP 1019 D12).
         ctx.saveGState()
         defer { ctx.restoreGState() }
         if spec.antialiased { ctx.setShouldSmoothFonts(false) }
         // CSS `text-shadow`: under every glyph of the paragraph at once, so
-        // one line's shadow never covers another's text. Core
+        // one line's shadow never covers another's text (LLP 1077 D3). Core
         // Graphics' blur is CSS's radius; its offset is base space, y up.
-        if let s = spec.shadow {
+        let shadow = pass.paintsGlyphs ? spec.shadow : nil
+        if let s = shadow {
             ctx.saveGState()
             ctx.setShadow(offset: CGSize(width: s[0], height: -s[1]), blur: s[2], color: TextEngine.shadowColor(s))
             ctx.beginTransparencyLayer(auxiliaryInfo: nil)
         }
-        defer { if spec.shadow != nil { ctx.endTransparencyLayer(); ctx.restoreGState() } }
+        defer { if shadow != nil { ctx.endTransparencyLayer(); ctx.restoreGState() } }
         func paint(_ index: Int) {
             let line = spec.ellipsis ? p.ellipsized(index, spec: spec, width: bounds.width) : p.lines[index]
             let baseline = p.baselines[index]
             let x = p.origin(index, align: spec.align, width: bounds.width)
-            TextLinePaint.draw(line, at: CGPoint(x: bounds.minX + x, y: Self.paintedLine(baseline, top: bounds.minY, scale: deviceScale(ctx), lineScale: p.lineScale)), in: ctx)
+            TextLinePaint.draw(line, at: CGPoint(x: bounds.minX + x, y: Self.paintedLine(baseline, top: bounds.minY, scale: deviceScale(ctx), lineScale: p.lineScale)), in: ctx, pass: pass)
         }
         if let dirty {
             p.inkBounds().forEachLine(from: dirty.minY - bounds.minY,
@@ -271,6 +272,7 @@ enum TextLinePaint {
             ctx.setFillColor(fill.color)
             if let path = fill.path { ctx.addPath(path); ctx.fillPath() } else { ctx.fill(fill.rect) }
         }
+        guard pass.paintsGlyphs else { ctx.restoreGState(); return }
         // The text matrix is not graphics state; put the caller's back.
         let matrix = ctx.textMatrix
         ctx.translateBy(x: origin.x, y: origin.y)
@@ -303,7 +305,7 @@ enum TextLinePaint {
         let runs = CTLineGetGlyphRuns(line) as! [CTRun]
         // CSS removes the collapsible spaces that end a line: a wrapped run's
         // background stops at its last glyph, as the browser paints it. A
-        // left-to-right line ends on the right (the Linux parity).
+        // left-to-right line ends on the right (LLP 1053 §0, the Linux parity).
         var end = CGFloat.infinity
         if !runs.contains(where: { CTRunGetStatus($0).contains(.rightToLeft) }) {
             end = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) - CGFloat(CTLineGetTrailingWhitespaceWidth(line))

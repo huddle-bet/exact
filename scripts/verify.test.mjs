@@ -1,4 +1,4 @@
-// `bun exact.mjs verify` is one call a builder can stop on: a clean run in a few
+// LLP 1116.004 D7, 1116.005 D7: `bun exact.mjs verify` is one call a builder can stop on: a clean run in a few
 // lines, a failing test that fails it, a check finding or a compiler warning said once, reported but not failing
 // it, each test's end screen checked under its name, and one relaunch on a test's store.
 // `bun test ./scripts/verify.test.mjs` (the last test builds and drives a new app in Chrome: about a minute).
@@ -11,7 +11,7 @@ import { resolve, toNamespacedPath } from 'node:path';
 import { applyPattern, createApp } from '../game/new.mjs';
 import { findings } from '../host/apple/feel/analyze.mjs';
 import { chromium } from './agent-launch.mjs';
-import { ago, appServer, draftFields, fixedType, groups, judgeRelaunch, judgeReload, movedClock, persistedStates, pinnedLaunch, recordedServerAddress, refusalsOf, relaunchFacts, relaunchStore, reloadLine, reloadNote, report, reusable, savedChanges, screenTexts, serverUrl, shotName, storedTexts, warningsOfBuild } from './verify.mjs';
+import { ago, appServer, buildWarnings, draftFields, fixedType, groups, judgeRelaunch, judgeReload, movedClock, persistedStates, pinnedLaunch, recordedServerAddress, refusalsOf, relaunchFacts, relaunchStore, reloadLine, reloadNote, report, reusable, savedChanges, screenTexts, serverUrl, shotName, storedTexts, warningsOfBuild } from './verify.mjs';
 import { semanticsSummary } from './verify-semantics.mjs';
 
 const SIZES = [[390, 844], [1280, 900]];
@@ -25,19 +25,18 @@ function onPort(dir) {
 const runs = (lines, screen) => SIZES.flatMap((size) => ['light', 'dark'].map((scheme) => ({ ...(screen ? { screen } : {}), size, scheme, asked: scheme, lines: lines(size, scheme), hidden: 0 })));
 const shots = SIZES.flatMap(([w, h]) => ['light', 'dark'].map((scheme) => `/app/.exact/verify/web-${w}x${h}-${scheme}.png`));
 
-test('contract verify beside the run: a line, the receipt; a failure\'s own lines, not the routine ones', () => {
+test('contract verify beside the run: one line of counts and the report path; a failure\'s own lines', () => {
   const receipt = ['verify receipt — reproduce: contract verify app.contract --walks 20', '  scripts: 2 tests delivered (2 whole; 0 in part: none; 0 skipped: none), 1 explored, 20 walks',
-    '  suggestions: 3 observed candidates; 2 printed; 1 dropped', '    dropped set "q is one of 6 values": `q`: the value is not bounded', '  properties: 0 held, 0 false, 0 counted only, 0 not exercised'];
+    '  suggestions: 3 observed candidates; 2 printed; 1 dropped', '    dropped set "q is one of 6 values": `q`: the value is not bounded', '  properties: 1 held, 0 false, 2 counted only, 3 not exercised'];
   const routine = ['undeliverable parser step kinds: drag, reload', 'WHOLE /app/app.test.contract: adds; kept: /x.events', 'NOTE /app/app.test.contract: adds: with the oracle\'s data, after step 0: Text("n", "1") does not hold',
-    'OUTSIDE walk 1 from "boot": # unsupported: roster entry `toLowerCase`', 'runner: 1.0s; 22 search scripts; 0 findings; 0 shrink candidates', 'properties: 0 held, 0 false, 0 counted only, 0 not exercised; 0 violations, 0 counted-only line steps'];
+    'OUTSIDE walk 1 from "boot": # unsupported: roster entry `toLowerCase`', 'runner: 1.0s; 22 search scripts; 1 finding; 0 shrink candidates', 'properties: 1 held, 0 false, 2 counted only, 3 not exercised; 0 violations, 4 counted-only line steps'];
   const suggestions = ['Observed over 23 scripts and 400 steps and code-consistent, not proved; keep the ones the app means:', '', 'always "n is a whole number"', '  expect state n whole', '', 'after "add" "add writes only n"', '  only writes n', ''];
   const clean = semanticsSummary({ exit: 0, output: [...routine, ...suggestions, ...receipt].join('\n'), errors: '' }, '.exact/verify/properties.txt');
-  assert.deepEqual(clean, ['contract verify: done; 2 suggested properties (observed, not proved: keep the ones the app means); every line: .exact/verify/properties.txt',
-    ...receipt.filter((l) => !l.includes('dropped set'))]);
+  assert.deepEqual(clean, ['contract verify: done; 1 finding; properties: 1 held, 0 false, 2 counted only, 3 not exercised; 2 suggested properties (observed, not proved: keep the ones the app means); report and receipt: .exact/verify/properties.txt']);
   const false_ = ['property "n stays small": false', '  after tap "add" at step 3: n = 7'];
-  const failed = semanticsSummary({ exit: 1, output: [...routine, ...false_, ...suggestions, ...receipt].join('\n'), errors: 'cargo: a warning\n' }, 'p.txt');
-  assert.deepEqual(failed.slice(0, 4), ['contract verify: failed (exit 1); 2 suggested properties (observed, not proved: keep the ones the app means); every line: p.txt', ...false_, 'cargo: a warning']);
-  assert.equal(failed.at(-1), receipt.at(-1));
+  const failed = semanticsSummary({ exit: 1, output: [...routine, ...false_, ...suggestions, ...receipt].join('\n').replaceAll('0 false', '1 false'), errors: 'cargo: a warning\n' }, 'p.txt');
+  assert.deepEqual(failed, ['contract verify: failed (exit 1); 1 finding; properties: 1 held, 1 false, 2 counted only, 3 not exercised; 2 suggested properties (observed, not proved: keep the ones the app means); report and receipt: p.txt', ...false_, 'cargo: a warning']);
+  assert.deepEqual(semanticsSummary({ exit: 1, output: '', errors: 'could not compile\n' }, 'p.txt'), ['contract verify: failed (exit 1); report and receipt: p.txt', 'could not compile']);
 });
 
 test('the report: clean in four lines; a failed test fails it; a finding is said once, where it was', () => {
@@ -50,7 +49,7 @@ test('the report: clean in four lines; a failed test fails it; a finding is said
     'verify: clean in 4.0 s',
   ]);
   assert.equal(clean.exit, 0);
-  // `--shots <dir>`: the line says where they were copied too.
+  // `--shots <dir>` (LLP 1116.008 D2): the line says where they were copied too.
   assert.equal(report({ host: 'web', built: null, tested: { passed: 2, failed: 0, results: [] }, checks: runs(() => []), shots, copied: '/app/shots', ms: 4000, cwd: '/app' }).lines[2],
     'screenshots (.exact/verify, copied to shots): web-390x844-light.png web-390x844-dark.png web-1280x900-light.png web-1280x900-dark.png');
 
@@ -79,6 +78,10 @@ test('the report: clean in four lines; a failed test fails it; a finding is said
   assert.equal(found.lines[2], '  (1280x900 only) contrast Text "Due"#12 [16,78 60×18]: 1.3:1 (#dddddd on #ffffff), needs 4.5:1');
   assert.equal(found.lines.at(-1), 'verify: 1 problem (1 finding; the tests passed) in 5.0 s');
   assert.equal(found.exit, 0);
+  // `--strict` gates on the count: the same report exits 1, its lines unchanged (LLP 1156.001 D1).
+  const strict = report({ host: 'web', built: null, tested: { passed: 2, failed: 0, results: [] }, checks: runs(([w]) => (w === 1280 ? [contrast] : [])), shots, ms: 5000, cwd: '/app', strict: true });
+  assert.deepEqual([strict.lines, strict.exit], [found.lines, 1]);
+  assert.equal(report({ host: 'web', built: null, tested: { passed: 2, failed: 0, results: [] }, checks: runs(() => []), shots, ms: 4000, cwd: '/app', strict: true }).exit, 0);
   const stuck = report({ host: 'web', built: null, tested: { none: true }, checks: [{ size: null, label: '390x844', error: 'the page never drew\nstack' }], shots: [], ms: 9000 });
   assert.deepEqual(stuck.lines, ['tests: none (no *.test.contract)', 'check 390x844: could not drive: the page never drew', 'verify: 1 problem (1 failure to compile or drive) in 9.0 s']);
   assert.equal(stuck.exit, 1);
@@ -89,7 +92,7 @@ test('the report: clean in four lines; a failed test fails it; a finding is said
   assert.equal(unrun.exit, 1);
 });
 
-// Each test's end screen is in the one report, its findings under the test's name and said once
+// LLP 1116.005 D7: each test's end screen is in the one report, its findings under the test's name and said once
 // with the first screen's; the relaunch is a line of its own, and what it lost a finding.
 test('the journeys: a test end\'s finding under its name, deduplicated across screens; the relaunch line', () => {
   const clipped = ([w]) => `  clipped  Text "Total"#9 [16,96 ${w - 330}×18]: its text is 40 px wider than its box, which clips it`;
@@ -154,7 +157,7 @@ test('the relaunch: the store of a passing test that wrote the most; what came b
   assert.deepEqual(slow.problems.map((p) => p.trim().split(/\s+/)[0]), ['loading', 'failed']);
 });
 
-// A test that pinned its date left data a month-filtered screen shows only under that date, so the
+// LLP 1116.007 D3.4: a test that pinned its date left data a month-filtered screen shows only under that date, so the
 // relaunch is made under the test's launch facts and compared with a fresh launch under them; only a test whose facts
 // are not the driver's own asks for that second fresh launch.
 test('the relaunch keeps a test\'s pinned date, zone, locale and seed', () => {
@@ -181,7 +184,7 @@ test('the relaunch keeps a test\'s pinned date, zone, locale and seed', () => {
   assert.equal(judgeRelaunch(saved, october([]), october([])).problems.length, 1);
 });
 
-// A `reload` relaunches at the virtual time the test had reached, and so does verify's relaunch; a test
+// LLP 1116.009 D1: a `reload` relaunches at the virtual time the test had reached, and so does verify's relaunch; a test
 // that only moved the clock pinned nothing, but its first screen may say another day, so the comparison is made at that day.
 test('the relaunch starts at the date the test reached, which moves the comparison with it and pins nothing', () => {
   const defaults = { epoch: Date.parse('2026-01-01T00:00:00Z'), timeZone: 'UTC', locale: 'en-US', seed: 1 };
@@ -212,11 +215,11 @@ test('the compiler\'s warnings: a group before the tests, by rule as findings ar
   assert.equal(many.exit, 0);
 });
 
-// `tamber-unreachable` names where the platform's own look stands: said, never counted (2026-10-30).
+// `tamber-unreachable` names where the platform's own look stands: said, never counted (LLP 1121 D9, 2026-10-30).
 test('a compiler warning that is information is said apart and not counted', () => {
-  const note = 'app.contract:32:62 warning [tamber-unreachable] accent-color on macOS switches: NSSwitch draws the system accent (the first at line 34)';
+  const note = 'app.contract:32:62 warning [tamber-unreachable] accent-color on macOS switches: NSSwitch draws the system accent (the first at line 34; LLP 1121 D9)';
   const r = report({ host: 'web', built: null, compiler: [note], tested: { passed: 2, failed: 0, results: [] }, checks: runs(() => []), shots: [], ms: 4000 });
-  assert.deepEqual(r.lines.slice(0, 2), ['compiler: 1 note, not counted (the platform\'s own look stands there)', `  ${note}`]);
+  assert.deepEqual(r.lines.slice(0, 2), ['compiler: 1 note, not counted (the platform\'s own look stands there; LLP 1121 D9)', `  ${note}`]);
   assert.equal(r.lines.at(-1), 'verify: clean in 4.0 s');
   assert.equal(r.problems, 0);
 });
@@ -243,7 +246,7 @@ test('the compiler\'s warnings are read from the build\'s JSON, every one, in th
   // The report counts them all, in the build's order.
   const r = report({ host: 'ios', built: null, compiler: said, tested: { none: true }, checks: [], shots: [], ms: 1000 });
   assert.equal(r.lines[0], 'compiler: 22 warnings');
-  // Many findings are said by kind in the closing line; a compiler warning is no kind verify.accept takes.
+  // Many findings are said by kind in the closing line (LLP 1143 D5); a compiler warning is no kind verify.accept takes.
   assert.equal(r.lines.at(-1), 'verify: 22 problems (22 findings: 20 lower-symbol-platform, 1 lower-header-unplaced, 1 lower-symbol-alias; the tests passed) in 1.0 s');
   assert.ok(!r.lines.some((l) => l.startsWith('most findings are')));
   // A file elsewhere, or none, is kept as given; a build with no JSON (Cargo failing to build the compiler, a text
@@ -252,9 +255,20 @@ test('the compiler\'s warnings are read from the build\'s JSON, every one, in th
   assert.deepEqual(warningsOfBuild(`error: could not compile\n${cwd}/app.contract:9:5 warning [lower-header-unplaced] text form\n`, cwd), ['app.contract:9:5 warning [lower-header-unplaced] text form']);
 });
 
-// A screen survives a reload. Each test's end screen is reloaded where it stands and its texts compared;
-// a flashcards study screen reloaded into "0 / 0", a focus timer's settings into 25 and 5 over the saved 30 and 10.
-// The first is a note (a session in progress lives in memory), the second a finding (a saved value came back different).
+// An outside workspace carries every crates.io patch exact2 requires (LLP 1036.001 D2); Cargo says each one the app's
+// graph does not use, on the runs that build, which flipped verify between clean and four problems.
+test('the build\'s warnings leave out the unused patches exact2 requires, never the author\'s own', () => {
+  const vendored = (name, dir = name) => `warning: patch \`${name} v0.11.1 (${resolve(import.meta.dir, '..', 'vendor', dir)})\` was not used in the crate graph`;
+  const own = 'warning: patch `itoa v1.0.99 (/work/app/patches/itoa)` was not used in the crate graph';
+  const moved = 'warning: patch `parley v0.11.1 (/work/app/patches/parley)` was not used in the crate graph';
+  const output = [vendored('accesskit_windows', 'accesskit-windows'), vendored('fontique'), vendored('parley'), vendored('wgpu-hal'),
+    'help: Check that the patched package version and available features are compatible', own, moved, 'warning: unused variable: `x`'].join('\n');
+  assert.deepEqual(buildWarnings(output), [own, moved, 'warning: unused variable: `x`']);
+});
+
+// LLP 1116.010 D6: a screen survives a reload. Each test's end screen is reloaded where it stands and its texts compared;
+// round 12's flashcards study screen reloaded into "0 / 0", focus-timer's settings into 25 and 5 over the saved 30 and 10.
+// LLP 1116.011 D5: the first is a note (a session in progress lives in memory), the second a finding (a saved value came back different).
 test('a reload: the texts a screen shows, what it forgives, and the note that names the route', () => {
   const node = (depth, props, extra = {}) => ({ id: 1, type: 'Text', depth, props, ...extra });
   const nodes = [
@@ -308,7 +322,7 @@ test('a reload: the texts a screen shows, what it forgives, and the note that na
   assert.equal(judgeReload(shown('/', 'Home'), shown('/other', 'Home')), null); // the same words on another URL are nothing to say
 });
 
-// A reload that changes the screen is a note; it is a finding only when a saved value came back different.
+// LLP 1116.011 D5: a reload that changes the screen is a note; it is a finding only when a saved value came back different.
 test('a reload: the persisted states, and the evidence that something saved was lost', () => {
   assert.deepEqual(persistedStates('/no/such/app'), []);
   const dir = mkdtempSync(resolve(tmpdir(), 'verify-persist-'));
@@ -376,11 +390,11 @@ test('the report: each test end reloaded; a saved value lost is a finding once a
   const stuck = report({ ...base, tested: { passed: 1, failed: 0, results: [] },
     reloads: [{ test: 'saves', ran: true, error: 'reload: the app\'s storage did not finish before the restart: x\nmore' }] });
   assert.deepEqual(stuck.lines.slice(2, 4), ['reload 1 test end: 1 finding', '  reload   "saves": could not reload the end screen: reload: the app\'s storage did not finish before the restart: x']);
-  // The iOS report has no reload: a native host's cold launch is `/`.
+  // The iOS report has no reload: a native host's cold launch is `/` (LLP 1038 §7).
   assert.ok(!report({ ...base, host: 'ios', reloads: [{ test: 'a', ran: false }] }).lines.some((l) => l.startsWith('reload')));
 });
 
-// What the host refused while the app ran is in the journal (and, on iOS, the host's stderr); verify shows it first.
+// LLP 1116.010 D5: what the host refused while the app ran is in the journal (and, on iOS, the host's stderr); verify shows it first.
 test('run-time refusals: found in the journal and the host\'s lines, shown first, counted as findings', () => {
   const swipe = 'swipeContent on #243 is refused: "delete-1" names no one descendant of it; a row needs one full-size descendant and uniquely named descendant press controls with accessible names';
   assert.deepEqual(refusalsOf({
@@ -411,7 +425,7 @@ test('check\'s text splits by scheme, counting what its own cap left out', () =>
   assert.equal(light.lines.length, 12);
   assert.equal(light.hidden, 1);
   assert.deepEqual([dark.lines, dark.hidden], [[], 0]);
-  // Advice is kept apart, never a finding: a check with only advice is clean.
+  // Advice (LLP 1116.004 D1.3) is kept apart, never a finding: a check with only advice is clean.
   const [wide] = groups('check web · light: no findings (text fits)\n  advice   tabs: a bottom tab bar 1280 px wide');
   assert.deepEqual([wide.lines, wide.advice], [[], ['  advice   tabs: a bottom tab bar 1280 px wide']]);
   const r = report({ host: 'web', built: { ms: 1000, said: [], warnings: [] }, compiler: [], tested: { passed: 1, failed: 0, results: [] },
@@ -420,8 +434,8 @@ test('check\'s text splits by scheme, counting what its own cap left out', () =>
   assert.ok(r.lines.includes('  advice   tabs: a bottom tab bar 1280 px wide'));
 });
 
-// The server an app calls, found where the rest pattern and the builders put it.
-// An entry that does not read DB (itself, or in a module it imports) is refused in one line naming it.
+// LLP 1116.006 D3: the server an app calls, found where the rest pattern and the builders put it.
+// LLP 1116.008 D1: an entry that does not read DB (itself, or in a module it imports) is refused in one line naming it.
 test('the app\'s server: its entry, the URL app.ts calls, and why it cannot be run on an empty database', () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'exact-server-'));
   const put = (files) => { rmSync(dir, { recursive: true, force: true }); for (const [path, text] of Object.entries(files)) { mkdirSync(resolve(dir, path, '..'), { recursive: true }); writeFileSync(resolve(dir, path), text); } };
@@ -439,11 +453,22 @@ test('the app\'s server: its entry, the URL app.ts calls, and why it cannot be r
     // The entry app.json names is the one it looked at, and says so.
     put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n", 'server.ts': reads, 'srv/main.ts': 'Bun.serve({});\n', 'app.json': JSON.stringify({ commands: { server: ['bun', 'srv/main.ts'] } }) });
     assert.match(appServer(dir).refusal, /^srv\/main\.ts \(app\.json's commands\.server\) does not read /);
+    // A server another program runs is run as written, told DB as Bun's is; its file is what the DB check reads (LLP 1156.001 D5).
+    put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n", 'server.py': 'import os\ndb = sqlite3.connect(os.environ["DB"])\n', 'app.json': JSON.stringify({ commands: { server: ['python3', '-u', 'server.py'] } }) });
+    assert.deepEqual([appServer(dir).entry, appServer(dir).command, appServer(dir).refusal], ['server.py', ['python3', '-u', 'server.py'], null]);
+    put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n", 'server.py': 'db = sqlite3.connect("data.db")\n', 'app.json': JSON.stringify({ commands: { server: ['python3', 'server.py'] } }) });
+    assert.match(appServer(dir).refusal, /^server\.py \(app\.json's commands\.server\) does not read .*os\.environ\["DB"\] in Python\), or say it keeps none in app\.json: "server": \{ "database": false \}$/);
+    // A command with no file of the app to read (a module path) cannot be told to use the test's database: refused,
+    // unless the app says its server keeps none.
+    put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n", 'app.json': JSON.stringify({ commands: { server: ['uvicorn', 'api.main:app', '--port', '8787'] } }) });
+    assert.match(appServer(dir).refusal, /^app\.json's commands\.server \(uvicorn api\.main:app --port 8787\) names no file of the app to read/);
+    put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n", 'app.json': JSON.stringify({ commands: { server: ['uvicorn', 'api.main:app'] }, server: { database: false } }) });
+    assert.deepEqual([appServer(dir).entry, appServer(dir).refusal], ['uvicorn api.main:app', null]);
     put({ 'app.ts': "const API = 'https://api.example.com';\n", 'server.ts': reads });
     assert.match(appServer(dir).why, /^server\.ts is left alone: app\.ts calls no local URL/);
     put({ 'app.ts': "const API = 'http://127.0.0.1:8787';\n" });
     assert.equal(appServer(dir), null);
-    // A setting app.ts reads, as the build inlines it: the environment's, else .env.local's, else .env's,
+    // A setting app.ts reads (LLP 1153 D4), as the build inlines it: the environment's, else .env.local's, else .env's,
     // else the default; a value that is no local URL leaves the server alone, though the default it overrides is one.
     const setting = { 'app.ts': "export const API = import.meta.env.API_BASE_URL ?? 'http://127.0.0.1:8080';\nexport const grants = `net.fetch ${API}`;\n", 'app.json': JSON.stringify({ env: ['API_BASE_URL'], server: { database: false } }), 'server.ts': 'Bun.serve({});\n' };
     put(setting);
@@ -535,7 +560,7 @@ test('server command arguments reach the child in order, with DB and PORT for a 
   `);
 }, 30_000);
 
-// A server that imports app.ts (the site pattern's) reads its settings as the build has them, though
+// LLP 1153 D4: a server that imports app.ts (the site pattern's) reads its settings as the build has them, though
 // Bun's own .env loading under NODE_ENV=test skips .env.local, so it listens where discovery looks.
 test('the settings app.ts reads reach the server as the build has them', () => {
   stubServerRun(`
@@ -780,7 +805,7 @@ test.skipIf(!!chromium().unavailable)('verify on a server app: its own server on
     assert.doesNotMatch(clean.stdout, /^ +lost /m);
     assert.ok(readFileSync(resolve(dir, 'data.db')).equals(before), 'the builder\'s data.db is as it was');
     assert.deepEqual(['data.db-wal', '.exact/verify/db.sqlite'].filter((f) => existsSync(resolve(dir, f))), []);
-    // `test` runs the same server on the same terms (not the builder's to start, nor `api-test`'s to know),
+    // LLP 1116.007 D2: `test` runs the same server on the same terms (it was the builder's to start, and `api-test`'s to know),
     // and an older app's api-test, whose test.mjs runs `test` under `withAppServer`, still passes on the one server it started.
     const plain = (verb = 'test') => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), verb, 'web'], { cwd: dir, encoding: 'utf8', timeout: 240_000, env: { ...process.env, EXACT_FEEDBACK: '0' } });
     const tested = plain();
@@ -788,7 +813,7 @@ test.skipIf(!!chromium().unavailable)('verify on a server app: its own server on
     assert.match(tested.stderr, new RegExp(`^test: bun server\\.ts at http://127\\.0\\.0\\.1:${port}, on an empty database \\(\\.exact/test/db\\.sqlite, removed after\\)$`, 'm'));
     assert.match(tested.stdout, /^1 passed, 0 failed$/m);
     assert.ok(readFileSync(resolve(dir, 'data.db')).equals(before), 'test leaves the builder\'s data.db as it was');
-    writeFileSync(resolve(dir, 'test.mjs'), "const { withAppServer } = await import(`${process.env.EXACT2}/scripts/verify.mjs`);\nprocess.exit(await withAppServer(import.meta.dir, () =>\n  Bun.spawn(['bun', 'exact.mjs', 'test', ...process.argv.slice(2)], { cwd: import.meta.dir, stdio: ['inherit', 'inherit', 'inherit'] }).exited));\n");
+    writeFileSync(resolve(dir, 'test.mjs'), "const { withAppServer } = await import(`${process.env.EXACT}/scripts/verify.mjs`);\nprocess.exit(await withAppServer(import.meta.dir, () =>\n  Bun.spawn(['bun', 'exact.mjs', 'test', ...process.argv.slice(2)], { cwd: import.meta.dir, stdio: ['inherit', 'inherit', 'inherit'] }).exited));\n");
     writeFileSync(resolve(dir, 'app.json'), JSON.stringify({ ...JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8')), commands: { 'api-test': ['bun', 'test.mjs'] } }, null, 2));
     const old = plain('api-test');
     assert.equal(old.status, 0, old.stdout + old.stderr);
@@ -808,7 +833,7 @@ test.skipIf(!!chromium().unavailable)('verify on a server app: its own server on
       assert.match(held.stderr, new RegExp(`^test: http://127\\.0\\.0\\.1:${port} already answers \\(pid ${dev.pid}: .*server\\.ts\\)`, 'm'));
       assert.equal(dev.exitCode, null, 'the dev server runs on');
     } finally { dev.kill(); await dev.exited; }
-    // A server.ts that hardcodes its database stops both before anything builds or runs: one line on
+    // LLP 1116.008 D1: a server.ts that hardcodes its database stops both before anything builds or runs: one line on
     // stderr naming the entry and the fix, a non-zero exit, no output, and no server started.
     const server = readFileSync(resolve(dir, 'server.ts'), 'utf8');
     writeFileSync(resolve(dir, 'server.ts'), server.replace("process.env.DB ?? 'data.db'", "'data.db'"));
@@ -821,7 +846,7 @@ test.skipIf(!!chromium().unavailable)('verify on a server app: its own server on
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 300_000);
 
-// `agent` starts the app's server for a drive when nothing answers where app.ts calls it, on a database of
+// LLP 1116.008 D1: `agent` starts the app's server for a drive when nothing answers where app.ts calls it, on a database of
 // its own, and the last of several overlapping drives stops it; a server the builder runs is used and left running.
 test('agent\'s server: started on a database of its own, shared by overlapping drives, stopped by the last, the builder\'s left alone', async () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'exact-drive-server-'));
@@ -968,11 +993,7 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
       const r = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), verb, ...args], { cwd: dir, encoding: 'utf8', timeout: 180_000, env: { ...process.env, EXACT_FEEDBACK: '0' } });
       return { ...r, lines: r.stdout.trim().split('\n') };
     };
-    // `contract verify`'s summary and receipt come after verify's own report and before its verdict, the last line.
-    const verify = (...args) => {
-      const r = exact('verify', ...args), at = r.lines.findIndex((l) => l.startsWith('contract verify: '));
-      return at >= 0 && !args.includes('--json') ? { ...r, lines: [...r.lines.slice(0, at), r.lines.at(-1)], semantics: r.lines.slice(at, -1).join('\n') } : r;
-    };
+    const verify = (...args) => exact('verify', ...args);
     const warned = (text) => text.split('\n').filter((l) => / warning \[/.test(l));
     // The build `test web` runs first says its count, and here names nothing; its drive's stdout is the tests'.
     const quiet = exact('test', 'web');
@@ -988,12 +1009,18 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     assert.ok(clean.lines.includes('check first screen, 2 test ends, relaunch · 390x844, 1280x900 · light, dark: no findings'), clean.stdout);
     // The starter keeps nothing: the relaunch on the second test's store opens as a fresh launch does, and says so.
     assert.match(clean.stdout, /^relaunch on "the header's button likes it"'s store \(\d+\.\d s of real time\): the first screen is a fresh launch's; that test wrote no storage$/m);
-    assert.match(clean.lines.at(-1), /^verify: clean in \d+\.\d s$/);
+    assert.match(clean.lines.at(-1), /^verify: clean in \d+\.\d s; contract verify: done; 0 findings; properties: 0 held, 0 false, 0 counted only, 0 not exercised; \d+ suggested properties .*; report and receipt: \.exact\/verify\/properties\.txt$/);
     assert.equal(clean.lines.at(-2), 'open it: bun exact.mjs web (serves what verify checked)'); // how a person opens it, with no dev server of the builder's own
-    assert.match(clean.semantics, /^verify receipt — reproduce: contract verify .*app\.contract /m, clean.stdout);
+    const properties = resolve(dir, '.exact/verify/properties.txt'), full = readFileSync(properties, 'utf8');
+    assert.match(full, /^Observed over .*not proved/m);
+    assert.match(full, /^(always|after|never) /m);
+    assert.match(full, /^verify receipt — reproduce: contract verify .*app\.contract /m);
+    assert.match(full, /^ {2}app sha256:.*tests sha256:.*embedding sha256:/m);
+    assert.match(full, /^ {2}suggestions: .* printed; .* dropped/m);
+    assert.doesNotMatch(clean.stdout, /^verify receipt|^Observed over/m);
     for (const [w, h] of SIZES) for (const scheme of ['light', 'dark']) assert.ok(existsSync(resolve(dir, `.exact/verify/web-${w}x${h}-${scheme}.png`)), `${w}x${h} ${scheme}`);
     for (const f of ['web-t1-the-greeting-loads.png', 'web-t2-the-header-s-button-likes-it.png', 'web-relaunch.png']) assert.ok(existsSync(resolve(dir, '.exact/verify', f)), f);
-    // `--shots out/shots` made the directory and copied every one, under the names verify keeps.
+    // `--shots out/shots` made the directory and copied every one, under the names verify keeps (LLP 1116.008 D2).
     const kept = readdirSync(resolve(dir, '.exact/verify')).filter((f) => f.endsWith('.png')).sort();
     assert.equal(kept.length, 7);
     assert.deepEqual(readdirSync(resolve(dir, 'out/shots')).sort(), kept);
@@ -1003,6 +1030,20 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     assert.deepEqual([bare.status, bare.stdout, bare.stderr], [2, '', 'verify: --shots takes a directory: the screenshots are copied there, under the names in .exact/verify/\n']);
 
     const tests = resolve(dir, 'app.test.contract'), authored = readFileSync(tests, 'utf8');
+    const property = '\nafter "like" "liking writes nothing"\n  writes none\n';
+    writeFileSync(tests, authored + property);
+    const semanticFailed = verify();
+    assert.equal(semanticFailed.status, 1, semanticFailed.stdout + semanticFailed.stderr);
+    assert.ok(semanticFailed.lines.includes('tests: 2 passed, 0 failed'), semanticFailed.stdout);
+    assert.match(semanticFailed.stdout, /^PROPERTY "liking writes nothing" is false/m);
+    assert.match(semanticFailed.lines.at(-1), /^verify: clean in \d+\.\d s; contract verify: failed \(exit 1\); .*properties: 0 held, 1 false, 0 counted only, 0 not exercised;/);
+    assert.match(readFileSync(properties, 'utf8'), /^verify receipt — reproduce:/m);
+    writeFileSync(tests, authored.replace('expect state liked == true', 'expect state liked == false') + property);
+    const both = verify('--json'), bothJSON = JSON.parse(both.stdout);
+    assert.deepEqual([both.status, bothJSON.exit, bothJSON.tests.failed, bothJSON.semantics.exit], [1, 1, 1, 1], both.stdout + both.stderr);
+    assert.deepEqual(Object.keys(bothJSON.semantics).sort(), ['exit', 'output']);
+    assert.match(bothJSON.semantics.output, /^PROPERTY "liking writes nothing" is false/m);
+    assert.match(bothJSON.semantics.output, /^verify receipt — reproduce:/m);
     writeFileSync(tests, authored.replace('expect state liked == true', 'expect state liked == false'));
     const failing = verify();
     assert.equal(failing.status, 1, failing.stdout + failing.stderr);
@@ -1031,7 +1072,7 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     assert.match(found.stdout, /^ {2}\(light only\) contrast Text "Faint"#\d+ \[.*\]: 1\.\d:1 \(#dddddd on #ffffff(?:, [^)]*)?\), needs 4\.5:1/m);
     assert.match(found.lines.at(-1), /^verify: 2 problems \(2 findings; the tests passed\) in /);
 
-    // A test's own `screenshot` step joins --shots, named by the test.
+    // A test's own `screenshot` step joins --shots, named by the test (LLP 1116.008 D2).
     writeFileSync(tests, authored.replace('  expect state liked == true', '  expect state liked == true\n  screenshot "own/after-like.png"'));
     const own = verify('--shots', 'out/shots');
     assert.equal(own.status, 0, own.stdout + own.stderr);
@@ -1042,6 +1083,8 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     const json = verify('--json');
     assert.equal(json.status, 0, json.stderr);
     const r = JSON.parse(json.stdout);
+    assert.equal(r.semantics.exit, 0);
+    assert.match(r.semantics.output, /^verify receipt — reproduce:/m);
     assert.deepEqual([r.host, r.built, r.tests.passed, r.tests.failed, r.problems, r.exit, r.screenshots.length, r.compiler.length], ['web', null, 2, 0, 2, 0, 7, 1]);
     // Each screen at each width and scheme: the first screen, the two test ends (in their own sessions), the relaunch.
     const onScreen = (screen) => r.checks.filter((c) => c.screen === screen).map((c) => `${c.size.join('x')} ${c.scheme} ${c.findings.map((f) => f.kind).join(',')}`);
@@ -1049,8 +1092,8 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     assert.deepEqual([r.relaunch.test, r.relaunch.problems, r.tests.results.map((t) => t.shot.split('/').at(-1))], ["the header's button likes it", [], ['web-t1-the-greeting-loads.png', 'web-t2-the-header-s-button-likes-it.png']]);
     assert.deepEqual(r.reloads.map((x) => [x.ran, x.finding]), [[true, null], [true, null]]); // each end screen reloaded: the same
 
-    // A call the host refuses is the report's first line, and a count kept only in memory is lost by a
-    // reload: the page's URL and storage hold nothing of it. The starter's greeting source goes with its view.
+    // A call the host refuses is the report's first line (LLP 1116.010 D5), and a count kept only in memory is lost by a
+    // reload: the page's URL and storage hold nothing of it (D6). The starter's greeting source goes with its view.
     // The app's id is app.json's alone (029cd282d3): app.ts need not name it.
     writeFileSync(resolve(dir, 'app.ts'), `import type { Answer, Sources } from './app.contract.d.ts';\nexport const grants = '';\nconst sources: Sources = {};\nexport const answer: Answer = (name, args, store, storage, native) => (sources as any)[name](args, store, storage, native);\n`);
     writeFileSync(view, 'component App\n  state which = "nope"\n  state count = 0\n  action poke\n    showPicker(which)\n    count = count + 1\n  view\n    column padding=16\n      button press=poke testId="poke"\n        text "Poke"\n      text `Pokes: ${count}` testId="count"\n');
@@ -1059,7 +1102,7 @@ test.skipIf(!!chromium().unavailable)('verify on a new app: clean, a failing tes
     assert.equal(poked.status, 0, poked.stdout + poked.stderr);
     assert.equal(poked.lines[0], "refused at run time: 1 (the host's journal, 'logs'; each is a call or a wiring the app got wrong)");
     assert.match(poked.lines[1], /^ {2}picker: refused: no file input with id "nope" \(test "poking counts, and asks for/);
-    // The count lived in memory by design, so its reload is a note, shown and not counted.
+    // LLP 1116.011 D5: the count lived in memory by design, so its reload is a note, shown and not counted.
     assert.match(poked.stdout, /^reload 1 test end: no findings\nreload note: 1 screen reloads into another state \(not counted\)\n {2}note {5}\/ reloads into another state: "Pokes: 2" → "Pokes: 0" \("poking counts[^\n]*\n {2}a saved value must survive a reload; a game or a draft in progress may not\n/m);
     assert.match(poked.lines.at(-1), /^verify: 1 problem \(1 finding; the tests passed\) in /);
   } finally { rmSync(parent, { recursive: true, force: true }); }
@@ -1105,8 +1148,8 @@ test('a finding on a view only one scheme shows is accepted by the testId that s
   assert.match(r.text, /check ios · dark \(1 accepted\): no findings/);
 });
 
-// Each screen again at the largest text size; what spills is said once, where, with a remedy that keeps the
-// text's size, counted in the last line without failing the run.
+// LLP 1116.019 D2: each screen again at the largest text size; what spills is said once, where, with a remedy that keeps the
+// text's size, counted in the last line without failing the run (LLP 1116.020 D4).
 test('the largest text size: its findings once each with the screens they were on and a remedy, counted, never failing; a screen it could not read is named', async () => {
   const { judge, line } = await import('./agent-check.mjs');
   const { largeRemedy } = await import('./verify.mjs');
@@ -1141,13 +1184,17 @@ test('the largest text size: its findings once each with the screens they were o
   ]);
   assert.equal(r.lines.at(-1), 'verify: 3 problems (3 at the largest text size; the tests passed) in 2.0 s');
   assert.equal(r.exit, 0);
+  // Each page whose findings were read at that size is a picture, named with its screen (LLP 1156.001 D3).
+  const shots = ['/app/.exact/verify/ios-largest-1.png', '/app/.exact/verify/ios-largest-2.png'];
+  const pictured = report({ host: 'ios', built: null, tested: { passed: 1, failed: 0, results: [] }, checks: [], large: [{ ...large[0], shots }], shots: [], ms: 2000, cwd: '/app' });
+  assert.ok(pictured.lines.includes('  pictures at that size: first screen: .exact/verify/ios-largest-1.png .exact/verify/ios-largest-2.png'), pictured.lines.join('\n'));
   const both = report({ host: 'ios', built: null, compiler: ['a warning'], tested: { passed: 1, failed: 0, results: [] }, checks: [], large, shots: [], ms: 2000 });
   assert.equal(both.lines.at(-1), 'verify: 4 problems (1 finding, 3 at the largest text size; the tests passed) in 2.0 s');
   const web = report({ host: 'web', built: null, tested: { passed: 1, failed: 0, results: [] }, checks: [], large: [{ screen: 'first screen', size: [390, 844], rootFontSize: 53, lines: [] }], shots: [], ms: 2000 });
   assert.equal(web.lines[1], 'largest text size (root font size 53 px at 390x844, iOS\'s body at its largest), 1 screen: nothing spills');
 });
 
-// An event-RSVP app at the largest text size: a centred caption wider than its column runs past both of its sides and
+// Round 21's event-rsvp at the largest text size: a centred caption wider than its column runs past both of its sides and
 // 1.7 pt into the next column's caption, which read "GoingMaybe" while verify said nothing spills. Two texts set flush on
 // purpose only touch, and texts whose boxes overlap where their lines are drawn apart (`ink`) do not run together.
 test('the largest text size: a text past its column, and two texts that run into each other', async () => {
@@ -1169,7 +1216,7 @@ test('the largest text size: a text past its column, and two texts that run into
   assert.match(lines[1], /^ {2}overlap {2}Text "Going"#13 \[22,314 110×52\]: overlaps Text "Maybe"#16 by 1\.7×52; wrap the row/);
 });
 
-// An expense tracker at the largest text size: a month's name, clamped to two lines and centred between two
+// Round 22's expense-tracker at the largest text size: a month's name, clamped to two lines and centred between two
 // buttons, ran 57 pt past its box and under the next-month button while verify said nothing spills. A clamp answers the
 // lines past it, not a line wider than the box, and a control is judged against where a text is drawn.
 test('the largest text size: a clamped word wider than its box, drawn under the button beside it', async () => {
@@ -1185,8 +1232,8 @@ test('the largest text size: a clamped word wider than its box, drawn under the 
 });
 
 // A label a list's row cuts is given the row's room and its row grows taller, as UIKit's cells do at the accessibility sizes
-// (a grouped list's standard cell already hyphenates); never the flex-wrap the row does not take, the line-clamp that reads as a
-// tell, nor `hyphens` on whole headings; an iOS test end at a window the phone shows scaled
+// (a grouped list's standard cell already hyphenates); never the flex-wrap the row does not take, the line-clamp round 22's graders named a
+// tell, nor the `hyphens` round 26's builders put on whole headings; an iOS test end at a window the phone shows scaled
 // measures no contrast or target.
 test('the largest text size in a list row; a scaled iOS test end', async () => {
   const { largeRemedy, scaledEnd } = await import('./verify.mjs');
@@ -1221,7 +1268,7 @@ test('the tour at the largest text size: only what the visited screens did not s
   assert.deepEqual(tourNews(visited, toured), [{ screen: 'line 36 of "study"', lines: [toured[0].lines[1]] }]);
 });
 
-// A font size the app's Contract fixes is a finding, named where it is written, with the rem it would be;
+// LLP 1116.020 D4: a font size the app's Contract fixes is a finding, named where it is written, with the rem it would be;
 // app.json's `verify.accept` takes one by its node's testId, and a test file is no screen.
 test("fixed type: each fixed font size in the app's Contract, counted; an accepted one listed apart", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'verify-fixed-'));
@@ -1241,7 +1288,7 @@ test("fixed type: each fixed font size in the app's Contract, counted; an accept
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// A symbol sized in points beside text, and a word broken inside, are named beside the fixed sizes.
+// LLP 1116.021 D6: a symbol sized in points beside text, and a word broken inside, are named beside the fixed sizes.
 test('fixed type: a symbol sized in points and a word broken inside are findings too', async () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'verify-fixed-'));
   try {
@@ -1256,7 +1303,7 @@ test('fixed type: a symbol sized in points and a word broken inside are findings
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a relaunch names the requests the server holds, as no finding', () => {
+test('a relaunch names the requests the server holds, as no finding (LLP 1016.000 D9)', () => {
   const test = { name: 't', end: { ops: 1, resources: {}, slots: {} } };
   const shown = { texts: new Set(['Feed']), resources: {}, slots: {} };
   const r = judgeRelaunch(test, shown, shown, { busy: [], failed: {}, heldBy: ['changes'] });
@@ -1265,7 +1312,7 @@ test('a relaunch names the requests the server holds, as no finding', () => {
   assert.equal(judgeRelaunch(test, shown, shown, {}).notes, undefined);
 });
 
-// Many findings are said by kind in the closing line, which is the line a builder copies; a check kind that
+// LLP 1143 D5: many findings are said by kind in the closing line, which is the line a builder copies; a check kind that
 // is most of them names verify.accept, which takes those the app's design means.
 test('many findings: the closing line names their kinds, and a check kind that dominates names verify.accept', () => {
   const tap = (n) => `  tap-target Button "Row ${n}"#${n} [0,${n * 40} 30×30]: 30×30 pt, needs 44×44`;
@@ -1380,3 +1427,41 @@ test('scrolling: the scrub and a carousel join the summary; their hitches and th
   const along = findings(feel({ along: 'bad' }));
   assert.deepEqual(along.map((f) => [f.metric, f.value, f.owner]), [['carousel: a mostly-vertical drag', '0.95, 40', 'exact']]);
 });
+
+test('every drive after the build, and the run recorded, select the app the caller named, under EXACT_APP_DIR of another basename', () => {
+  // `EXACT_APP_DIR=…/copy verify web --app original` (a staged design tool's): its drives and its record are
+  // `original`'s, whose crates are `original-*`, never `copy`'s. The build, server, drives and record are stubbed.
+  const root = mkdtempSync(resolve(tmpdir(), 'exact-verify-selector-')), dir = resolve(root, 'copy');
+  mkdirSync(dir);
+  writeFileSync(resolve(dir, 'app.contract'), 'component App\n  view\n    text "Test"\n');
+  writeFileSync(resolve(dir, 'app.test.contract'), 'test "a"\n  expect text "Test" == "Test"\n');
+  const seen = resolve(root, 'seen.jsonl'), preload = resolve(root, 'stub.mjs'), scripts = import.meta.dir;
+  writeFileSync(preload, `
+    import { mock } from 'bun:test';
+    import { appendFileSync } from 'node:fs';
+    const scripts = ${JSON.stringify(scripts)}, at = (p) => scripts + '/' + p;
+    // Before the first await: verify.mjs imports it statically, and Bun runs the entry once this file awaits.
+    mock.module(at('verify-semantics.mjs'), () => ({ contractVerify: () => ({ stop() {}, done: Promise.resolve({ exit: 0, output: '', errors: '' }) }), semanticsSummary: () => [] }));
+    const { resolveApp } = await import(at('app.mjs'));
+    const note = (by, selector) => { const a = resolveApp(selector); appendFileSync(${JSON.stringify(seen)}, JSON.stringify([by, a.name, a.dir, a.crate('gpu')]) + '\\n'); };
+    const real = async (p) => ({ ...(await import(at(p))) });
+    const launch = await real('agent-launch.mjs'), serve = await real('../host/web/serve.mjs'), web = await real('../host/web-js/module.mjs'), driven = await real('agent-test.mjs');
+    mock.module(at('../host/web/serve.mjs'), () => ({ ...serve, builtAppMatches: async () => true, jsTargetBuild: () => true }));
+    mock.module(at('../host/web-js/module.mjs'), () => ({ ...web, fresh: () => true }));
+    mock.module(at('agent-launch.mjs'), () => ({ ...launch, webChanges: () => ({ all: [], app: [] }), driveStore: () => ({ base: ${JSON.stringify(root)}, profile: ${JSON.stringify(root)} }), removeBrowserProfile: async () => {} }));
+    mock.module(at('agent-test.mjs'), () => ({ ...driven, sweepTestStores() {}, runTests: async ({ app }) => {
+      note('runTests', app);
+      return { passed: 1, failed: 0, results: [{ name: 'a', failures: [], store: 'test', end: { ops: 1, resources: {} } }] };
+    } }));
+    mock.module(at('agent.mjs'), () => ({ open: async ({ app }) => { note('open', app); throw new Error('stubbed drive'); } }));
+    mock.module(at('evidence.mjs'), () => ({ recordRun: (app) => note('recordRun', app) }));
+  `);
+  try {
+    const r = spawnSync(process.execPath, ['--preload', preload, resolve(scripts, 'verify.mjs'), 'web', '--app', 'original', '--json'],
+      { cwd: root, env: { ...process.env, EXACT_APP_DIR: dir }, encoding: 'utf8', timeout: 30_000 });
+    const lines = existsSync(seen) ? readFileSync(seen, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+    // The tests and the tour; a first screen at each width; the relaunch on the test's store; the run.
+    assert.deepEqual(lines.map(([by]) => by).sort(), ['open', 'open', 'open', 'recordRun', 'runTests', 'runTests'], r.stdout + r.stderr);
+    for (const [, name, at, gpu] of lines) assert.deepEqual([name, at, gpu], ['original', realpathSync(dir), 'original-gpu']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 60_000);

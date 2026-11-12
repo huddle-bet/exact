@@ -1,4 +1,4 @@
-// On the web, in a real browser with a real composition (CDP's
+// LLP 1115.000 §5, ruling 6, on the web, in a real browser with a real composition (CDP's
 // `Input.imeSetComposition`, which fires `compositionstart`, `compositionupdate` and `input` as an input method does;
 // `Input.insertText` commits it, an empty composition cancels it): the app hears `input` at every change, the marked
 // text included, and a value it writes meanwhile never ends the composition. It is held, the last one, and written
@@ -20,8 +20,9 @@ import { cdpBrowser, chromium } from '../../../scripts/agent-launch.mjs';
 import { need } from '../../../scripts/coverage.mjs';
 import { readyPage } from './page.mjs';
 import { standIns } from './stand-ins.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('../../..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const compiler = resolve(process.env.CARGO_TARGET_DIR ?? resolve(ROOT, 'target'), 'debug', process.platform === 'win32' ? 'contract.exe' : 'contract');
 const WEB_JS = resolve(ROOT, 'host/web-js');
 const { unavailable } = chromium();

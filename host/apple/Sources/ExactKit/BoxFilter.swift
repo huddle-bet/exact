@@ -1,4 +1,4 @@
-// CSS `filter` on a box, on Apple (Filter Effects 1
+// @ref LLP 1055.000 D14 — CSS `filter` on a box, on Apple (Filter Effects 1
 // §12): the web lowers it natively; here the box's subtree is drawn as it
 // would show unfiltered, the function chain runs on the GPU (the SVG
 // island's `SvgFilterGPU`, one implementation for boxes and SVG groups),
@@ -9,7 +9,8 @@
 // it, when its size, scale or appearance changes, and after an image or
 // text raster under it publishes pixels; after any other batch it only
 // follows the box. An animation under a filtered box is sampled instead of
-// lowered (`svg_lower::eligibility`).
+// lowered (`svg_lower::eligibility`, and `svg_lower::resample` when the
+// filter comes after the animation).
 //
 // The main thread draws the subtree; the chain runs on a queue of its own,
 // whose Core Image render waits for the GPU, and the old picture shows
@@ -34,7 +35,7 @@ final class BoxFilter {
     let hide = CALayer()
     /// `Filter::encode` over a box of no size: its region is how far past
     /// the box the result reaches. `darkProgram`: the chain under a dark
-    /// appearance, when its colours differ there.
+    /// appearance, when its colours differ there (LLP 1095 D5).
     private var program: [Float] = []
     private var darkProgram: [Float]?
     /// The chain as a layer's shadow, light and dark, when it is one

@@ -1,4 +1,4 @@
-//! An inline `svg` is bounded as an SVG image is. A few
+//! LLP 1011.001 D2: an inline `svg` is bounded as an SVG image is. A few
 //! elements that name each other can expand past what a host can hold;
 //! the scene then draws nothing and names the limit it passed.
 use super::*;
@@ -44,6 +44,46 @@ fn use_doubling_stops_at_the_expansion_limit() {
     let s = resolve(&k, svg);
     assert_eq!(s.over, Some(Limit::Expansion));
     assert!(s.items.is_empty(), "a scene over its limit draws nothing");
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_use_box_stops_at_the_expansion_limit() {
+    use NodeType::*;
+    let mut d = Doc::new();
+    let defs = d.node(SvgDefs, &[], &[]);
+    let below = d.node(
+        SvgRect,
+        &[(StyleId::Width, "1"), (StyleId::Height, "1")],
+        &[(PropId::Id, "l0")],
+    );
+    let mut levels = vec![below];
+    // Each level uses the one below four times: 4^12 copies of the rect.
+    for k in 1..=12 {
+        let g = d.node(SvgGroup, &[], &[(PropId::Id, &format!("l{k}"))]);
+        let href = format!("#l{}", k - 1);
+        let uses: Vec<u32> = (0..4)
+            .map(|_| d.node(SvgUse, &[], &[(PropId::Href, &href)]))
+            .collect();
+        d.children(g, &uses);
+        levels.push(g);
+    }
+    d.children(defs, &levels);
+    // Its box is asked for before its instance is walked.
+    let top = d.node(
+        SvgUse,
+        &[
+            (StyleId::TransformBox, "fill-box"),
+            (StyleId::Rotate, "10"),
+            (StyleId::Filter, "blur(1px)"),
+        ],
+        &[(PropId::Href, "#l12")],
+    );
+    let svg = svg(&mut d, &[defs, top]);
+    let k = d.kernel(&[svg], 800.0);
+    let started = std::time::Instant::now();
+    let s = resolve(&k, svg);
+    assert_eq!(s.over, Some(Limit::Expansion));
     assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
 }
 

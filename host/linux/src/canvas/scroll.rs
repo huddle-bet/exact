@@ -1,9 +1,10 @@
-//! The reader scrolls by itself (the boundary is `presenter/scrollers.rs`): a
-//! finger's drag and its fling are the reader's, with Android's own classes. It
-//! asks what is under a touch, moves the scroller's rows itself where the
-//! stream gave them a node of their own, and says here how far it moved which
-//! scroller. After each frame it is told where the scrollers it knows are and
-//! how far they go, and whether the app moved one, which ends its fling.
+//! The reader scrolls by itself (LLP 1115.001 D7.1 to D7.3; the boundary is
+//! `presenter/scrollers.rs`): a finger's drag and its fling are the
+//! reader's, with Android's own classes. It asks what is under a touch,
+//! moves the scroller's rows itself where the stream gave them a node of
+//! their own, and says here how far it moved which scroller. After each
+//! frame it is told where the scrollers it knows are and how far they go,
+//! and whether the app moved one, which ends its fling.
 //!
 //! The feed is the scroller a finger last moved up or down (or the one a
 //! driver's `scroll` found): the one whose travel the windows lead by and
@@ -61,6 +62,27 @@ impl<D: DataSource + Default> CanvasHost<D> {
                 self.travel = crate::travel::Travel::default();
             }
             self.travel.scrolled(down, self.scrolled_at);
+        }
+    }
+
+    /// The reader's finger began dragging scroller `id`: its
+    /// `scrolldragstart` ([`crate::presenter::Presenter::reader_drag_began`]).
+    pub fn drag_began(&mut self, id: u32) {
+        if let Some(error) = self.p.reader_drag_began(id) {
+            self.p.host_mut().log(error);
+        }
+    }
+
+    /// The finger let go of scroller `id`: the platform's velocity
+    /// (`vx`, `vy`, pixels per second, positive as the offset grows) and,
+    /// with `rest`, where its fling will stop (`OverScroller.getFinalX/Y`),
+    /// in pixels ([`crate::presenter::Presenter::reader_drag_ended`]).
+    pub fn drag_ended(&mut self, id: u32, vx: f32, vy: f32, rest: Option<(f32, f32)>) {
+        let s = self.scale;
+        let velocity = ((vx / s) as f64, (vy / s) as f64);
+        let rest = rest.map(|(x, y)| (x / s, y / s));
+        if let Some(error) = self.p.reader_drag_ended(id, velocity, rest) {
+            self.p.host_mut().log(error);
         }
     }
 

@@ -1,4 +1,4 @@
-//! Through the executor, a tool's reach to the local network
+//! LLP 1133.036 D6 through the executor: a tool's reach to the local network
 //! is refused before it is sent, at the first hop, at a redirect's hop and at
 //! a WebSocket open, and a person's or the app's own reach is never refused.
 use super::super::Core;
@@ -115,6 +115,7 @@ fn one(url: &str, reach: Reach) -> (Outcome, Vec<String>) {
     }
     request.reach = reach;
     let out = RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket: 1,
         target: "test".into(),
         request,

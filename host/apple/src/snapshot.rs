@@ -1,4 +1,4 @@
-//! Typed props replace only the snapshot entry's root slot.
+//! Typed props replace only the snapshot entry's root slot (LLP 1126 D2).
 use exact_plan::{Plan, TypeKind, TypesId, Value};
 use exact_runner::Carried;
 
@@ -159,6 +159,7 @@ impl<D: exact_runner::DataSource> crate::Host<D> {
                         executor
                             .run(
                                 exact_runner::RequestOut {
+                                    class: exact_runner::RequestClass::Ordered,
                                     ticket: 1,
                                     target: "widget refresh".into(),
                                     request,

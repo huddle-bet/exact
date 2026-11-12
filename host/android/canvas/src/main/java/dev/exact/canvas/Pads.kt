@@ -9,7 +9,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 
 /**
- * The process's gamepads: a gamepad's or joystick's buttons ([KeyEvent]) and axes
+ * The process's gamepads (LLP 1127.003 D2; LLP 1133.022 D4): a gamepad's or joystick's buttons ([KeyEvent]) and axes
  * ([MotionEvent]) in the W3C Gamepad API's standard mapping (https://w3c.github.io/gamepad/#remapping), as Chrome on
  * Android reads them, sent to a world canvas ([Native.pad]) when a button or a quantized axis changed, and as
  * disconnected when Android removes the device. A pad's index is its slot: a device takes the lowest free one when
@@ -17,9 +17,10 @@ import android.view.MotionEvent
  *
  * It is the process's, not an activity's: an activity the system makes again while the process lives finds the
  * pads, `current` and the claims a module made through them (@exact/gamepad, [ExtensionPads]) where they were. The
- * activity that reads the host hands it every key and motion event first, whatever holds the focus, as a console's
- * game hears its pad. When that activity goes to the background each pad keeps its slot and the canvas hears it
- * all released, so a world's holds drop; Android has no call that reads a pad's state, so a pad reports itself
+ * activity that reads the host hands it every key and motion event first, whatever holds the focus. Only while a
+ * canvas receives pad input are those events consumed; otherwise Android handles navigation. When that activity
+ * goes to the background each pad keeps its slot and the canvas hears it all released, so a world's holds drop;
+ * Android has no call that reads a pad's state, so a pad reports itself
  * again with its next event: a motion event carries every axis, and a button held through the background reads up
  * until it is pressed again, as a key does.
  *
@@ -35,7 +36,7 @@ object Pads : InputManager.InputDeviceListener {
     private val slots = IntArray(MAX) { -1 }
     /** Each slot's reading, as last sent. */
     private val readings = arrayOfNulls<PadReading>(MAX)
-    /** The slot whose button last went down, -1 for none: the pad in use. */
+    /** The slot whose button last went down, -1 for none: the pad in use (LLP 1133.022 D2). */
     var current = -1
         private set
     private val watchers = LinkedHashMap<Any, () -> Unit>()
@@ -86,21 +87,23 @@ object Pads : InputManager.InputDeviceListener {
         }
     }
 
-    /** A gamepad button's edge; whether it was one. */
-    fun key(e: KeyEvent): Boolean {
+    /** Observe a gamepad button's edge; consume it only while a canvas takes pad input. */
+    fun key(e: KeyEvent, takesInput: Boolean): Boolean {
+        // Android's synthesized navigation keys retain the pad's device id. They are not another pad reading.
+        if (e.flags and KeyEvent.FLAG_FALLBACK != 0) return false
         val button = BUTTONS[e.keyCode] ?: return false
         if (!isPad(e.deviceId) || (e.action != KeyEvent.ACTION_DOWN && e.action != KeyEvent.ACTION_UP)) return false
-        if (e.repeatCount > 0) return true
-        val (slot, r) = reading(e.deviceId) ?: return true
+        if (e.repeatCount > 0) return takesInput
+        val (slot, r) = reading(e.deviceId) ?: return takesInput
         if (r.key(button, e.action == KeyEvent.ACTION_DOWN)) send(slot, r)
         if (e.action == KeyEvent.ACTION_DOWN && current != slot) { current = slot; tell() }
-        return true
+        return takesInput
     }
 
-    /** A gamepad's or joystick's axes; whether they were its. */
-    fun motion(e: MotionEvent): Boolean {
+    /** Observe a gamepad's or joystick's axes; consume them only while a canvas takes pad input. */
+    fun motion(e: MotionEvent, takesInput: Boolean): Boolean {
         if (e.source and InputDevice.SOURCE_JOYSTICK != InputDevice.SOURCE_JOYSTICK || e.action != MotionEvent.ACTION_MOVE) return false
-        val (slot, r) = reading(e.deviceId) ?: return true
+        val (slot, r) = reading(e.deviceId) ?: return takesInput
         val changed = r.motion(
             e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y),
             e.getAxisValue(MotionEvent.AXIS_Z), e.getAxisValue(MotionEvent.AXIS_RZ),
@@ -110,7 +113,7 @@ object Pads : InputManager.InputDeviceListener {
             e.getAxisValue(MotionEvent.AXIS_HAT_X), e.getAxisValue(MotionEvent.AXIS_HAT_Y),
         )
         if (changed) send(slot, r)
-        return true
+        return takesInput
     }
 
     override fun onInputDeviceRemoved(deviceId: Int) {

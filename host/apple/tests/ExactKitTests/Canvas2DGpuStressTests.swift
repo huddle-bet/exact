@@ -5,12 +5,12 @@ import QuartzCore
 @testable import ExactKit
 @testable import ExactSurfaces
 
-/// The Canvas 2D GPU module under concurrency: several
+/// The Canvas 2D GPU module under concurrency (LLP 1056 §8.5): several
 /// presenters' replay queues drive one process-wide module while the main
 /// thread applies, forgets and shows. Run under Thread Sanitizer on a
 /// simulator. Skipped without a module (`EXACT_CANVAS_GPU_DYLIB`).
 final class Canvas2DGpuStressTests: XCTestCase {
-    override class func setUp() { super.setUp(); ExactSurfaces.install() }
+    override class func setUp() { super.setUp(); ExactSurfaces.install() } // LLP 1047.001 D4
     private func list(_ records: [(Canvas2DOp, [Double])]) -> Data {
         var d = Data()
         func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
@@ -46,6 +46,36 @@ final class Canvas2DGpuStressTests: XCTestCase {
         let row = surface.bytesPerRow, base = surface.baseAddress.assumingMemoryBound(to: UInt8.self)
         let at = (surface.height - 1) * row + (surface.width - 1) * 4
         return [base[at + 2], base[at + 1], base[at], base[at + 3]] // BGRA → RGBA
+    }
+
+    func testCurrentAndSavedFontsDrawInLaterJobs() throws {
+        guard Canvas2DGpuModule.shared != nil else { throw XCTSkip("the Canvas 2D GPU module is not built") }
+        let host = Canvas2DHost(), parent = CALayer(), engine = TextEngine(resolve: { _ in nil })
+        host.textEngine = { engine }
+        func font(_ size: Double) -> (Canvas2DOp, [Double]) {
+            (.font, [size, 400, 0, 100, 0, 0, 0, 0, 0] + "system-ui".unicodeScalars.map { Double($0.value) })
+        }
+        let cover: [(Canvas2DOp, [Double])] = [(.fillColor, [255, 255, 255, 1]), (.fillRect, [0, 0, 60, 40])]
+        let text: [(Canvas2DOp, [Double])] = [(.fillColor, [0, 0, 0, 1]), (.fillText, [2, 30, 1, 0, 72, 105])]
+        func draw(_ records: [(Canvas2DOp, [Double])], fresh: Bool = false) throws -> Data {
+            host.apply(7, payload(1, generation: 0, fresh: fresh, lists: [list(cover + records + text)]), layer: parent)
+            waitFor("GPU text replay") { host.loadingCount == 0 }
+            let surface = try XCTUnwrap(parent.sublayers?.first?.contents as? IOSurface)
+            surface.lock(options: .readOnly, seed: nil)
+            defer { surface.unlock(options: .readOnly, seed: nil) }
+            var data = Data()
+            for y in 0..<surface.height {
+                data.append(Data(bytes: surface.baseAddress.advanced(by: y * surface.bytesPerRow), count: surface.width * 4))
+            }
+            XCTAssertTrue(data.contains(0), "black glyphs draw over the white canvas")
+            return data
+        }
+        let large = try draw([font(20), (.save, [])], fresh: true)
+        let small = try draw([font(12)])
+        XCTAssertNotEqual(large, small)
+        XCTAssertEqual(try draw([]), small, "the current font survives a job with no font record")
+        XCTAssertEqual(try draw([(.restore, [])]), large, "a later job restores the saved font")
+        host.forget(7)
     }
 
     func testPresentersReplayConcurrentlyThroughOneModule() throws {

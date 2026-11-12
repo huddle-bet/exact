@@ -1,13 +1,14 @@
-// The token names a native module reads, written from the
+// The token names a native module reads (LLP 1121 D12), written from the
 // app's design before the module compiles: `contract tamber gen swift` or
 // `kotlin` into the app's `.exact/tamber/` (never committed), so a view names
 // `.swatchRing` or `TamberColor.SWATCH_RING`, a param of its own `component`
-// among them. An app with no design has none.
+// (D15) among them. An app with no design has none.
 import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /** Write `app`'s names for `language` (`swift`, `kotlin`); throws when the
  * compiler refuses the design (two names that map alike, named). */

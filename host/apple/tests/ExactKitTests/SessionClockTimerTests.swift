@@ -39,7 +39,7 @@ final class SessionClockTimerTests: XCTestCase {
         XCTAssertEqual(custom.locale, "fr-CA")
         XCTAssertEqual(custom.timeZone, "America/Toronto")
         XCTAssertEqual(custom.seed, (1 << 32) - 1)
-        // The launch seed is below 2^32 on every host: a
+        // The launch seed is below 2^32 on every host (LLP 1116.005 D5): a
         // drawn one, and a given one past it is 1, as the agent's stream takes it.
         for _ in 0..<64 { XCTAssertLessThan(LaunchPlace(environment: [:]).seed, 1 << 32) }
         XCTAssertEqual(LaunchPlace(environment: ["EXACT_AGENT": "1", "EXACT_AGENT_SEED": "4294967296"]).seed, 1)
@@ -106,6 +106,38 @@ final class SessionClockTimerTests: XCTestCase {
         NotificationCenter.default.post(name: NSLocale.currentLocaleDidChangeNotification, object: nil)
         XCTAssertTrue(wait(for: forced), "the running app reads the forced cycle")
         XCTAssertEqual(session.launchPlace.formatLocale, forced)
+        #endif
+    }
+
+    /// The session's clock stops while the system sleeps and the date does
+    /// not, so the date at the clock's zero moves by the sleep: it is told
+    /// again at the next timer's or frame's check (`followOffset`), and at
+    /// once on a wake or a clock change. `machineDate` set ahead stands for
+    /// the sleep or the clock being set.
+    func testTheDateIsToldAgainAfterASleepOrAClockChange() throws {
+        #if os(macOS)
+        defer { ExactSession.machineDate = Date.init }
+        let source = "shape Time\n  epochAtZero: number\ncomponent App\n  resource time = exactTime() as shape Time\n  view\n    text `${time.epochAtZero}`\n"
+        let session = ExactSession(app: ExactApp.shared, label: "slept", launchPlace: LaunchPlace(environment: [:]))
+        defer { session.destroy() }
+        XCTAssertNil(session.boot(plan: try TableFixture.plan(source), size: CGSize(width: 390, height: 844)).error)
+        func epoch() -> Double? { session.presenter.views.values.lazy.compactMap { $0.props["text"].flatMap(Double.init) }.first }
+        func told(_ want: Double) -> Bool { epoch().map { abs($0 - want) < 1000 } ?? false }
+        waitFor("the date") { epoch() != nil }
+        let start = try XCTUnwrap(epoch())
+        ExactSession.machineDate = { Date(timeIntervalSinceNow: 3600) }
+        session.followOffset()
+        waitFor("the date an hour on, at a check") { told(start + 3_600_000) }
+        ExactSession.machineDate = { Date(timeIntervalSinceNow: 7200) }
+        NotificationCenter.default.post(name: .NSSystemClockDidChange, object: nil)
+        waitFor("the date two hours on, at a clock change") { told(start + 7_200_000) }
+        ExactSession.machineDate = { Date(timeIntervalSinceNow: 10800) }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: NSWorkspace.shared)
+        waitFor("the date three hours on, at a wake") { told(start + 10_800_000) }
+        // Less than a second is the same date: nothing is told.
+        ExactSession.machineDate = { Date(timeIntervalSinceNow: 10800.5) }
+        session.followOffset()
+        XCTAssertEqual(try XCTUnwrap(epoch()), start + 10_800_000, accuracy: 1000)
         #endif
     }
 

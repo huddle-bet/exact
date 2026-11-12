@@ -1,4 +1,4 @@
-//! Asynchronous fetch: a transport starts one exchange
+//! Asynchronous fetch (LLP 0068.000 §2): a transport starts one exchange
 //! and reports it through a [`Sink`]; [`FetchTask`] is `fetch_stream`'s
 //! redirect loop as a state machine over it, so a native async caller holds no thread
 //! while an exchange is on the wire.
@@ -13,7 +13,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
-// Collection is bounded; deadlines belong to consumers.
+// @ref LLP 0068.000#3-ownership-callbacks-and-cancellation — callback and resource lifetime contract
+// @ref LLP 0068.000#4-limits-flow-and-deadlines — bounded collection; deadlines belong to consumers
 
 /// Contain an external callback panic without skipping retirement. Native FFI
 /// adapters apply the same boundary to arbitrary low-level sinks.
@@ -78,6 +79,10 @@ pub trait Sink: Send {
     fn end(&mut self, result: Result<(), HostError>);
     /// The exchange's metrics, at most once, before or after `end`.
     fn metrics(&mut self, _metrics: HopMetrics) {}
+    /// A head the transport hands back with a failure, so never given to
+    /// `head`: one it refused for its declared length, or one that arrived
+    /// before the exchange failed (Exact patch 31).
+    fn observed(&mut self, _status: u16, _headers: &Headers) {}
 }
 
 /// A request body shared by every hop that sends it and lent to the
@@ -197,7 +202,7 @@ pub struct Collected {
     pub redirected: bool,
 }
 
-/// The caps every hop's headers are held to.
+/// The caps every hop's headers are held to (LLP 0068.000 §2).
 #[derive(Debug, Clone, Copy)]
 pub struct HeaderCaps {
     pub bytes: usize,
@@ -220,7 +225,7 @@ pub trait FetchEvents: Send + Sync {
     }
 }
 
-/// `fetch_stream`'s loop as a state machine.
+/// `fetch_stream`'s loop as a state machine (LLP 0068.000 §2).
 pub struct FetchTask {
     state: Mutex<TaskState>,
     transport: Arc<dyn AsyncTransport>,
@@ -277,7 +282,7 @@ impl FetchTask {
     }
 
     /// [`FetchTask::start`], with the host's `gate` checked beside the grant
-    /// at every hop (Exact patch).
+    /// at every hop (Exact patch, LLP 1133.036 D6).
     #[allow(clippy::too_many_arguments)]
     pub fn start_gated(
         transport: Arc<dyn AsyncTransport>,
@@ -488,8 +493,39 @@ impl HopSink {
     }
 }
 
+impl HopSink {
+    /// Tell the embedder this hop's response head (Exact patch 31), outside
+    /// the task's lock: what it calls may abort this fetch.
+    fn tell_head(&self, status: u16, headers: &Headers) {
+        let Some(task) = &self.task else {
+            return;
+        };
+        let told = {
+            let state = task.state.lock().unwrap();
+            if state.done || state.hop != self.hop {
+                return;
+            }
+            state.current.received.clone().map(|received| {
+                (
+                    received,
+                    state.current.method.clone(),
+                    state.current.url.clone(),
+                )
+            })
+        };
+        if let Some((received, method, url)) = told {
+            (received.0)(&method, &url, status, headers);
+        }
+    }
+}
+
 impl Sink for HopSink {
+    fn observed(&mut self, status: u16, headers: &Headers) {
+        self.tell_head(status, headers);
+    }
+
     fn head(&mut self, head: Head) -> Flow {
+        self.tell_head(head.status, &head.headers);
         let Some(task) = &self.task else {
             return Flow::Stop;
         };
@@ -661,7 +697,7 @@ pub trait ReservedWorker: Send {
 }
 
 /// Consumer-supplied execution mechanism, without a runtime or queue policy.
-/// A worker is reserved before a job is accepted.
+/// @ref LLP 0068.000#5-platform-adapters-and-compatibility — reserve before acceptance
 pub trait WorkerService: Send + Sync {
     fn reserve(&self) -> Result<Box<dyn ReservedWorker>, HostError>;
 }
@@ -823,8 +859,24 @@ fn run_blocking(
     request.timeout = hop.timeout;
     request.redirect = crate::stdlib::fetch::RedirectMode::Manual;
     let _sending = hop.body;
-    let mut response = transport.open(&request, signal)?;
+    let refused = Arc::new(Mutex::new(None));
+    let told = refused.clone();
+    request.received = Some(crate::stdlib::fetch::Received(Arc::new(
+        move |_, _, status, headers: &Headers| {
+            *told.lock().unwrap() = Some((status, headers.clone()));
+        },
+    )));
+    let opened = transport.open(&request, signal);
     drop(request);
+    let mut response = match opened {
+        Ok(response) => response,
+        Err(error) => {
+            if let Some((status, headers)) = refused.lock().unwrap().take() {
+                sink.observed(status, &headers);
+            }
+            return Err(error);
+        }
+    };
     let declared_length = response
         .headers
         .get("content-length")

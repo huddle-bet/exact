@@ -81,8 +81,14 @@ impl<D: DataSource> Host<D> {
         }
         self.runner.resize_settled();
         // Layout-only batches also owe SVG scenes, even without motion or a commit.
-        self.svg
-            .emit(self.runner.kernel(), &self.engine, &mut batch);
+        for note in self.svg.emit(
+            self.runner.kernel(),
+            &self.engine,
+            &self.paint.motion,
+            &mut batch,
+        ) {
+            self.runner.log(note);
+        }
         (batch, error)
     }
 }

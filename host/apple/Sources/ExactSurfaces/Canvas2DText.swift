@@ -1,9 +1,9 @@
-// Canvas 2D text on Apple: one Core Text line builder
+// @ref LLP 1056 D8 — Canvas 2D text on Apple: one Core Text line builder
 // for measuring (the runner's draw, through `exact_set_canvas_text`, on the
 // thread the draw runs on) and for drawing (the replayer), so what was
 // measured is what is drawn. A family list resolves as box text resolves
 // families: the generic names to the text engine's platform stacks, a
-// declared family to its registered faces, then any installed
+// declared family (LLP 1019) to its registered faces, then any installed
 // family by name; none is Chrome's default, serif.
 import CExact
 import CoreGraphics
@@ -54,6 +54,8 @@ final class CanvasText {
             let d = CTFontDescriptorCreateWithAttributes([kCTFontFeatureSettingsAttribute: features] as CFDictionary)
             font = CTFontCreateCopyWithAttributes(font, size, nil, d)
         }
+        // Animated sizes must not keep a session's entire font history.
+        if fonts.count >= 256 { fonts.removeAll(keepingCapacity: true) }
         fonts[key] = font
         return font
     }
@@ -170,7 +172,7 @@ extension Canvas2DReplayer {
     /// `fillText`/`strokeText`: the run from its left end on its alphabetic
     /// baseline (`x`, `y` in user space), squeezed by `scaleX` about it.
     func drawText(_ c: CGContext, fill: Bool, x: Double, y: Double, scaleX: Double, rtl: Bool, text: String) {
-        guard let resolved = env?.canvasFont(state.font) else { return }
+        guard let resolved = state.resolvedFont else { return }
         let line = CanvasText.line(resolved, state.font, text, rtl: rtl)
         let style = fill ? state.fill : state.stroke
         render(c) { c in

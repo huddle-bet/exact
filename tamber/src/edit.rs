@@ -1,4 +1,4 @@
-//! Edit operations: each takes a design's text and
+//! Edit operations (LLP 1121 D13, stage 3): each takes a design's text and
 //! gives the new text and its **inverse**. An edit splices the lines it
 //! touches, in `fmt`'s layout, and leaves every other line as it was, so on a
 //! formatted design it is a one-line diff (a token's `when` lines with it
@@ -9,8 +9,8 @@
 //!
 //! An edit that leaves the design refused by the checker is refused, with
 //! the checker's diagnostics; so is one naming a dial, token, `when` or axis
-//! value the design does not have. The operations touch only `.tamber`
-//! files: dials, tokens, component params and axes.
+//! value the design does not have. These operations edit `.tamber` files;
+//! the compiler driver edits Contract params, state parts and rows.
 
 use crate::lex::{self, Line};
 use crate::syntax::{same_conds, Design};
@@ -20,7 +20,7 @@ use crate::{Diagnostic, Vocab};
 /// its value, and its trailing comment.
 pub type WhenLine = (Vec<(String, String)>, String, Option<String>);
 
-/// One operation.
+/// One operation (D13's table).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     /// `set-dial name value`.
@@ -81,7 +81,7 @@ pub enum Op {
         /// The token.
         name: String,
     },
-    /// `set-param name [when …] value`: the app's value of a
+    /// `set-param name [when …] value` (D15): the app's value of a
     /// component's param, in the design's `params` block (made at the end
     /// when there is none), its line or one `when` line of it. A `when`
     /// line needs the param's own line first.
@@ -94,7 +94,7 @@ pub enum Op {
         value: String,
         /// The name the param's line has now, when the write spells it
         /// `name` instead (a library component's param, whose short
-        /// spelling the build refuses, written in full).
+        /// spelling the build refuses, written in full: LLP 1139 D8).
         respell: Option<String>,
     },
     /// `unset-param name [when …]`: the param's line and its `when` lines
@@ -188,7 +188,7 @@ pub fn undo(src: &str, inverse: &[Op], vocab: &Vocab) -> Result<Edited, Vec<Diag
 
 /// One edit, unchecked: the new text and the `restore` that undoes it.
 /// One operation on `src`; a rename is proved folded with the app's
-/// `params`, as the build folds the design.
+/// `params` (LLP 1121 D15), as the build folds the design.
 fn step(
     src: &str,
     op: &Op,
@@ -234,21 +234,25 @@ fn step(
     // that was no use (a channel, a colour space, a platform selector) would.
     if let Op::RenameToken { .. } = op {
         let folded = |text: &str| {
-            let folding = match params.is_empty() {
-                true => crate::check(text, vocab).ok(),
-                false => crate::parse(text)
-                    .ok()
-                    .and_then(|d| crate::check_design(crate::params::laid(&d, params), vocab).ok()),
-            };
-            folding.map(|f| f.tokens.into_iter().map(|t| t.values).collect::<Vec<_>>())
+            let design = crate::parse(text)?;
+            let design = crate::params::defaults(crate::params::laid(&design, params));
+            crate::check_design(design, vocab).map(|f| {
+                let values = f.tokens.into_iter().map(|t| t.values).collect::<Vec<_>>();
+                let icons = f
+                    .icons
+                    .into_iter()
+                    .map(|i| (i.sf, i.material, i.svg))
+                    .collect::<Vec<_>>();
+                (values, icons)
+            })
         };
         // Proved only where both sides check and fold the same.
         match (folded(src), folded(&doc.text())) {
-            (Some(was), Some(now)) if was == now => {}
-            (Some(_), Some(_)) => {
+            (Ok(was), Ok(now)) if was == now => {}
+            (Ok(_), Ok(_)) => {
                 return Err(refuse("the rename would change what a value folds to (a word it reads that is no token): rename it by hand"))
             }
-            _ => return Err(refuse("a rename needs a design that checks before and after it")),
+            (Err(errors), _) | (_, Err(errors)) => return Err(errors),
         }
     }
     let undo = restore(&before, &doc.lines);
@@ -285,7 +289,7 @@ pub(crate) fn valid(op: &Op) -> Result<(), Vec<Diagnostic>> {
     // which the line keeps from before.
     let value = |v: &str| {
         // Past the checker's bound, refused before anything reads it, in
-        // words that give its size and never echo it;
+        // words that give its size and never echo it (rt1's co-sign);
         // measured trimmed, as a design's line is read.
         if let Some((id, why)) = crate::css::over_limit(v.trim()) {
             return Err(vec![Diagnostic::new(id, why, 1, 1)]);
@@ -468,8 +472,8 @@ pub fn apply_all(src: &str, ops: &[Op], vocab: &Vocab) -> Result<Edited, Vec<Dia
     run(src, ops, vocab, &crate::params::NONE)
 }
 
-/// [`apply_all`], the result checked laid out with the app's params,
-/// as the build checks it: a dial only a param reads is read.
+/// [`apply_all`], the result checked laid out with the app's params (LLP
+/// 1121 D15), as the build checks it: a dial only a param reads is read.
 pub fn apply_all_with(
     src: &str,
     ops: &[Op],
@@ -503,7 +507,7 @@ fn run(
             let mut k = 0;
             while k < ops.len() {
                 // A run of new tokens (an import's) with one parse, and one
-                // restore that takes them all out.
+                // restore that takes them all out (round 1 of the sweep).
                 // An import's values and new tokens, in its tokens' order:
                 // the new tokens first, then the values, each kind in one
                 // parse (`batch::mixed`), when no value is a new token's.
@@ -946,7 +950,7 @@ impl Doc {
                 }])
             }
             Op::RenameToken { from, to } => {
-                token_index(design, &self.roles, from)?;
+                let token = &design.tokens[token_index(design, &self.roles, from)?];
                 if !lex::is_name(to) {
                     return Err(refuse(format!(
                         "`{to}`: a token's name is identifiers joined by `.`"
@@ -958,56 +962,39 @@ impl Doc {
                         format!("a token `{to}` is declared already"),
                     ));
                 }
-                // A token is named in the theme's values, the exports, and
-                // the params block's values.
-                let mut block = String::new();
-                for n in 0..self.lines.len() {
-                    let raw = self.lines[n].clone();
-                    let (body, comment) = lex::split_comment(&raw);
-                    if !body.starts_with(' ') && !body.trim().is_empty() {
-                        block = body.trim().to_string();
-                        continue;
-                    }
-                    if block != "theme" && block != "exports" && block != "params" {
-                        continue;
-                    }
-                    // A token line's name and value; a when line's value
-                    // only (its conditions are axes); an export whole; a
-                    // params line's value only (its name is a param's).
-                    let code = body.trim_start();
-                    let keep = match block.as_str() {
-                        "theme" | "params"
-                            if code.starts_with("when ")
-                                && !code[4..].trim_start().starts_with('=') =>
-                        {
-                            lex::split_top(body, ':').map_or(body.len(), |(c, _)| c.len() + 1)
-                        }
-                        "params" => {
-                            lex::split_top(body, '=').map_or(body.len(), |(c, _)| c.len() + 1)
-                        }
-                        _ => 0,
-                    };
-                    let (kept, body) = body.split_at(keep);
-                    // A token line's metadata is no value, but `pair=` names
-                    // tokens, so those names are renamed.
-                    let words = lex::words(body.trim_end());
-                    let meta_from = (1..words.len())
-                        .rev()
-                        .take_while(|&i| {
-                            words[i]
-                                .1
-                                .split_once('=')
-                                .is_some_and(|(k, v)| lex::is_ident(k) && !v.is_empty())
-                        })
-                        .last()
-                        .map_or(body.len(), |i| words[i].0);
-                    let (body, meta) = body.split_at(meta_from);
-                    let renamed = rename_words(body, from, to);
-                    let paired = rename_pairs(meta, from, to);
-                    if renamed != body || paired != meta {
-                        self.lines[n] = format!("{kept}{renamed}{paired}{}", comment.unwrap_or(""));
-                    }
+                // Edit parsed values, so kinds, conditions and component names stay put.
+                // `pair=` names tokens (LLP 1121 D3). Splice it before the value,
+                // while its offset is unchanged.
+                for t in design.tokens.iter().chain(&design.params) {
+                    let line = &mut self.lines[t.value.line as usize - 1];
+                    let start = t.value.col as usize - 1 + t.value.value.len();
+                    let (meta, _) = lex::split_comment(&line[start..]);
+                    let end = start + meta.len();
+                    let renamed = rename_pairs(meta, from, to);
+                    line.replace_range(start..end, &renamed);
                 }
+                let values = design
+                    .tokens
+                    .iter()
+                    .chain(&design.params)
+                    .flat_map(|t| std::iter::once(&t.value).chain(t.whens.iter().map(|w| &w.value)))
+                    .chain(design.exports.iter().flatten())
+                    .chain(
+                        design
+                            .components
+                            .iter()
+                            .flat_map(|c| c.params.iter().map(|p| &p.value)),
+                    );
+                for value in values {
+                    let line = &mut self.lines[value.line as usize - 1];
+                    let start = value.col as usize - 1;
+                    let renamed =
+                        lex::rewrite_names(&value.value, |name| (name == from).then(|| to.clone()));
+                    line.replace_range(start..start + value.value.len(), &renamed);
+                }
+                let line = &mut self.lines[token.name.line as usize - 1];
+                let start = token.name.col as usize - 1;
+                line.replace_range(start..start + from.len(), to);
                 Ok(vec![Op::RenameToken {
                     from: to.clone(),
                     to: from.clone(),
@@ -1297,62 +1284,5 @@ fn rename_pairs(meta: &str, from: &str, to: &str) -> String {
         at = start + word.len();
     }
     out.push_str(&meta[at..]);
-    out
-}
-
-/// `text` with each whole use of the name `from` as `to`: a name is whole
-/// where no name character (a letter, digit, `-`, `_` or `.`) touches it,
-/// and a quoted string is left alone.
-fn rename_words(text: &str, from: &str, to: &str) -> String {
-    let name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
-    let mut out = String::new();
-    let mut rest = text;
-    let mut quote: Option<char> = None;
-    while let Some(c) = rest.chars().next() {
-        if let Some(q) = quote {
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
-            if c == '\\' {
-                // An escape takes the next character with it.
-                if let Some(n) = rest.chars().next() {
-                    out.push(n);
-                    rest = &rest[n.len_utf8()..];
-                }
-            } else if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        // A `'` opens a string at a token's start, as the lexer reads it.
-        let starts = out
-            .chars()
-            .next_back()
-            .is_none_or(|p| p.is_whitespace() || matches!(p, '=' | '(' | ',' | ':'));
-        if c == '"' || c == '\'' && starts {
-            quote = Some(c);
-            out.push(c);
-            rest = &rest[1..];
-            continue;
-        }
-        // A hex colour's digits are no name.
-        let before_ok = out
-            .chars()
-            .next_back()
-            .is_none_or(|p| !name_char(p) && p != '#');
-        if before_ok
-            && rest.starts_with(from)
-            && rest[from.len()..]
-                .chars()
-                .next()
-                // A function's name (`rgb(`) is none either.
-                .is_none_or(|n| !name_char(n) && n != '(')
-        {
-            out.push_str(to);
-            rest = &rest[from.len()..];
-            continue;
-        }
-        out.push(c);
-        rest = &rest[c.len_utf8()..];
-    }
     out
 }

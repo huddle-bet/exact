@@ -512,7 +512,7 @@ final class FrameHealthMetricsTests: XCTestCase {
         let objects = malloc_size(Unmanaged.passUnretained(reader).toOpaque()) + malloc_size(Unmanaged.passUnretained(chart).toOpaque())
         let card = samples + previous + charts + objects
         XCTAssertLessThan(card, 51 * 1024)
-        // Four readers at once and the collectors' 48,776-byte registry
+        // Four readers at once and the collectors' 48,776-byte registry (LLP 1079.000 §10)
         XCTAssertLessThan(4 * card + 48_776, 256 * 1024, "within the process's 256 KiB")
     }
 
@@ -765,10 +765,14 @@ final class FrameHealthMetricsTests: XCTestCase {
         let health = session.frameHealth
         health.setHUDVisible(true)
         _ = health.setAgentCapture("start")
-        for request: [String: Any] in [["take": true], ["data": true], ["settle": true], ["to": 500], ["land": true]] {
+        for request: [String: Any] in [["take": true], ["data": true], ["settle": true], ["to": 500]] {
             XCTAssertEqual(session.agentInstance.clock(request)["code"] as? String, "frame-health-clock-takeover")
             XCTAssertNil(session.clock)
         }
+        // An input's landing keeps the wall's clock, so real input lands under a capture.
+        let landed = session.agentInstance.clock(["land": true])
+        XCTAssertEqual(landed["code"] as? String, ExactEnv.agentFreezes ? "frame-health-clock-takeover" : nil)
+        XCTAssertNil(session.clock)
         _ = health.setAgentCapture("stop")
         XCTAssertNotEqual(health.captureID, 0, "closing an agent lease does not end the card's capture")
         health.setHUDVisible(false)
@@ -814,7 +818,7 @@ final class FrameHealthMetricsTests: XCTestCase {
     }
 
     func testAtMostFourReadersKeepHistoryAtOnce() {
-        // Four readers keep their history within their storage budget with the collectors
+        // Four readers keep their history within LLP 1079.000 §5.2's storage budget with the collectors
         let readers = (0..<5).map { _ in FrameHealthCardReader() }
         XCTAssertEqual(readers.prefix(4).map { $0.start() }, [true, true, true, true])
         XCTAssertFalse(readers[4].start(), "a fifth card reads nothing")

@@ -1,4 +1,4 @@
-// The transfer carrier: two background
+// The transfer carrier (LLP 1133.017 D8, D10): two background
 // `URLSession`s, `<bundle id>.transfers` and
 // `<bundle id>.transfers.discretionary`, their delegate, and a durable
 // record per registration. A session the system relaunches the app for must
@@ -14,7 +14,7 @@
 // `{package, id}` as a registration's bytes move, at most once a second,
 // and when it ends.
 //
-// The record is the truth and the event a notice of it: a
+// The record is the truth and the event a notice of it (D10): a
 // registration whose requests have all ended is offered to its package as
 // a wake of kind `transfer`, its key the registration's id, at once while
 // the app runs; after a relaunch for the session's events, at
@@ -38,7 +38,8 @@ public enum TransferCarrier {
 
     struct Item: Codable {
         var index: Int, method: String
-        /// Without its query or fragment, which may carry a credential.
+        /// Without its user name, password, query or fragment, which may
+        /// carry a credential.
         var url: String
         var upload: Bool
         var ended = false
@@ -143,7 +144,7 @@ public enum TransferCarrier {
         case "abort":
             guard let r = records[id], r.package == package, !r.ended else { return false }
             session(r.discretionary).getAllTasks { tasks in
-                for t in tasks where t.taskDescription?.hasPrefix(id + " ") == true { t.cancel() }
+                for t in tasks where belongs(t.taskDescription, to: id) { t.cancel() }
             }
             return true
         case "retire":
@@ -171,9 +172,12 @@ public enum TransferCarrier {
             var request = URLRequest(url: url)
             request.httpMethod = r["method"] as? String ?? (r["bodyFrom"] == nil ? "GET" : "POST")
             for (k, v) in r["headers"] as? [String: String] ?? [:] { request.setValue(v, forHTTPHeaderField: k) }
-            var shownURL = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            shownURL?.query = nil
-            shownURL?.fragment = nil
+            var shown = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            shown?.user = nil
+            shown?.password = nil
+            shown?.query = nil
+            shown?.fragment = nil
+            guard let shownURL = shown?.string else { return "TypeError" }
             let task: URLSessionTask
             var size: Int64?
             if let from = r["bodyFrom"] as? String {
@@ -185,7 +189,7 @@ public enum TransferCarrier {
                 task = s.downloadTask(with: request)
             }
             task.taskDescription = "\(id) \(index)"
-            var item = Item(index: index, method: request.httpMethod ?? "GET", url: shownURL?.string ?? text, upload: r["bodyFrom"] != nil)
+            var item = Item(index: index, method: request.httpMethod ?? "GET", url: shownURL, upload: r["bodyFrom"] != nil)
             item.saveTo = r["saveTo"] as? String
             item.size = size
             items.append(item)
@@ -198,7 +202,8 @@ public enum TransferCarrier {
         return nil
     }
 
-    /// What a package reads of a record: never a header or a query.
+    /// What a package reads of a record: never a header, a query or a
+    /// user name or password.
     private static func shown(_ r: Record) -> [String: Any] {
         var out: [String: Any] = ["id": r.id, "result": r.result, "failureReason": r.failureReason,
                                   "uploadTotal": r.requests.reduce(0) { $0 + ($1.size ?? 0) }, "uploaded": r.requests.reduce(0) { $0 + ($1.sent ?? 0) },
@@ -297,7 +302,7 @@ public enum TransferCarrier {
         offer(ended, completion: completion)
     }
 
-    /// The ended registrations not yet retired, once a module is ready at a launch.
+    /// The ended registrations not yet retired, once a module is ready at a launch (D10).
     static func ready() {
         let held = records.values.filter { $0.ended && !offering.contains($0.id) }.map(\.id)
         if !held.isEmpty { offer(held) }
@@ -313,8 +318,16 @@ public enum TransferCarrier {
         }
     }
 
-    private static func which(_ task: URLSessionTask) -> (String, Int)? {
-        guard let d = task.taskDescription, let space = d.lastIndex(of: " "), let index = Int(d[d.index(after: space)...]) else { return nil }
+    private static func which(_ task: URLSessionTask) -> (String, Int)? { which(task.taskDescription) }
+
+    /// Whether a task of this description is one of registration `id`'s:
+    /// `"album 2 0"` is `"album 2"`'s, not `"album"`'s.
+    static func belongs(_ description: String?, to id: String) -> Bool { which(description)?.0 == id }
+
+    /// The registration id and request index a task's description names
+    /// (`"<id> <index>"`); the id may hold spaces.
+    private static func which(_ description: String?) -> (String, Int)? {
+        guard let d = description, let space = d.lastIndex(of: " "), let index = Int(d[d.index(after: space)...]) else { return nil }
         return (String(d[..<space]), index)
     }
 
@@ -336,7 +349,7 @@ public enum TransferCarrier {
 
 extension ExactApp {
     /// `application(_:handleEventsForBackgroundURLSession:completionHandler:)`:
-    /// the carrier's session made again before it returns.
+    /// the carrier's session made again before it returns (LLP 1133.017 D10).
     public func handleTransferEvents(_ identifier: String, completion: @escaping () -> Void) {
         TransferCarrier.events(identifier, completion)
     }

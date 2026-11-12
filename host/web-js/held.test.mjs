@@ -4,10 +4,22 @@ import { resolve } from 'node:path';
 import { open } from '../../scripts/agent.mjs';
 import { driveHeld, heldApp, holdingServer } from '../../scripts/held-fixture.mjs';
 import { webCompiler } from './module.mjs';
+import { counted, looseFetch } from './held.js';
 
-// A request the server holds (`exactHeld`) on the JS target: no clock waits on it, each
+// What `inflight` counts follows a fetch tied to no answer (one made in a plain `.then`) both ways: while it is out,
+// an answer waiting only on its timers is counted; once it ends, it is not.
+test('a fetch tied to no answer counts a timed answer while it is out, and not once it ends', () => {
+  const inflight = { n: 0 }, t = { waiting: true, call: { timers: 1 } };
+  counted(t, inflight);
+  const seen = [inflight.n];
+  looseFetch(1); seen.push(inflight.n);
+  looseFetch(-1); seen.push(inflight.n);
+  expect(seen).toEqual([0, 1, 0]);
+});
+
+// A request the server holds (`exactHeld`, LLP 1016.000 D9) on the JS target: no clock waits on it, each
 // clock reply names it, the answer's work after its reply is waited on again, and the same ask unmarked is
-// waited on before a due timer.
+// waited on before a due timer (calendar F10).
 test('the JS target leaves a held fetch out of every clock, names it, and counts the work after its reply', async () => {
   if (webCompiler().cmd === 'cargo') throw new Error('build the compiler first: cargo build -p exact-web-js');
   const root = resolve(import.meta.dir, '../..');

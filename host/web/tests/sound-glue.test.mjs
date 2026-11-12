@@ -1,9 +1,9 @@
-// The web's output for the voice table, in Chrome,
+// The web's output for the voice table (LLP 1096 D6, D7, §5), in Chrome,
 // Firefox and WebKit: sound-glue.js over an OfflineAudioContext at 48 kHz,
 // rendered and read back by frame, its runner time mapped through an output
-// timestamp the test supplies; a voice's playback rate and pan;
-// a sequence's retraction before a voice starts, and its timed haptics;
-// the held voice of a `{0, 0}` timestamp; the Audio Session
+// timestamp the test supplies; a voice's playback rate and pan (LLP 1125
+// D10); a sequence's retraction before a voice starts, and its timed haptics
+// (LLP 1125 D3); the held voice of a `{0, 0}` timestamp; the Audio Session
 // API; and the drop before a user activation. Every engine comes from
 // Playwright (`bunx playwright@1.64.1 install chromium-headless-shell firefox
 // webkit`); an engine that is missing is skipped.
@@ -14,8 +14,9 @@ import { resolve } from 'node:path';
 import { chromium as installed, suiteBrowser } from '../../../scripts/agent-launch.mjs';
 import { browserMissing } from '../../../scripts/agent-playwright.mjs';
 import { need } from '../../../scripts/coverage.mjs';
+import { fileURLToPath } from 'node:url';
 
-const WEB = resolve(new URL('..', import.meta.url).pathname);
+const WEB = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const glue = readFileSync(resolve(WEB, 'sound-glue.js'), 'utf8');
 const page = session => `<!doctype html><meta charset="utf-8"><div id="exact-root"${session ? ` data-audio-session="${session}"` : ''}></div><button id="press">press</button>
 <script type="module">
@@ -100,6 +101,26 @@ async function serve(session) {
 }
 
 for (const engine of engines) {
+  engineTest[engine](`${engine}: manifest audio sessions map to browser types without changing the root`, async () => {
+    const b = await browser(engine);
+    if (!b) throw new Error(`${engine} did not launch`);
+    const server = await serve();
+    try {
+      const p = await b.newPage();
+      await p.goto(server.url);
+      await p.waitForFunction(() => window.ready);
+      const got = await p.evaluate(() => ['ambient', 'playback', 'playback-mix'].map(value => {
+        const root = document.getElementById('exact-root');
+        root.dataset.audioSession = value;
+        offline(1, {});
+        return { manifest: root.dataset.audioSession, type: navigator.audioSession?.type ?? null };
+      }));
+      expect(got.map(row => row.manifest)).toEqual(['ambient', 'playback', 'playback-mix']);
+      if (engine === 'webkit' || got[0].type !== null) expect(got.map(row => row.type)).toEqual(['ambient', 'playback', 'ambient']);
+      else expect(got.map(row => row.type)).toEqual([null, null, null]);
+    } finally { await b.close(); server.close(); }
+  }, 60_000);
+
   engineTest[engine](`${engine}: voices render at the frames runner time maps to`, async () => {
     const b = await browser(engine);
     if (!b) throw new Error(`${engine} did not launch`);
@@ -173,6 +194,38 @@ for (const engine of engines) {
       expect(got.half[1]).toBeCloseTo(0.5 * Math.sin(0.75 * Math.PI / 2), 3);
       expect(got.centre).toEqual([expect.closeTo(0.5, 3), expect.closeTo(0.5, 3)]);
       expect(got.lines).toEqual([]);
+    } finally { await b.close(); server.close(); }
+  }, 60_000);
+
+  engineTest[engine](`${engine}: a group cut can be extended or shortened before it takes effect`, async () => {
+    const b = await browser(engine);
+    if (!b) throw new Error(`${engine} did not launch`);
+    const server = await serve();
+    try {
+      const p = await b.newPage();
+      await p.goto(server.url);
+      await p.waitForFunction(() => window.ready);
+      const got = await p.evaluate(async () => {
+        const results = [];
+        for (const end of [250, 150, 75]) {
+          const r = offline(0.5, { kick: wav(12000, 0.5), hat: wav(4800, -0.25) });
+          await decoded(r.out);
+          r.out.ops([{ op: 'play', id: 1, sound: 0, at: 0, gain: 1 }, { op: 'end', id: 1, at: 100 },
+            { op: 'play', id: 2, sound: 1, at: 100, gain: 1 }]);
+          const paused = r.context.suspend(0.05);
+          const rendering = r.context.startRendering();
+          await paused;
+          r.out.ops([{ op: 'end', id: 1, at: end }, { op: 'end', id: 2, at: 100 }]);
+          if (end === 150) r.out.ops([{ op: 'play', id: 3, sound: 1, at: 150, gain: 1 }]);
+          await r.context.resume();
+          const pcm = (await rendering).getChannelData(0);
+          results.push([pcm[3599], pcm[3600], pcm[4800], pcm[7199], pcm[7200], pcm[11999], pcm[12000]]);
+        }
+        return results;
+      });
+      expect(got[0]).toEqual([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0].map(x => expect.closeTo(x, 3)));
+      expect(got[1]).toEqual([0.5, 0.5, 0.5, 0.5, -0.25, -0.25, 0].map(x => expect.closeTo(x, 3)));
+      expect(got[2]).toEqual([0.5, 0, 0, 0, 0, 0, 0].map(x => expect.closeTo(x, 3)));
     } finally { await b.close(); server.close(); }
   }, 60_000);
 

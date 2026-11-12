@@ -30,8 +30,8 @@ settlement waits on its `pending` reads rather than failing with them.
 * `refused` covers the data seam (an oracle with no answer for a call, a
   source or mutation answering a value of the wrong shape), a number that
   is not finite crossing a boundary (a derive, a slot written or
-  initialized, an action's argument, a row key: `ValTy` admits NaN and the
-  infinities, `conforms` does not), the host's own input (no element with
+  initialized, a source's or action's argument, a row key: `ValTy` admits
+  NaN and the infinities, `conforms` does not), the host's own input (no element with
   that `testId`, no handler for that event, a payload that does not fit the
   action's remaining parameters), the router (a forged router value
   committed, a verb or read of a value of the shape `Router` that is not a
@@ -72,7 +72,7 @@ def OutcomeOK : Outcome → Prop
 /-! ## Well-typed configurations -/
 
 /-- Every timer runs an action that exists and takes no parameters, and a
-gated one's gate and key are well typed. -/
+gated one's gate and key are well typed (LLP 1092 D9). -/
 def TimersOK (p : Program) (timers : List Timer) : Prop :=
   ∀ tm ∈ timers, (∃ a, p.actions.find? (·.name == tm.action) = .some a ∧ a.params = []) ∧
     ∀ e ∈ tm.gate.toList ++ tm.key.toList, ∃ u, HasTy p (compScope p) [] e u
@@ -120,7 +120,7 @@ theorem ConfigOK.armNexts {p : Program} {c : Config} (hc : ConfigOK p c) : Confi
 theorem ConfigOK.envGood {p : Program} {c : Config} (hc : ConfigOK p c) (hpres : SlotsPresent p c.slots)
     (rows : List RowId) :
     EnvGood p { prog := p, slots := c.slots, derives := c.settled.derives,
-                resources := c.settled.resources, rows := rowSlots c.store rows, now := c.now } :=
+                resources := c.settled.resources, rows := rowSlots c.store rows, now := c.now, idle := c.settled.idle } :=
   ⟨rfl, hc.slots, hpres, hc.store.rowSlots rows, hc.settled.1, hc.settled.2⟩
 
 /-! ## Pieces of a commit -/
@@ -164,10 +164,10 @@ theorem settleEnvOK {p : Program} (hp : WellTyped p) {slots : List (String × Va
     (hslots : ∀ x v, (x, v) ∈ slots → lifted p x = false → ValTy p v (slotTy p x)) :
     SettleHyps p (settleScope p) slots now := by
   refine ⟨⟨hp.fns, hp.routeShapes⟩, fun d hd => ?_, fun r hr => (hp.resources r hr).imp fun _ h => h.1,
-    fun st hst => ?_⟩
+    hp.resourceGates, fun st hst => ?_⟩
   · obtain ⟨t, ht, -⟩ := hp.derives d hd; exact ⟨t, ht⟩
   have := envOKE_gen (E := Legit) (L := lifted p)
-    (env := { prog := p, slots, derives := st.derives, resources := st.resources, now })
+    (env := { prog := p, slots, derives := st.derives, resources := st.resources, now, idle := st.idle })
     hp (fun _ h _ => h) rfl hpres hslots RowsOK.nil hst (.inl trivial)
   exact ⟨this.1, fun x t hx => GoodR.of_goodW (this.2.1 x t hx)⟩
 
@@ -203,7 +203,7 @@ theorem mapM_goodW {α β} {E : Err → Prop} {f : α → Result β} : ∀ {xs :
     exact GoodW.bind (h x (by simp)) fun _ _ =>
       GoodW.bind (mapM_goodW fun y hy => h y (by simp [hy])) fun _ _ => trivial
 
-/-! ## Gated tasks -/
+/-! ## Gated tasks (LLP 1092) -/
 
 theorem GoodW.map {α β} {E : Err → Prop} {P : α → Prop} {Q : β → Prop} {r : Result α} {f : α → β}
     (h : GoodW E P r) (hf : ∀ a, P a → Q (f a)) : GoodW E Q (f <$> r) := by
@@ -215,7 +215,7 @@ theorem GoodW.map {α β} {E : Err → Prop} {P : α → Prop} {Q : β → Prop}
 typed in the component's scope, and a key that is no key is a refusal. -/
 theorem gateStep_good {p : Program} (hp : WellTyped p) {slots st now ts}
     (henv : EnvOKE p Strict (compScope p)
-      { prog := p, slots, derives := st.derives, resources := st.resources, now })
+      { prog := p, slots, derives := st.derives, resources := st.resources, now, idle := st.idle })
     (hts : TimersOK p ts) : GoodW Strict (fun _ => True) (gateStep p slots st now ts) := by
   have hfn : ProgOK p := ⟨hp.fns, hp.routeShapes⟩
   have hE : ∀ e, Legit e → e ≠ .pending → Strict e := fun _ h hn => ⟨h, hn⟩
@@ -357,7 +357,7 @@ theorem runAction_sound {p : Program} (hp : WellTyped p) {o c name args rows c' 
 
 /-! ## A queued send's commit -/
 
-/-- **A queued send's commit is safe**: it asks its source
+/-- **A queued send's commit is safe** (LLP 1092 D3): it asks its source
 as an action's send does, and commits, or refuses or poisons legitimately. -/
 theorem nextCommit_sound {p : Program} (hp : WellTyped p) {o c m c' out}
     (hc : ConfigOK p c) (hlive : SlotsPresent p c.slots ∧ Complete p c.settled) (hq : isQueue p m = true)
@@ -792,7 +792,7 @@ theorem boot_configOK {p : Program} (hp : WellTyped p) (o : Oracle) : ConfigOK p
     simp only [Prod.mk.injEq] at hb
     obtain ⟨rfl, -⟩ := hb
     have hrender := renderTabs_good hp (E := Legit) (fun _ h _ => h) fuel
-      (cx := { env := { prog := p, slots, derives := st.derives, resources := st.resources, now := 0 },
+      (cx := { env := { prog := p, slots, derives := st.derives, resources := st.resources, now := 0, idle := st.idle },
                store := [], tabs := { every := o.everyTab } })
       ⟨rfl, hs, hpres, RowsOK.nil, hsettled.1, hsettled.2⟩ (.inr trivial) StoreOK.nil
     rw [hr] at hrender

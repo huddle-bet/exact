@@ -1,15 +1,16 @@
-// One runtime framework, one generated widget bundle.
+// @ref LLP 1126 D2/D8 — one runtime framework, one generated widget bundle.
 import { resolve } from 'node:path';
 import { mkdirSync, readdirSync, existsSync, writeFileSync, readFileSync, copyFileSync, cpSync, rmSync, renameSync, statSync } from 'node:fs';
 import { createHash, X509Certificate } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { plistFile, wrapFramework, frameworkLayout, frameworkInstallName } from './assets.mjs';
-import { assertCapabilityFrameworks } from './link.mjs';
+import { assertCapabilityFrameworks, stripProductionExecutable } from './link.mjs';
 import { linkedPlanArgs } from '../../scripts/linked-plan.mjs';
 import { appleLinkArgs } from '../../scripts/package-libraries.mjs';
 import { appexArgs, keepMain } from './extensions.mjs';
-import { installedProfiles, decodeProfile, profilesFor, profileMisfit, byExpiry, METHODS, iosProfile } from './devices.mjs';
-const root = resolve(new URL('../..', import.meta.url).pathname), pkg = resolve(root, 'host/apple');
+import { coveringProfiles, missingDevelopmentProfile, installedProfiles, decodeProfile, profilesFor, profileMisfit, byExpiry, METHODS, iosProfile, allowsEntitlement } from './devices.mjs';
+import { fileURLToPath } from 'node:url';
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url))), pkg = resolve(root, 'host/apple');
 export const accessoryFamilies = ['accessoryCircular', 'accessoryRectangular', 'accessoryInline', 'accessoryCorner'];
 export function platformWidgetEntries(app, platform = 'ios') {
   return widgetEntries(app).flatMap(entry => {
@@ -20,12 +21,12 @@ export function platformWidgetEntries(app, platform = 'ios') {
 export const widgetEntries = app => app.manifest.widgets ?? [];
 export const activityEntries = app => app.manifest.live_activities ?? [];
 /** Whether the app has an entry of either kind: what the extension, the shared framework, the App Group and the
- * Keychain group are gated on. */
+ * Keychain group are gated on (LLP 1126.001 WP13). */
 export const hasEntries = app => platformWidgetEntries(app).length > 0 || activityEntries(app).length > 0;
 export const widgetGroup = app => `group.${app.widgetAppId ?? app.clipParent ?? app.id}`;
 export const widgetId = app => `${app.id}.widgets`;
 
-// The Mac container is authorized by the signing team,
+// LLP 1126.001 WP16: the Mac container is authorized by the signing team,
 // independently of iOS's registered group and of restricted Keychain access.
 export const macWidgetGroup = (app, team) => `${team}.${app.id}.widgets`;
 export function widgetSigningTeam(identity, { distribution = false, certificates = null } = {}) {
@@ -54,7 +55,7 @@ export function macHardwareID(read = (command, args) => spawnSync(command, args,
 }
 export function macWidgetProfiles({ app, team, distribution = false, installed = installedProfiles(), named = process.env.EXACT_PROFILE ? decodeProfile(process.env.EXACT_PROFILE) : null, udid, hardwareID = macHardwareID, log = console.log }) {
   if (named && !named.platforms?.includes('OSX')) {
-    log(`Mac widgets: ignoring EXACT_PROFILE (${named.name}) for ${named.platforms?.join(', ') || 'another platform'}; shared secrets need macOS profiles.`);
+    log(`Mac widgets: ignoring EXACT_PROFILE (${named.name}) for ${named.platforms?.join(', ') || 'another platform'}; shared secrets need macOS profiles (LLP 1126.001 §5 Q5).`);
     named = null;
   }
   if (udid === undefined) udid = !distribution && installed.some(p => p.platforms?.includes('OSX') && p.team === team) ? hardwareID() : null;
@@ -89,8 +90,8 @@ export function macWidgetEntitlements({ app, team, profiles = null, extension = 
   });
 }
 
-/** The two profiles a device build of an app with entries embeds, the app's and its extension's:
- * of one team, App ID prefix and method, each granting the App Group and the one Keychain group both sign
+/** The two profiles a device build of an app with entries embeds, the app's and its extension's (LLP 1126.001
+ * WP13): of one team, App ID prefix and method, each granting the App Group and the one Keychain group both sign
  * (`<prefix>.<app id>`, or the team wildcard), the app's also `aps-environment` (as its method signs it) when an
  * activity takes pushes and `required` (the grants' signing entitlements, which the extension never signs); or
  * one refusal naming, for each App ID, the profiles that were close and what each lacked or failed. A build for a
@@ -98,16 +99,20 @@ export function macWidgetEntitlements({ app, team, profiles = null, extension = 
  * takes distribution ones, the extension's of the named one's method and, for Ad Hoc, its devices. EXACT_PROFILE
  * names the app's, under the same conditions; the extension's is found by its own id, since a team wildcard
  * grants no App Group. `installed` and `named` are the decoded profiles, which a test replaces. */
-export function entryProfiles({ app, udid, required = [], installed = installedProfiles(), named = process.env.EXACT_PROFILE ? decodeProfile(process.env.EXACT_PROFILE) : null }) {
+export function entryProfiles({ app, udid, required = [], installed = installedProfiles(), named = process.env.EXACT_PROFILE ? decodeProfile(process.env.EXACT_PROFILE) : null, team = process.env.DEVELOPMENT_TEAM?.trim(), phoneName = udid }) {
   // installedProfiles also finds native Mac profiles; they cannot provision iOS.
   installed = installed.filter(iosProfile);
+  if (udid && team && !named) {
+    installed = installed.filter(p => p.team === team);
+    if (!coveringProfiles(udid, app.id, installed).length) throw missingDevelopmentProfile(udid, app.id, team, phoneName);
+  }
   const group = widgetGroup(app), extension = widgetId(app), push = activityEntries(app).some(entry => entry.push === true);
   const shared = prefix => `${prefix}.${app.id}`;
   const wants = (id, prefix) => [
     { has: p => p.groups.includes(group), missing: `the App Group ${group}`, portal: `App Groups (${group})` },
     { has: p => p.keychain.includes(`${p.prefix}.*`) || p.keychain.includes(shared(p.prefix)), missing: `the Keychain group ${shared(prefix)}`, portal: `Keychain Sharing (the group ${shared(prefix)}, or the team's ${prefix}.*)` },
-    ...(id === app.id && push ? [{ has: p => p.aps === (p.dev ? 'development' : 'production'), missing: 'aps-environment (development on a development profile, production otherwise; an activity takes pushes)', portal: 'Push Notifications' }] : []),
-    ...(id === app.id ? required.map(name => ({ has: p => p.entitlements.includes(name), missing: name, portal: name })) : []),
+    ...(id === app.id && push && !required.includes('aps-environment') ? [{ has: p => allowsEntitlement(p, 'aps-environment'), missing: 'aps-environment (development on a development profile, production otherwise; an activity takes pushes)', portal: 'Push Notifications' }] : []),
+    ...(id === app.id ? required.map(name => ({ has: p => allowsEntitlement(p, name), missing: name === 'aps-environment' ? 'aps-environment (development on a development profile, production otherwise)' : name, portal: name === 'aps-environment' ? 'Push Notifications' : name })) : []),
   ];
   // The build's method, which a profile that `like` does not decide must have.
   const mode = p => udid ? (p.dev ? null : `is ${METHODS[p.method]}, not development`) : (p.dev ? 'is development; an archive takes a distribution profile' : null);
@@ -140,7 +145,7 @@ export function entryProfiles({ app, udid, required = [], installed = installedP
   const method = like ? METHODS[like.method] : udid ? 'development' : 'distribution';
   const register = [[app.id, forApp], [extension, forExtension]].filter(([, choice]) => !choice.found && choice.lacking?.length)
     .map(([id, choice]) => `the App ID ${id} with ${[...new Set(choice.lacking.map(w => w.portal))].join(' and ')}`);
-  throw new Error(`host/apple: a device build of an app with widgets or Live Activities embeds one ${method} profile in the app and one in its extension, of one team, App ID prefix and method, each granting the App Group and the Keychain group they share. On this Mac${udid ? `, for this phone (${udid})` : ', for an archive'}:
+  throw new Error(`host/apple: a device build of an app with widgets or Live Activities embeds one ${method} profile in the app and one in its extension, of one team, App ID prefix and method, each granting the App Group and the Keychain group they share (LLP 1126.001 WP13). On this Mac${udid ? `, for this phone (${udid})` : ', for an archive'}:
   ${app.id}: ${forApp.found ? 'provisioned' : forApp.why}
   ${extension}: ${forExtension.found ? 'provisioned' : forExtension.why}
 ${register.length ? `In the Apple Developer portal, register ${register.join(', and ')}; then make` : 'Make'} one ${method} profile for each App ID${udid ? ' that includes this phone' : like?.devices.length ? ' naming the same devices' : ''}; install both (open the files, or Xcode ▸ Settings ▸ Accounts ▸ Download Manual Profiles). EXACT_PROFILE names the app's.`);
@@ -171,13 +176,13 @@ export function sharedWidgetCore({ app, prepared, libDir, crate, env, runApple, 
   const answer = resolve(base, 'bin-path');
   let bin = existsSync(answer) ? readFileSync(answer, 'utf8') : '';
   if (!bin || !existsSync(bin)) {
-    bin = runApple('swift', [...args, '--show-bin-path'], options).stdout.trim();
+    bin = runApple('swift', [...args, '--show-bin-path'], { ...options, read: true }).stdout.trim();
     writeFileSync(answer, bin);
   }
   const dylib = resolve(bin, 'libExactCore.dylib');
   const archive = resolve(libDir, `lib${crate.replaceAll('-', '_')}.a`);
   const digest = createHash('sha256').update(readFileSync(archive)).update(linkedPlan?.digest ?? '').update(library?.sha256 ?? '').digest('hex');
-  // A package's framework, which the archive's shim calls, found beside this one in Frameworks.
+  // A package's framework (LLP 1154 D3), which the archive's shim calls, found beside this one in Frameworks.
   const linkLibrary = appleLinkArgs(library, platform !== 'macos', platform === 'macos' ? '@loader_path/../../..' : '@loader_path/..');
   const stamp = resolve(base, 'archive');
   // SwiftPM tracks neither an external archive nor the linked plan. Invalidate only its link;
@@ -203,7 +208,7 @@ export function sharedWidgetCore({ app, prepared, libDir, crate, env, runApple, 
       rmSync(destination, { recursive: true, force: true });
       if (statSync(source).isDirectory()) cpSync(source, destination, { recursive: true, preserveTimestamps: true });
       else {
-        moduleTriple ??= JSON.parse(runApple('xcrun', ['swiftc', '-print-target-info', '-target', prepared.triple]).stdout).target.moduleTriple;
+        moduleTriple ??= JSON.parse(runApple('xcrun', ['swiftc', '-print-target-info', '-target', prepared.triple], { read: true }).stdout).target.moduleTriple;
         mkdirSync(destination, { recursive: true });
         for (const suffix of ['swiftmodule', 'swiftdoc', 'abi.json', 'swiftsourceinfo']) {
           const file = source.replace(/swiftmodule$/, suffix);
@@ -235,7 +240,7 @@ export function widgetReload({ directory, triple, sdk, device, platform = 'ios',
   writeFileSync(stamp, digest);
   return binary;
 }
-export function packageWidgets({ app, bundle, shared, directory, sdk, triple, device, entitlements, sign, runApple, production, profile = null, platform = 'ios', entries = platformWidgetEntries(app, platform), alarm = null }) {
+export function packageWidgets({ app, bundle, shared, directory, sdk, triple, device, entitlements, sign, runApple, production, symbols = directory, profile = null, platform = 'ios', entries = platformWidgetEntries(app, platform), alarm = null }) {
   const mac = platform === 'macos', contents = mac ? resolve(bundle, 'Contents') : bundle;
   const resources = mac ? resolve(contents, 'Resources') : contents;
   const extension = resolve(contents, 'PlugIns/ExactWidgets.appex');
@@ -247,16 +252,16 @@ export function packageWidgets({ app, bundle, shared, directory, sdk, triple, de
   // A phone installs the extension only with its own profile embedded (entryProfiles chose it).
   if (profile) copyFileSync(profile.path, resolve(extensionContents, mac ? 'embedded.provisionprofile' : 'embedded.mobileprovision'));
   // The widgets' plans and a TypeScript app's module pair, which the bake wrote or the build fails; an app with
-  // activities alone has no `plans` tree until its entries bake.
+  // activities alone has no `plans` tree until its entries bake (LLP 1126.001 WP8).
   for (const [tree, expected] of [['plans', entries.length > 0], ['typescript', platform !== 'watchos' && existsSync(resolve(app.dir, 'app.ts'))]]) {
     if (existsSync(resolve(resources, tree))) cpSync(resolve(resources, tree), resolve(extensionResources, tree), { recursive: true });
     else if (expected) throw new Error(`host/apple: the bake wrote no ${tree} tree for the widget extension (${resolve(resources, tree)})`);
   }
-  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(contents, 'Info.plist')]).stdout);
+  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(contents, 'Info.plist')], { read: true }).stdout);
   const capabilities = appInfo.UIRequiredDeviceCapabilities ? { UIRequiredDeviceCapabilities: appInfo.UIRequiredDeviceCapabilities } : {};
   const versions = Object.fromEntries(['CFBundleVersion', 'CFBundleShortVersionString', mac ? 'LSMinimumSystemVersion' : 'MinimumOSVersion'].map(key => [key, appInfo[key]]));
   const runtimeInfo = resolve(contents, 'Frameworks/ExactCore.framework', mac ? 'Resources/Info.plist' : 'Info.plist');
-  const runtime = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', runtimeInfo]).stdout);
+  const runtime = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', runtimeInfo], { read: true }).stdout);
   writeFileSync(runtimeInfo, plistFile({ ...runtime, ...versions, ...capabilities }));
   const frameworks = resolve(contents, 'Frameworks'), reload = 'libexact_widget_reload.dylib';
   if (platform !== 'watchos') {
@@ -275,14 +280,14 @@ export function packageWidgets({ app, bundle, shared, directory, sdk, triple, de
         .supportedFamilies([${entry.families.map(f => `.${f}`).join(', ')}]).contentMarginsDisabled()
     }
 }`).join('\n');
-  // The one ActivityConfiguration for every activity kind (`widget/Activity.swift`): the
+  // The one ActivityConfiguration for every activity kind (`widget/Activity.swift`, LLP 1126.001 WP10): the
   // envelope's attributes name the kind and the generation at render time, so the generated bundle holds no
   // activity string at all, and an app with activities and no widgets has it as its one member.
   // ActivityKit exists on iOS alone: the watch's and the Mac's bundles have no activities.
   const activities = platform === 'ios' && activityEntries(app).length > 0;
   if (activities) names.push('ExactActivities');
   const source = resolve(directory, 'WidgetBundle.swift');
-  // An alarm's countdown beside them, from iOS 26.
+  // An alarm's countdown beside them, from iOS 26 (LLP 1133.030 D8 item 2).
   const alarmMember = alarm && platform === 'ios' ? '; if #available(iOS 26.0, *) { ExactAlarmCountdown() }' : '';
   writeFileSync(source, `import SwiftUI\nimport WidgetKit\n${platform === 'ios' ? 'import UIKit\n' : mac ? 'import AppKit\n' : ''}${generated}\n@main struct ExactWidgets: WidgetBundle { var body: some Widget { ${names.map(n => `${n}()`).join('; ')}${alarmMember} } }\n`);
   const entitlementPath = resolve(directory, 'widget-entitlements.plist');
@@ -290,38 +295,39 @@ export function packageWidgets({ app, bundle, shared, directory, sdk, triple, de
   writeFileSync(resolve(extensionContents, 'Info.plist'), plistFile({ CFBundleIdentifier: widgetId(app), CFBundleName: 'ExactWidgets', CFBundleDisplayName: app.displayName, CFBundleExecutable: 'ExactWidgets', CFBundlePackageType: 'XPC!', ...versions, ...(!mac ? { UIDeviceFamily: appInfo.UIDeviceFamily } : {}), ...capabilities,
     CFBundleSupportedPlatforms: mac ? ['MacOSX'] : appInfo.CFBundleSupportedPlatforms, ...(appInfo.DTPlatformName ? { DTPlatformName: appInfo.DTPlatformName } : {}), ...(appInfo.NSAppTransportSecurity ? { NSAppTransportSecurity: appInfo.NSAppTransportSecurity } : {}), ExactAppGroup: appInfo.ExactAppGroup ?? widgetGroup(app), ExactAppIdentifier: appInfo.ExactAppIdentifier ?? app.id, ExactWidgetTypeScript: platform !== 'watchos' && existsSync(resolve(app.dir, 'app.ts')), ...(appInfo.ExactKeychainAccessGroup ? { ExactKeychainAccessGroup: appInfo.ExactKeychainAccessGroup } : {}), ...(mac ? { ExactWidgetSecretsAvailable: !!appInfo.ExactKeychainAccessGroup, ExactWidgetRequiresSecrets: appInfo.ExactWidgetRequiresSecrets ?? [] } : {}), ExactWidgetGeneration: appInfo.ExactWidgetGeneration, ...(typeof app.origin === 'string' ? { ExactLinkBase: app.origin } : {}),
     NSExtension: { NSExtensionPointIdentifier: 'com.apple.widgetkit-extension' } }));
-  runApple('xcrun', ['--sdk', mac ? 'macosx' : platform === 'watchos' ? 'watchsimulator' : device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...appexArgs, ...keepMain, ...(!production ? ['-D', 'EXACT_INSPECT'] : []), '-target', triple, '-sdk', sdk,
+  runApple('xcrun', ['--sdk', mac ? 'macosx' : platform === 'watchos' ? 'watchsimulator' : device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...(production ? ['-g'] : []), ...appexArgs, ...keepMain, ...(!production ? ['-D', 'EXACT_INSPECT'] : []), '-target', triple, '-sdk', sdk,
     '-module-cache-path', resolve(directory, 'cache'), '-I', resolve(root, 'host/apple/Sources/CExact'), '-I', resolve(shared.framework, 'Modules'), '-F', resolve(shared.framework, '..'), '-framework', 'ExactCore',
     '-Xlinker', '-rpath', '-Xlinker', mac ? '@executable_path/../../../../Frameworks' : '@executable_path/../../Frameworks',
     ...(!device && !mac ? ['-Xlinker', '-sectcreate', '-Xlinker', '__TEXT', '-Xlinker', '__entitlements', '-Xlinker', entitlementPath] : []),
     ...(alarmMember ? alarmArgs(alarm) : []),
     shared.snapshotArchive, resolve(root, 'host/apple/widget/Timeline.swift'), resolve(root, 'host/apple/widget/WidgetTimelineWaiters.swift'), ...(activities ? [resolve(root, 'host/apple/widget/Activity.swift')] : []), source, '-o', extensionBinary]);
+  stripProductionExecutable(extensionBinary, { production, dsym: resolve(symbols, 'ExactWidgets.appex.dSYM'), sourceDsym: `${extensionBinary}.dSYM` });
   sign(extension, entitlementPath);
 }
 
-/** What compiles an alarm's countdown into a widget extension: the host's two files,
+/** What compiles an alarm's countdown into a widget extension (LLP 1133.030 D8 items 1 and 2): the host's two files,
  * AlarmKit weak-linked (the app's minimum is below iOS 26), and the module named as the package's, which compiles the
  * same `ExactAlarmMetadata` into the app: ActivityKit names an attributes type by its module and type name, as
  * `activities.mjs` keeps the envelope's in `ExactSnapshot` on both sides. */
 const alarmArgs = module => ['-module-name', module, '-Xlinker', '-weak_framework', '-Xlinker', 'AlarmKit',
   resolve(root, 'host/apple/widget/Alarm.swift'), resolve(root, 'host/apple/widget/AlarmAttributes.swift')];
 
-/** The package that asks the host for AlarmKit's countdown (`"apple": {"activity": "alarmkit"}`),
- * by its Swift module's name; one at most, since the extension's module takes that name. */
+/** The package that asks the host for AlarmKit's countdown (`"apple": {"activity": "alarmkit"}`, LLP 1133.030 D12
+ * item 3), by its Swift module's name; one at most, since the extension's module takes that name. */
 export function alarmActivity(packages) {
   const asking = packages.filter(p => p.activity === 'alarmkit');
-  if (asking.length > 1) throw new Error(`host/apple: ${asking.map(p => p.extension).join(' and ')} each ask for AlarmKit's countdown; only one package may`);
+  if (asking.length > 1) throw new Error(`host/apple: ${asking.map(p => p.extension).join(' and ')} each ask for AlarmKit's countdown; one package may (LLP 1133.030 D12 item 3)`);
   return asking[0]?.module ?? null;
 }
 
 /** An app with no widgets and no Live Activities whose package asks for AlarmKit's countdown gets an extension that
- * holds the countdown alone: no ExactCore, no snapshot archive, no app group and no cohort,
+ * holds the countdown alone (LLP 1133.030 D8 item 2): no ExactCore, no snapshot archive, no app group and no cohort,
  * so nothing of the app's state is reachable from it. */
-export function packageAlarmExtension({ app, bundle, directory, sdk, triple, device, entitlements, sign, runApple, profile = null, alarm }) {
+export function packageAlarmExtension({ app, bundle, directory, sdk, triple, device, entitlements, sign, runApple, production, symbols = directory, profile = null, alarm }) {
   const extension = resolve(bundle, 'PlugIns/ExactWidgets.appex');
   mkdirSync(extension, { recursive: true });
   if (profile) copyFileSync(profile.path, resolve(extension, 'embedded.mobileprovision'));
-  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(bundle, 'Info.plist')]).stdout);
+  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(bundle, 'Info.plist')], { read: true }).stdout);
   const source = resolve(directory, 'AlarmWidgetBundle.swift');
   writeFileSync(source, 'import SwiftUI\nimport WidgetKit\n@main struct ExactWidgets: WidgetBundle { var body: some Widget { if #available(iOS 26.0, *) { ExactAlarmCountdown() } } }\n');
   const entitlementPath = resolve(directory, 'alarm-widget-entitlements.plist');
@@ -331,8 +337,9 @@ export function packageAlarmExtension({ app, bundle, directory, sdk, triple, dev
     CFBundleSupportedPlatforms: appInfo.CFBundleSupportedPlatforms, ...(appInfo.DTPlatformName ? { DTPlatformName: appInfo.DTPlatformName } : {}),
     ...(appInfo.UIRequiredDeviceCapabilities ? { UIRequiredDeviceCapabilities: appInfo.UIRequiredDeviceCapabilities } : {}),
     NSExtension: { NSExtensionPointIdentifier: 'com.apple.widgetkit-extension' } }));
-  runApple('xcrun', ['--sdk', device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...appexArgs, ...keepMain, '-target', triple, '-sdk', sdk,
+  runApple('xcrun', ['--sdk', device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...(production ? ['-g'] : []), ...appexArgs, ...keepMain, '-target', triple, '-sdk', sdk,
     '-module-cache-path', resolve(directory, 'cache'), ...(!device ? ['-Xlinker', '-sectcreate', '-Xlinker', '__TEXT', '-Xlinker', '__entitlements', '-Xlinker', entitlementPath] : []),
     ...alarmArgs(alarm), source, '-o', resolve(extension, 'ExactWidgets')]);
+  stripProductionExecutable(resolve(extension, 'ExactWidgets'), { production, dsym: resolve(symbols, 'ExactWidgets.appex.dSYM'), sourceDsym: resolve(extension, 'ExactWidgets.dSYM') });
   sign(extension, entitlementPath);
 }

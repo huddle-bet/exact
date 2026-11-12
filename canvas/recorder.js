@@ -1,4 +1,4 @@
-// The TypeScript recorder: the context a data module's `draw`
+// The TypeScript recorder (LLP 1056 D3): the context a data module's `draw`
 // calls, in the executor. It is the Rust recorder (`canvas/src/context.rs`)
 // in JavaScript — the same rules at the call, the same state, the same list
 // bytes (`canvas/src/list.rs`) — and `canvas/tests/cases.txt` holds both to
@@ -200,7 +200,7 @@ function wide(name, body) {
   out.text = `${space ? `color(${space} ` : `${name}(`}${v.map(jsNumber).join(" ")}${alpha < 1 ? ` / ${jsNumber(alpha)}` : ""})`;
   return out;
 }
-// A `display-p3` canvas's colours (color/src/lib.rs
+// A `display-p3` canvas's colours (LLP 1100 D12a; color/src/lib.rs
 // `LINEAR_SRGB_TO_P3`, the same digits, so the two agree to the byte).
 const LINEAR_SRGB_TO_P3 = [[0.8224619687143622, 0.17753803128563764, 0], [0.033194198850961525, 0.966805801149038, 0], [0.01708263072111999, 0.07239744066396336, 0.9105199286149165]];
 const LINEAR_P3_TO_SRGB = [[1.22494017628056, -0.22494017628055996, 0], [-0.04205695470968818, 1.0420569547096883, 0], [-0.01963755459033439, -0.0786360455506318, 1.0982736001409665]];
@@ -420,7 +420,8 @@ function arcToSegs(p0, p1, p2, r) {
   if ((p0[0] === p1[0] && p0[1] === p1[1]) || (p1[0] === p2[0] && p1[1] === p2[1]) || r === 0) return null;
   const v1 = [p0[0] - p1[0], p0[1] - p1[1]], v2 = [p2[0] - p1[0], p2[1] - p1[1]];
   const cross = v1[0] * v2[1] - v1[1] * v2[0], l1 = Math.hypot(v1[0], v1[1]), l2 = Math.hypot(v2[0], v2[1]);
-  if (Math.abs(cross) <= 1e-12 * l1 * l2) return null;
+  // Skia's arcTo treats |sin(turn)| <= 1/4096 as collinear.
+  if (Math.abs(cross) <= (1 / 4096) * l1 * l2) return null;
   const u1 = [v1[0] / l1, v1[1] / l1], u2 = [v2[0] / l2, v2[1] / l2];
   const cos = Math.min(1, Math.max(-1, u1[0] * u2[0] + u1[1] * u2[1]));
   const half = Math.acos(cos) / 2, dist = r / Math.tan(half);
@@ -699,7 +700,8 @@ function svgPath(text, d) {
   for (;;) {
     skip(false);
     if (at >= s.length) return;
-    if (/[A-Za-z]/.test(s[at])) cmd = s[at++]; else if (!cmd || !more()) return;
+    // `Z` takes no numbers: one after it is the path's first error (SVG 2 §9.5.4), and repeating `Z` would never end.
+    if (/[A-Za-z]/.test(s[at])) cmd = s[at++]; else if (!cmd || cmd === "Z" || cmd === "z" || !more()) return;
     if (first && cmd !== "M" && cmd !== "m") return;
     first = false;
     const rel = cmd === cmd.toLowerCase(), base = rel ? cur : [0, 0];
@@ -1096,7 +1098,7 @@ export class Recorder {
   }
 }
 
-// --- the seam: one recorder per canvas generation --------------
+// --- the seam: one recorder per canvas generation (LLP 1056 D4) --------------
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 function base64(bytes) {
@@ -1114,8 +1116,8 @@ function base64(bytes) {
 
 /** The executor's draw seam over the module's `draw`: requests in, JSON
  * `{lists: [base64…], frame, error}` out; a throw keeps what it recorded.
- * `host` measures text and answers image sizes, where the draw runs:
- * `measure(json) -> json` and `image(json) -> json | ""`. */
+ * `host` measures text and answers image sizes, where the draw runs (LLP
+ * 1056 D8, D9): `measure(json) -> json` and `image(json) -> json | ""`. */
 export function canvasSeam(draw) {
   const recorders = new Map(); // canvas -> { generation, rec }
   return {

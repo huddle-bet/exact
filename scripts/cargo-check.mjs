@@ -7,7 +7,7 @@ import process from 'node:process';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /** What `resolveApp` asked Cargo of an outside app's authored workspace (`cargo metadata --locked`, ~0.1 s), asked when a
- * build first reads `app.workspace` (a web verb never does), kept while the files Cargo reads for it are
+ * build first reads `app.workspace` (LLP 1153 D2.1: a web verb never does), kept while the files Cargo reads for it are
  * as they were (`cargoInputs`): in this process, and for the next in the app's `.exact/cargo-check.json`. The workspace
  * itself is found from the files (`authoredWorkspace`), never by `cargo locate-project`. */
 const outsideChecks = new Map();
@@ -61,11 +61,13 @@ export function rememberWorkspace(dir, outside, manifests, workspace, check) {
   try { mkdirSync(resolve(dir, '.exact'), { recursive: true }); const at = resolve(dir, `.exact/cargo-check.json.${process.pid}`); writeFileSync(at, JSON.stringify(known)); renameSync(at, resolve(dir, '.exact/cargo-check.json')); } catch { /* asked again next time */ }
 }
 
-/** The generated native workspace of an app that authored none: under its `.exact/`, which is ignored. */
+/** The generated native workspace of an app that authored none (LLP 1153 D1): under its `.exact/`, which is ignored. */
 export const shellsDir = (dir) => resolve(dir, '.exact/shells');
 const readToml = (path) => { try { return Bun.TOML.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 /** The crates an app writes beside app.json. */
 export const APP_CRATES = ['apple', 'ios', 'macos', 'linux', 'web', 'windows', 'android', 'data', 'gpu'];
+/** How an app with Rust of its own gets the workspace it needs (LLP 1153 D1.4: the generated one, copied up). */
+export const NO_WORKSPACE = 'An app with Rust of its own (a gpu/ or data/ crate) copies the generated workspace up from .exact/shells/, which a native verb writes only while no such crate is there: `bun exact.mjs contract vocab gpu-module` says how.';
 /** Whether the workspace at `root` owns the package at `path`, as Cargo reads it: a `members` glob names it, or a
  * member depends on it by a path under the root (Cargo's automatic membership), and `exclude` (a prefix or a glob)
  * does not name it. Read from the files alone. */
@@ -98,7 +100,7 @@ function owns(root, workspace, path) {
   return false;
 }
 /** The authored Cargo workspace an app builds in, read from the files alone (no `cargo locate-project`: a web verb runs
- * no Cargo), as Cargo would find it: the app's own `Cargo.toml` when it declares `[workspace]`; the
+ * no Cargo, LLP 1153 D2.1), as Cargo would find it: the app's own `Cargo.toml` when it declares `[workspace]`; the
  * workspace a package names (`package.workspace`, the app's or a crate's beside app.json); else the nearest enclosing
  * workspace whose `members` own the app or one of its crates; else the app itself, a root of its own package or
  * crates. `null` when the app authored no Cargo manifest at all: its workspace is generated (scripts/app-shells.mjs).
@@ -125,6 +127,10 @@ export function appleCargo(command, arguments_, options = {}) {
     !targets.length && process.platform === 'darwin' && ['build', 'rustc', 'check', 'test', 'clippy'].includes(arguments_[0]));
   if (!apple) return [command, arguments_, options];
   const environment = { ...(options.env ?? process.env) }, directories = [];
+  // No SDKROOT, whatever the caller inherited: rustc and cc-rs ask xcrun for each target's own SDK. One left here
+  // reaches the build scripts' C and C++ compiles for the Mac too, where cc-rs passes no -isysroot and clang takes
+  // SDKROOT: an iOS SDK there fails `-Werror` (aws-lc-sys's probes) on -Wincompatible-sysroot.
+  delete environment.SDKROOT;
   for (let at = resolve(options.cwd ?? process.cwd()); ; at = dirname(at)) {
     directories.push(at);
     if (at === dirname(at)) break;
@@ -179,4 +185,27 @@ export function appleCargo(command, arguments_, options = {}) {
   }
   const separator = arguments_.indexOf('--'), at = separator < 0 ? arguments_.length : separator;
   return [command, [...arguments_.slice(0, at), ...configurationArgs, ...arguments_.slice(at)], { ...options, env: environment }];
+}
+
+/** The link argument that aligns an Android library's LOAD segments to 16 KB, which a device with 16 KB pages needs
+ * to run it outside page-size compatibility mode (https://developer.android.com/guide/practices/page-sizes); NDKs
+ * before r28 align to 4 KB. */
+export const ANDROID_PAGE_SIZE = '-Clink-arg=-Wl,-z,max-page-size=16384';
+
+/** A Cargo run for `aarch64-linux-android` with ANDROID_PAGE_SIZE added to every rustflags source it may use, and none
+ * made: CARGO_ENCODED_RUSTFLAGS or RUSTFLAGS when set, the target's own variable when set, and `build.rustflags`
+ * through `--config`, which Cargo joins with the configuration's array and CARGO_BUILD_RUSTFLAGS. A new target source
+ * would displace `build.rustflags` (a game's `-fp-contract=off`), and a variable would reach the host Cargo runs that
+ * build scripts start, whose linker refuses the argument. Other runs pass through. */
+export function androidCargo(command, arguments_, options = {}) {
+  const android = command === 'cargo' && arguments_.some((value, index) => value === '--target=aarch64-linux-android' || value === 'aarch64-linux-android' && arguments_[index - 1] === '--target');
+  if (!android) return [command, arguments_, options];
+  const environment = { ...(options.env ?? process.env) };
+  const add = (value, separator) => value.split(separator).includes(ANDROID_PAGE_SIZE) ? value : [value, ANDROID_PAGE_SIZE].filter(Boolean).join(separator);
+  if (environment.CARGO_ENCODED_RUSTFLAGS !== undefined) environment.CARGO_ENCODED_RUSTFLAGS = add(environment.CARGO_ENCODED_RUSTFLAGS, '\x1f');
+  else if (environment.RUSTFLAGS !== undefined) environment.RUSTFLAGS = add(environment.RUSTFLAGS.trim(), ' ');
+  const own = 'CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS';
+  if (environment[own] !== undefined) environment[own] = add(environment[own].trim(), ' ');
+  const separator = arguments_.indexOf('--'), at = separator < 0 ? arguments_.length : separator;
+  return [command, [...arguments_.slice(0, at), '--config', `build.rustflags=${JSON.stringify([ANDROID_PAGE_SIZE])}`, ...arguments_.slice(at)], { ...options, env: environment }];
 }

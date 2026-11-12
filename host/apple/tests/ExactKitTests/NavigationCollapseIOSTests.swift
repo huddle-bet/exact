@@ -4,16 +4,17 @@ import XCTest
 @testable import ExactKit
 import ExactGroupedLists
 
-/// A large title collapses with its route's content scroll view (the
-/// fixture's Second tab, which names no scroller). CSS `scrollTop` counts
-/// from the scrollport's top, which under the bar is the bar's bottom
-/// whatever its height — UIKit keeps the offset plus that inset fixed as
-/// the title collapses — so an authored offset lands where the browser's
-/// does (0, 80, the middle, the end of what shows). At rest, CSS 0, the title
-/// is expanded; an authored 0 after a collapse lands at 0 under the bar as it
-/// is, and the title expands when the user pulls. Gestures (a finger's
-/// collapse, pull to top, a held sheet) need real touches, which a unit test
-/// has none of.
+/// LLP 1075.003 Stage 3: a large title collapses with its route's content
+/// scroll view (the fixture's Second tab, which names no scroller: LLP
+/// 1115.000 D11.1). CSS `scrollTop` counts from the
+/// scrollport's top, which under the bar is the bar's bottom whatever its
+/// height — UIKit keeps the offset plus that inset fixed as the title
+/// collapses — so an authored offset lands where the browser's does (0, 80,
+/// the middle, the end of what shows). At rest, CSS 0, the title is
+/// expanded; an authored 0 after a collapse lands at 0 under the bar as it
+/// is, and the title expands when the user pulls.
+/// Gestures (a finger's collapse, pull to top, a held sheet) need real
+/// touches, which a unit test has none of.
 final class NavigationCollapseIOSTests: XCTestCase {
     private var window: UIWindow?
     private var sessions: [ExactSession] = []
@@ -55,8 +56,8 @@ final class NavigationCollapseIOSTests: XCTestCase {
         spin(0.3)
         let navigation = session.presenter.navigation
         let tabs = try XCTUnwrap(navigation.tabController)
-        _ = tabs.delegate?.tabBarController?(tabs, shouldSelect: tabs.viewControllers![1])
-        until("Second selected") { tabs.selectedIndex == 1 }
+        tapTab(tabs, 1)
+        XCTAssertEqual(tabs.selectedIndex, 1, "Second selected")
         return (session, try XCTUnwrap(tabs.selectedViewController as? UINavigationController))
     }
 
@@ -225,7 +226,7 @@ final class NavigationCollapseIOSTests: XCTestCase {
         XCTAssertEqual(home.scrollOrigin, 0, "CSS scrollTop 0 is the top edge")
     }
 
-    /// Over `scripts/fixtures/large-title.contract`: one
+    /// LLP 1115.000 D11.1 over `scripts/fixtures/large-title.contract`: one
     /// stack with no tabs, the shape `exact new` makes, whose first screen
     /// names no scroller. Its large title opens expanded, its content below
     /// it, and collapses as the content scrolls. UIKit shows the title
@@ -252,13 +253,13 @@ final class NavigationCollapseIOSTests: XCTestCase {
     /// The agent's `tap <scroller> drag 0 -900` to the end under an expanded
     /// large title rests at the end, as a finger's drag does once its bounce
     /// settles: UIKit adds the collapsing title's height to the offset, which
-    /// left the content that far past its end (52 points on a settings screen).
+    /// left the content that far past its end (euxy's Settings, 52 points).
     func testAnAgentDragToTheEndUnderALargeTitleRestsAtTheEnd() throws {
         let session = try booted("EXACT_LARGE_TITLE_PLAN", label: "large-title-drag", beforeItsWindow: true)
         let home = try node(session, "home-scroll"), sv = try XCTUnwrap(home.scroll)
         let bar = try XCTUnwrap(session.presenter.navigation.primaryNavigation).navigationBar
         let expanded = bar.frame.height
-        let reply = Agent(session: session).tap(["id": Int(home.id), "scrollDrag": [0.0, -100_000.0]])
+        let reply = Agent(session: session).tap(["id": Int(home.id), "scrollDrag": [0.0, -100_000.0], "ms": 100.0])
         XCTAssertNil(reply["error"], "\(reply)")
         spin(0.3)
         XCTAssertLessThan(bar.frame.height, expanded, "the title collapsed")
@@ -310,26 +311,68 @@ final class NavigationCollapseIOSTests: XCTestCase {
         let bar = try XCTUnwrap(session.presenter.navigation.primaryNavigation).navigationBar
         let expanded = bar.frame.height, start = sv.contentOffset.y
         let agent = Agent(session: session)
-        XCTAssertNil(agent.tap(["id": Int(home.id), "scrollDrag": [0.0, -300.0]])["error"])
+        XCTAssertNil(agent.tap(["id": Int(home.id), "scrollDrag": [0.0, -300.0], "ms": 100.0])["error"])
         XCTAssertLessThan(bar.frame.height, expanded, "the title collapsed")
-        let pull = agent.tap(["id": Int(home.id), "scrollDrag": [0.0, 1_000.0]])
+        let pull = agent.tap(["id": Int(home.id), "scrollDrag": [0.0, 1_000.0], "ms": 100.0])
         XCTAssertNil(pull["error"], "\(pull)")
         XCTAssertEqual(bar.frame.height, expanded, accuracy: 0.5, "the pull opened the title")
         XCTAssertEqual(sv.contentOffset.y, start, accuracy: 0.5, "at the top")
         XCTAssertEqual(try XCTUnwrap(pull["scrolledBy"] as? [Double])[1], -300, accuracy: 0.5, "the content moved back by the 300 it went")
     }
 
-    /// The agent's drag pulls to refresh as a finger does. A
+    /// An appearance, tint or text-size change that comes with a new size (an
+    /// iPhone Duo's snapshot of the app unfolded) applies the size in its
+    /// first batch, ahead of the change's own: every batch lays the
+    /// navigation out, and UIKit must not lay it out in the old size's frames
+    /// (ExactViewIOS's `fitAheadOfLayout`).
+    @MainActor
+    func testATraitOrTintChangeWithANewSizeAppliesTheSizeFirst() throws {
+        let session = try booted("EXACT_LARGE_TITLE_PLAN", label: "appearance-resize")
+        let view = try XCTUnwrap(session.view)
+        let nav = try XCTUnwrap(session.presenter.navigation.primaryNavigation)
+        XCTAssertEqual(nav.view.bounds.width, 402, accuracy: 0.5)
+        // Fix the window's tint so the appearance change reaches the view
+        // through its trait callback alone: the system tint changes with the
+        // appearance, and its callback comes first.
+        let tint = UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 1)
+        window?.tintColor = tint
+        window?.layoutIfNeeded()
+        func resize(to width: CGFloat, with change: String, _ make: () -> Void) {
+            XCTAssertFalse(session.ownerInFlight, "no owner work lands ahead of the \(change) change's first batch")
+            let before = session.appliedBatches
+            var resizedIn: Int?
+            let observation = nav.view.layer.observe(\.bounds, options: [.new]) { _, bounds in
+                if resizedIn == nil, let new = bounds.newValue?.width, abs(new - width) < 0.5 { resizedIn = session.appliedBatches - before }
+            }
+            defer { observation.invalidate() }
+            view.frame = CGRect(x: 0, y: 0, width: width, height: 700)
+            make()
+            XCTAssertEqual(resizedIn, 1, "the batch the navigation took the new size in, counted from the \(change) change")
+            XCTAssertGreaterThan(session.appliedBatches - before, 1, "the \(change) change applied a batch after the size")
+        }
+        resize(to: 600, with: "appearance") {
+            window?.overrideUserInterfaceStyle = view.traitCollection.userInterfaceStyle == .dark ? .light : .dark
+            window?.updateTraitsIfNeeded()
+        }
+        XCTAssertEqual(window?.tintColor, tint, "the tint the appearance change left alone")
+        resize(to: 500, with: "tint") { window?.tintColor = UIColor(red: 0.1, green: 0.5, blue: 0.2, alpha: 1) }
+        resize(to: 450, with: "text size") {
+            window?.traitOverrides.preferredContentSizeCategory = .accessibilityLarge
+            window?.updateTraitsIfNeeded()
+        }
+    }
+
+    /// LLP 1054 A4: the agent's drag pulls to refresh as a finger does. A
     /// real touch's 200 points past the top refreshed, 180 did not (iOS 27).
     func testTheAgentsDragPullsToRefreshAsAFingerDoes() throws {
         let session = try booted("EXACT_PULL_REFRESH_PLAN", label: "pull-refresh")
         let agent = Agent(session: session)
         let feed = try node(session, "feed"), control = try XCTUnwrap(feed.scroll?.refreshControl)
-        let short = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, 150.0]])
+        let short = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, 180.0], "ms": 100.0])
         XCTAssertNil(short["error"], "\(short)")
         XCTAssertEqual(short["refreshed"] as? Bool, false, "short of the pull")
         XCTAssertFalse(control.isRefreshing)
-        let pull = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, 300.0]])
+        let pull = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, 200.0], "ms": 100.0])
         XCTAssertNil(pull["error"], "\(pull)")
         XCTAssertEqual(pull["refreshed"] as? Bool, true)
         XCTAssertTrue(control.isRefreshing, "the spinner shows until the app's `refreshing` says otherwise")
@@ -343,6 +386,140 @@ final class NavigationCollapseIOSTests: XCTestCase {
         until("the refresh ran the app's action") { (try? self.node(session, "pulls"))?.props["text"] == "1" }
     }
 
+    func testAnAgentScrollDragMovesThroughoutItsDurationUnderLiveCapture() throws {
+        guard UIApplication.shared.connectedScenes.first is UIWindowScene else {
+            throw missing("scene", "live capture of a timed scroll drag")
+        }
+        let session = try booted("EXACT_PULL_REFRESH_PLAN", label: "timed-scroll")
+        session.clock = nil
+        let agent = Agent(session: session)
+        let feed = try node(session, "feed"), scroll = try XCTUnwrap(feed.scroll)
+        let health = session.frameHealth
+        XCTAssertEqual(health.setAgentCapture("start")["capture"] as? Bool, true)
+        health.beginScroll(scroll, session: session)
+        let native = try XCTUnwrap(health.nativeHealth)
+        defer { health.stopScroll(); _ = health.setAgentCapture("stop") }
+        var offsets: [(time: Double, y: CGFloat)] = []
+        var firstFrame: UInt64?
+        let began = CACurrentMediaTime(), origin = scroll.contentOffset.y
+        let reads = Timer(timeInterval: 0.05, repeats: true) { _ in
+            offsets.append((CACurrentMediaTime() - began, scroll.contentOffset.y - origin))
+            let capture = native.snapshot()
+            if firstFrame == nil, capture.callbacks > 0 { firstFrame = capture.last_arrival_ns }
+        }
+        RunLoop.main.add(reads, forMode: .common)
+        defer { reads.invalidate() }
+        let reply = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, -300.0], "ms": 500.0])
+        let elapsed = CACurrentMediaTime() - began
+        XCTAssertNil(reply["error"], "\(reply)")
+        XCTAssertGreaterThanOrEqual(elapsed, 0.5)
+        XCTAssertEqual(scroll.contentOffset.y - origin, 300, accuracy: 0.5)
+        XCTAssertEqual((reply["scrolledBy"] as? [Double])?[1] ?? -1, 300, accuracy: 0.5)
+        for band in [0.05..<0.2, 0.2..<0.35, 0.35..<0.5] {
+            XCTAssertTrue(offsets.contains { band.contains($0.time) && $0.y > 0 && $0.y < 300 }, "no intermediate offset in \(band): \(offsets)")
+        }
+        XCTAssertTrue(zip(offsets, offsets.dropFirst()).allSatisfy { $0.y <= $1.y }, "the drag follows the finger")
+        let capture = native.snapshot()
+        XCTAssertGreaterThan(capture.callbacks, 5, "live capture observes the drag's frames")
+        // The passive observer has no cadence; its arrivals still span the gesture.
+        XCTAssertGreaterThan(capture.last_arrival_ns - (try XCTUnwrap(firstFrame)), 350_000_000)
+    }
+
+    func testATimedScrollDragStopsWhenItsScrollerIsDisabled() throws {
+        let session = try booted("EXACT_PULL_REFRESH_PLAN", label: "cancelled-scroll")
+        let agent = Agent(session: session)
+        let feed = try node(session, "feed"), scroll = try XCTUnwrap(feed.scroll)
+        let origin = scroll.contentOffset.y
+        var stopped: CGFloat?
+        let observation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in
+            if stopped == nil, scroll.contentOffset.y - origin >= 60 {
+                stopped = scroll.contentOffset.y
+                scroll.isScrollEnabled = false
+            }
+        }
+        defer { observation.invalidate() }
+        let reply = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, -300.0], "ms": 500.0])
+        XCTAssertNil(reply["error"], "\(reply)")
+        XCTAssertEqual(reply["cancelled"] as? Bool, true)
+        XCTAssertEqual(scroll.contentOffset.y, try XCTUnwrap(stopped), accuracy: 0.5)
+        XCTAssertLessThan(scroll.contentOffset.y - origin, 300)
+        observation.invalidate()
+        scroll.isScrollEnabled = true
+        scroll.setContentOffset(CGPoint(x: 0, y: 100), animated: false)
+        let pullObservation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in
+            if scroll.contentOffset.y <= 0 { scroll.isScrollEnabled = false }
+        }
+        defer { pullObservation.invalidate() }
+        let pull = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, 400.0], "ms": 500.0])
+        XCTAssertNil(pull["error"], "\(pull)")
+        XCTAssertEqual(pull["cancelled"] as? Bool, true)
+        XCTAssertEqual(pull["refreshed"] as? Bool, false, "a cancelled pull cannot refresh")
+        XCTAssertEqual(reply["refreshed"] as? Bool, false)
+        XCTAssertFalse(try XCTUnwrap(scroll.refreshControl).isRefreshing)
+        scroll.isScrollEnabled = true
+        for duration in [-1.0, 2001.0, .infinity, .nan] {
+            XCTAssertNotNil(agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, -300.0], "ms": duration])["error"])
+        }
+    }
+
+    func testATimedScrollDragHoldsScrollEndAndTimersUntilLiftOrCancellation() throws {
+        for mode in ["bound", "stationary", "cancelled"] {
+            let session = try booted("EXACT_PULL_REFRESH_PLAN", label: "scroll-end-\(mode)")
+            session.clock = nil
+            let p = session.presenter, agent = Agent(session: session)
+            let feed = try node(session, "feed"), scroll = try XCTUnwrap(feed.scroll)
+            let end = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height
+            scroll.setContentOffset(CGPoint(x: 0, y: mode == "stationary" ? end : end - 100), animated: false)
+            feed.endScroll()
+            feed.handlers.formUnion(["scroll", "scrollend"])
+            var events: [String] = [], ended: [Double] = [], admitted: [Double] = []
+            let began = CACurrentMediaTime()
+            p.onScroll = { _, _ in events.append("scroll") }
+            p.onScrollend = { _ in
+                events.append("end")
+                ended.append(CACurrentMediaTime() - began)
+                scroll.isScrollEnabled = false
+            }
+            var cancelledAt: Double?
+            let observation = scroll.observe(\.contentOffset, options: [.new]) { _, _ in
+                if mode == "cancelled", cancelledAt == nil, scroll.contentOffset.y >= end - 50 {
+                    cancelledAt = CACurrentMediaTime() - began
+                    scroll.isScrollEnabled = false
+                }
+            }
+            let reads = Timer(timeInterval: 0.025, repeats: true) { _ in
+                if (try? self.node(session, "rests"))?.props["text"] == "1" {
+                    admitted.append(CACurrentMediaTime() - began)
+                }
+            }
+            RunLoop.main.add(reads, forMode: .common)
+            defer { observation.invalidate(); reads.invalidate() }
+            p.press(try node(session, "wait-for-rest").id)
+            let reply = agent.tap(["id": Int(feed.id), "scrollDrag": [0.0, -1000.0], "ms": 500.0])
+            let elapsed = CACurrentMediaTime() - began
+            XCTAssertNil(reply["error"], "\(mode): \(reply)")
+            XCTAssertEqual(reply["cancelled"] as? Bool ?? false, mode == "cancelled", "\(mode): \(reply)")
+            if mode == "cancelled" {
+                XCTAssertGreaterThanOrEqual(try XCTUnwrap(ended.first), try XCTUnwrap(cancelledAt))
+                XCTAssertLessThan(scroll.contentOffset.y, end)
+            } else {
+                XCTAssertGreaterThanOrEqual(elapsed, 0.5)
+                XCTAssertEqual(scroll.contentOffset.y, end, accuracy: 0.5)
+                XCTAssertTrue(ended.allSatisfy { $0 >= 0.5 }, "\(mode): ended during the drag: \(ended)")
+                XCTAssertTrue(admitted.allSatisfy { $0 >= 0.5 }, "\(mode): scrollend timer ran during the drag: \(admitted)")
+            }
+            XCTAssertEqual(ended.count, mode == "stationary" ? 0 : 1)
+            if !ended.isEmpty { XCTAssertEqual(events.suffix(2), ["scroll", "end"]) }
+            until("\(mode): the scrollend timer runs after the gesture") { (try? self.node(session, "rests"))?.props["text"] == "1" }
+            XCTAssertFalse(feed.scrollEnd?.live == true, "\(mode): the gesture released its hold")
+            observation.invalidate()
+            reads.invalidate()
+            session.destroy()
+            sessions.removeLast()
+            window?.isHidden = true
+        }
+    }
+
     /// A diagonal agent drag moves a scroller along the axes it scrolls
     /// alone, though its content overflows the other (the page is 800 wide,
     /// the strip's row 100 tall), and reports the drag's own distance while
@@ -354,12 +531,12 @@ final class NavigationCollapseIOSTests: XCTestCase {
         let strip = try node(session, "home-strip"), row = try XCTUnwrap(strip.scroll)
         XCTAssertEqual(page.scroll?.scrollsX, false)
         XCTAssertEqual(strip.scroll?.scrollsY, false)
-        let across = agent.tap(["id": Int(strip.id), "scrollDrag": [-240.0, -30.0]])
+        let across = agent.tap(["id": Int(strip.id), "scrollDrag": [-240.0, -30.0], "ms": 100.0])
         XCTAssertNil(across["error"], "\(across)")
         XCTAssertEqual(row.contentOffset.x, 240, accuracy: 0.5, "the strip scrolls sideways")
         XCTAssertEqual(row.contentOffset.y, 0, accuracy: 0.5, "and not down")
         let x = sv.contentOffset.x, y = sv.contentOffset.y
-        let down = agent.tap(["id": Int(page.id), "scrollDrag": [-40.0, -300.0]])
+        let down = agent.tap(["id": Int(page.id), "scrollDrag": [-40.0, -300.0], "ms": 100.0])
         XCTAssertNil(down["error"], "\(down)")
         XCTAssertEqual(sv.contentOffset.x, x, accuracy: 0.5, "the page scrolls down and not sideways")
         XCTAssertGreaterThan(sv.contentOffset.y, y + 299)
@@ -368,7 +545,7 @@ final class NavigationCollapseIOSTests: XCTestCase {
         XCTAssertEqual(by[1], 300, accuracy: 0.5, "the drag's 300, not the title's height besides")
     }
 
-    /// A route that names no scroller has one all the
+    /// LLP 1115.000 D11.1: a route that names no scroller has one all the
     /// same, its first that scrolls vertically, as a hand-built screen's
     /// scroll view is its bar's with nothing written. Right after the header
     /// the bar replaces, it goes under the bar, which insets it, and the
@@ -397,8 +574,8 @@ final class NavigationCollapseIOSTests: XCTestCase {
 
     /// Under a `viewport-fit="cover"` root a route's scroller spans the
     /// window, side insets included. UIKit insets it at its top and bottom
-    /// only, so its content, as wide as it, has no sideways range;
-    /// `.always` added the side inset too, and it scrolled sideways by it.
+    /// only, so its content, as wide as it, has no sideways range (LLP 1123
+    /// D3); `.always` added the side inset too, and it scrolled sideways by it.
     func testUnderACoverRootTheBarsScrollerHasNoSidewaysRange() throws {
         let session = try booted("EXACT_COVER_SCROLL_PLAN", label: "cover-scroll")
         let sv = try XCTUnwrap(try node(session, "home-scroll").scroll)
@@ -444,7 +621,7 @@ final class NavigationCollapseIOSTests: XCTestCase {
         }
     }
 
-    /// Several scrollers: the bar's is the one the status bar's tap
+    /// D11.1, several scrollers: the bar's is the one the status bar's tap
     /// already picked, the first that scrolls vertically, by one rule for
     /// both; `navigationScroll` is how a route names a different one.
     func testWithSeveralScrollersTheBarsIsTheStatusBarsAndARouteMayNameAnother() throws {
@@ -464,13 +641,13 @@ final class NavigationCollapseIOSTests: XCTestCase {
         XCTAssertNil(route.collapseScroll, "it is not at the route's top, so the title keeps still, as before")
     }
 
-    /// No header: a pushed route whose bar holds the system Back
+    /// D11.1, no header: a pushed route whose bar holds the system Back
     /// alone runs its scroller under that bar too.
     func testAHeaderlessRoutesScrollerRunsUnderTheBackOnlyBar() throws {
         let (session, nav, route) = try pushed("bare")
         let bare = try node(session, "bare-scroll")
         let sv = try XCTUnwrap(bare.scroll)
-        XCTAssertFalse(nav.isNavigationBarHidden, "the bar with Back alone")
+        XCTAssertFalse(nav.isNavigationBarHidden, "the bar with Back alone (D5.2)")
         XCTAssertTrue(route.collapseScroll === bare)
         XCTAssertEqual(bare.convert(bare.bounds, to: nil).minY, 0, accuracy: 0.5, "under the bar")
         let top = try node(session, "bare-top"), bar = nav.navigationBar
@@ -483,7 +660,7 @@ final class NavigationCollapseIOSTests: XCTestCase {
         let node = try self.node(session, "list-second")
         let sv = try XCTUnwrap(node.scroll)
         spin(0.3)
-        // Second names no scroller, and its large title
+        // LLP 1115.000 D11.1: Second names no scroller, and its large title
         // collapses with the one right after its header all the same.
         let route = try XCTUnwrap(nav.topViewController as? RouteController)
         XCTAssertEqual(route.node.props["navigationScroll"] ?? "", "", "the route names nothing")
@@ -517,8 +694,8 @@ final class NavigationCollapseIOSTests: XCTestCase {
     }
 
     /// A scroller replaced in place by a taller one, then a shorter one, as
-    /// a quiz's results replace its question (otherwise the results
-    /// open scrolled by the bar, their score and Play Again under it).
+    /// a quiz's results replace its question (bake-off round 3: the results
+    /// opened scrolled by the bar, their score and Play Again under it).
     /// UIKit insets a new scroller from the offset it had, 0, which leaves
     /// its content's top under the bar; each opens at its top instead, just
     /// below the bar. The bar stays as the page before left it, its title

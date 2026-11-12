@@ -1,7 +1,8 @@
 //! Exact kernel.
 //!
 //! A copied-in, borrow-parsed binary command stream with transactional apply,
-//! Taffy layout, and columnar binary exports. The design:
+//! Taffy layout, and columnar binary exports. The design is RFC 0491's
+//! (`llp/research/0491-kernel-refresh-program.rfc.md`), built fresh:
 //!
 //! - **One declaration authority.** `tables/schema.json` generates every node
 //!   type, prop id and kind, style row, enum vocabulary, opcode, and the schema
@@ -54,6 +55,7 @@ pub mod ratio;
 pub mod region;
 mod replaced;
 pub mod rows;
+pub mod segmented;
 pub mod selector;
 mod shared_style;
 pub mod sorted;
@@ -93,6 +95,7 @@ pub use motion::{motion_node, MotionSync};
 pub use node::NodeFacts;
 pub use props::{PropList, PropValue};
 pub use replaced::{apple_symbol_name, symbol_path, symbol_path_in, Icon, SymbolPath, SymbolSet};
+pub use segmented::SegmentPlace;
 pub use sorted::{SortedMap, SortedSet};
 pub use style::{
     link_segments, uses_env, BoxShadow, Color, ColorValue, Dimension, Edge, Env, EnvRefusal,
@@ -118,7 +121,7 @@ pub use region::{
     RegionPublication, RegionSelection, RegionTextRequest, RegionTextSource, RegionTicket,
 };
 
-/// CSS authored and resolved exclusion geometry.
+/// CSS authored and resolved exclusion geometry (LLP 1043.000).
 pub use exact_textflow::{FlowShape, ShapeOutside};
 pub use flow::FlowRefusal;
 

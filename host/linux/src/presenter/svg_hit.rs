@@ -1,4 +1,4 @@
-//! Hits inside an `svg`: the element under a point, by
+//! Hits inside an `svg` (LLP 1055.000 D17): the element under a point, by
 //! the kernel's resolved scene and `pointer-events`.
 use super::*;
 
@@ -40,6 +40,7 @@ impl<D: DataSource> Presenter<D> {
             content,
             &|id| self.host.presented(id),
             &|id| self.host.presented_path(id),
+            self.dark(),
         );
         scene
             .hit((x - b.rect.0 - content.0, y - b.rect.1 - content.1))

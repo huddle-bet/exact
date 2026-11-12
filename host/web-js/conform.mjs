@@ -3,12 +3,11 @@
 // same Chrome, driven by the same agent operations (scripts/agent.mjs's
 // `open`). After every step it compares the runner's typed state, including
 // the document head, the tree (depth, type, testId, text, value, label, handlers,
-// focus), layout boxes
-// by testId, a screenshot, and the reason of each refusal for passing one of
-// the runner's evaluation bounds. `app.test.contract` files run on both.
+// focus), layout boxes by testId, a screenshot, and the reason of each refusal for passing one of
+// the runner's evaluation bounds (LLP 1090 D7). `app.test.contract` files run on both.
 // Every failure is reported in one run; the exit code is 0 unless `--strict`,
 // which exits 1 on any failure and prints each as a `FAIL <target> <step>:`
-// line.
+// line (the async lane's check, scripts/async.mjs).
 // The exception: conform-marked.mjs's WASM_UNBOUND (photo-editor, recorder,
 // markdown, whose wasm reference binds no packages; interim) records their
 // wasm-vs-JS differences under a marker in report.json (`marked`) and report.md,
@@ -32,8 +31,8 @@
 //   `// agent: timeZone=<zone> epoch=<ms>` is driven with those facts, and
 //   `scale=<n>` in that line opens all three at that display scale
 //   (EXACT_SCALE: Chrome's own device scale factor for both pages, the Linux
-//   host's pixels a point), so a hairline is the same device pixel on each;
-//   with none every host is at the scale its
+//   host's pixels a point), so a hairline is the same device pixel on each
+//   (LLP 1115.000 D10.3, D14.2); with none every host is at the scale its
 //   environment names, 1 unless EXACT_SCALE says.
 //   A plan's .steps file lists agent operations, one per line; # lines
 //   are comments. A scripted step other than `clock` that the reference
@@ -57,7 +56,7 @@
 //   A plan marked `// linux: layout` also compares its testId boxes with the
 //   wasm page to 0.5 px. Pixels remain the Linux host's own and are not
 //   compared. Nothing is normalized: a page launches where the Linux host
-//   does, the drive's own parameters left out of its route;
+//   does, the drive's own parameters left out of its route (feed F16);
 //   a target whose app has no Linux host, or a plan that says `// linux:
 //   <why>`, is reported as not compared (`// linux: state only (<why>)`
 //   compares its state and not its tree), and the comparison stops at the
@@ -73,7 +72,7 @@
 //   --build-js; it refuses to start with neither.
 //   Typed state and the existing wasm/JS tree fields (plus focus) compare
 //   exactly. Boxes compare by testId in their parent's coordinate space:
-//   positions and sizes tolerate 4 CSS px (engines shape
+//   positions and sizes tolerate 4 CSS px (Charlie, 2026-10-07: engines shape
 //   glyphs 1.6-3.3 px apart), scroll offsets 1 px; a wrap moves a box by a
 //   whole line at the pinned line height, so it still fails. Larger
 //   CSS-permitted differences must be named in
@@ -118,12 +117,12 @@ const wasmRoot = resolve(options['--wasm-root']);
 const out = resolve(options['--out']);
 const maxSteps = Number(options['--steps']);
 const crossBrowser = options['--browser'];
-// `--js-from <out>`: an earlier run's JS build of a target (a Chrome run), driven instead of building it
+// `--js-from <out>`: an earlier step's JS build of a target (the lane's Chrome step), driven instead of building it
 // again when it was completed from the same plan, data module and source tree. A cross-browser run names where its
-// JS comes from, so a script that stops passing the Chrome run's builds fails rather than quietly building them again
+// JS comes from, so a lane that stops passing the Chrome run's builds fails rather than quietly building them again
 const jsFrom = options['--js-from'] == null ? null : resolve(options['--js-from']);
 if (crossBrowser != null && !jsFrom && !argv.includes('--build-js')) {
-  console.error(`conform: --browser ${crossBrowser} drives the JS builds of a Chrome run: pass --js-from <that run's --out>, or --build-js to build them here`);
+  console.error(`conform: --browser ${crossBrowser} drives the JS builds of a Chrome run: pass --js-from <that run's --out> (the lane's conform step), or --build-js to build them here`);
   process.exit(2);
 }
 const JS_BUILT = '.conform-js.json';
@@ -180,21 +179,52 @@ function serve(dir) {
 }
 
 // ---------------------------------------------------------------- comparisons
-// A refusal for passing one of the runner's evaluation bounds: every target refuses that step with
+// A refusal for passing one of the runner's evaluation bounds (LLP 1090 D6, D7): every target refuses that step with
 // the same reason, the `Debug` text of the runner's error, a line's prefix being each host's own. Other refusals compare
 // only as refused or not (the steps' state). A refusal repeated by a host's own deliveries counts once: a list's edge
 // is asked again at each report, and the Linux host reports a settling list more often than a page does.
 const BOUND = /Instance\(Trap\((?:IterationLimit|StringTooLong|ValueTooLarge|ValueTooDeep) \{ pc: \d+ \}\)\)|Trap\((?:IterationLimit|StringTooLong|ValueTooLarge|ValueTooDeep) \{ pc: \d+ \}\)|StringTooLong \{ name: "(?:[^"\\]|\\.)*" \}/;
 const boundReasons = lines => lines.flatMap(l => BOUND.exec(l)?.[0] ?? []).filter((r, i, all) => r !== all[i - 1]);
-// The voice table's journal: every `sound …` and `sounds …` line, stamped, the same on every target, and
-// a sequence's `sequence …`, `haptic …` and `haptics …` lines; the JS target never refuses one of its
+// The voice table's journal (LLP 1096 D5): every `sound …` and `sounds …` line, stamped, the same on every target, and
+// a sequence's `sequence …`, `haptic …` and `haptics …` lines (LLP 1125 D3); the JS target never refuses one of its
 // three commands (they are the runtime's own, not a host's).
 const SOUND = /^t=\S+ (?:sounds?|sequence|haptics?) .*$|^t=\S+ midi [^(].*$|refused: (?:playSound|playSounds|stopSounds) .*$/;
 const soundLines = lines => lines.flatMap(l => SOUND.exec(l)?.[0] ?? []);
 // A host's journal since its last read, read once for both filters: a read advances the cursor, so a second read
 // would see none of what the first consumed
 const journal = async S => { const { lines } = await S.logs(); return { bounds: boundReasons(lines), sounds: soundLines(lines) }; };
-const norm = t => t.nodes.map(n => [n.depth ?? 0, n.type, n.props?.testId ?? '', n.props?.text ?? '', n.props?.value ?? '', n.props?.accessibilityLabel ?? '', n.props?.checked ?? '', (n.handlers ?? []).join(' '), n.focused === true ? 'focused' : ''].join('|'));
+// A rendered page caches every tab; a live boot builds a tab on selection (LLP 1075.003 §9.14).
+// Compare what the projection shows. An inactive page behind a sheet can still be visible.
+async function comparisonTree(session) {
+  const tree = await session.tree(), hidden = tree.nodes.filter(n => n.hidden).map(n => n.id);
+  if (!hidden.length) return tree;
+  // Projection-hidden flags propagate even when a descendant overrides visibility:hidden.
+  const visible = new Set(await session.carrier.evaluate(`(() => {
+    // A folded text is \`display: contents\` (host/web/src/element.rs, \`folds\`): it has no box, so checkVisibility()
+    // is false while its words paint. They paint when they have line boxes, its visibility is visible, and the
+    // nearest box around it is rendered and does not skip its contents (content-visibility: hidden).
+    const shown = el => {
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      if (style.display !== 'contents') return el.checkVisibility({ visibilityProperty: true });
+      let box = el.parentElement;
+      while (box && getComputedStyle(box).display === 'contents') box = box.parentElement;
+      if (!box?.checkVisibility() || getComputedStyle(box).contentVisibility === 'hidden') return false;
+      return [...el.childNodes].some(child => child.nodeType === Node.ELEMENT_NODE ? shown(child)
+        : child.nodeType === Node.TEXT_NODE && style.visibility === 'visible' && (() => {
+          const words = document.createRange(); words.selectNodeContents(child); return words.getClientRects().length > 0;
+        })());
+    };
+    const painted = new Set([...document.querySelectorAll('[data-flow-fragment] *')]
+      .filter(el => el.exactFlowOriginal && shown(el)).map(el => el.exactFlowOriginal));
+    return (${JSON.stringify(hidden)}).filter(id => {
+      const el = exact.views.get(id);
+      return shown(el) || painted.has(el);
+    });
+  })()`));
+  return { ...tree, nodes: tree.nodes.map(n => n.hidden && visible.has(n.id) ? { ...n, hidden: false } : n) };
+}
+const norm = t => t.nodes.filter(n => !n.hidden).map(n => [n.depth ?? 0, n.type, n.props?.testId ?? '', n.props?.text ?? '', n.props?.value ?? '', n.props?.accessibilityLabel ?? '', n.props?.checked ?? '', (n.handlers ?? []).join(' '), n.focused === true ? 'focused' : ''].join('|'));
 function diffLists(a, b, what, other = 'js', reference = 'wasm') {
   const out = [];
   for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) { out.push(`${what} #${i}: ${reference} «${a[i] ?? '—'}» ${other} «${b[i] ?? '—'}»`); if (out.length >= 4) { out.push(`${what}: … (${a.length} vs ${b.length} entries)`); break; } }
@@ -215,9 +245,10 @@ function diffJSONFields(a, b, path, out, other, reference) {
 }
 function boxes(l, tree, relative) {
   const raw = new Map(l.nodes.map(n => [n.id, n])), parent = new Map();
+  const hidden = new Set((tree?.nodes ?? []).filter(n => n.hidden).map(n => n.id));
   for (const n of tree?.nodes ?? []) for (const child of n.children ?? []) parent.set(child, n.id);
   const m = new Map();
-  for (const n of l.nodes) if (n.testId && !m.has(n.testId)) {
+  for (const n of l.nodes) if (n.testId && !hidden.has(n.id) && !m.has(n.testId)) {
     const p = raw.get(parent.get(n.id));
     m.set(n.testId, relative && p ? { ...n, x: n.x - p.x + (p.sx ?? 0), y: n.y - p.y + (p.sy ?? 0) } : n);
   }
@@ -231,7 +262,7 @@ function diffLayout(a, b, treeA, treeB, relative = false, reference = 'wasm', ot
     for (const k of ['x', 'y', 'w', 'h', 'sx', 'sy']) {
       if (!(k in x) && !(k in y)) continue;
       // Cross-browser (relative) geometry is each box against its parent, within 4 px either way: engines
-      // shape glyphs 1.6–3.3 px apart. A wrap moves a box by a line (19.2 px for 16 px
+      // shape glyphs 1.6–3.3 px apart (Charlie, 2026-10-07). A wrap moves a box by a line (19.2 px for 16 px
       // text at the pinned line-height 1.2; less for small authored text) and fails; scroll offsets stay at 1 px;
       // Chrome conformance stays at 0.5 px.
       const d = Math.abs((x[k] ?? 0) - (y[k] ?? 0)), tolerance = relative ? (k === 'sx' || k === 'sy' ? 1 : 4) : 0.5;
@@ -262,7 +293,7 @@ function diffPng(a, b, sideBySide, masks = []) {
 }
 // The document's head too: the active head's fields, as every runner reports them (runner/src/head.rs).
 const STATE_KEYS = ['slots', 'derives', 'resources', 'writes', 'head', 'reorder', 'sounds', 'transport', 'midi', 'sessionCore'];
-// The media session by testId (each target numbers its views its own way) and the artwork's path (each
+// The media session (LLP 1098 D10) by testId (each target numbers its views its own way) and the artwork's path (each
 // page has its own port): what every host records (`sessionCore`, Linux's too), and what the pages publish (`session`).
 const addSession = s => {
   const m = s?.mediaSession; if (!m) return;
@@ -309,8 +340,8 @@ async function target(t, report) {
     return;
   }
   // An app's wasm page is served from here and opened by its address, so the driver has no dist to check, as it checks
-  // a synthetic plan's (`webDist`). One older than its sources is refused here by the driver's rule
-  // (agent-launch.mjs): both pages would be the app as it was built, the JS build being of the dist's plan.
+  // a synthetic plan's (`webDist`). One older than its sources is refused here by the driver's rule (agent-launch.mjs;
+  // LLP 1012.001.000 D1): both pages would be the app as it was built, the JS build being of the dist's plan.
   if (!t.contract && !crossBrowser) try { refuseStale('web', resolve(t.wasm, '.exact-build.json'), webChanges(t.wasm, resolveApp(t.app)).all, 'conform.mjs with --build'); } catch (e) { return fail('wasm-open', e.message); }
   const plan = t.contract ? t.plan : resolve(t.wasm, 'app.plan');
   const inputs = { plan: fileDigest(plan), data: fileDigest(resolve(t.wasm, '.exact-build.json')), source: sourceTree };
@@ -384,7 +415,7 @@ async function drive(t, report, fail, dir, ws, js) {
       catch (e) { fail('linux-open', e.message.split('\n').filter(l => !/^crash report/.test(l)).slice(0, 4).join(' ').slice(0, 400)); }
       // A page fact the web answers apart under the agent: it refuses a picture
       // in a share, so `canSharePictures` is false there and true on a native
-      // host's substitute. The Linux reference takes the pages'
+      // host's substitute (LLP 1125 D12). The Linux reference takes the pages'
       // answer, as `prefer` sets it on every host. (`navigationType` differs
       // too, "navigate" against a native launch's "", rightly; it is not
       // compared.)
@@ -415,6 +446,7 @@ async function drive(t, report, fail, dir, ws, js) {
     const compare = async step => {
       let st = 0;
       let linuxLayout = null;
+      let linuxTree = null;
       let linuxReport = null;
       driveAt = `${step} state`;
       const [sw, sj] = await pair(() => W.state(), () => J.state().catch(e => ({ error: e.message })));
@@ -428,7 +460,7 @@ async function drive(t, report, fail, dir, ws, js) {
         o.forEach(x => fail(step, x.what, x.field)); st += o.length;
       } else { const o = []; for (const k of [...STATE_KEYS, 'session']) diffJSON(sw[k], sj[k], k, o, other, reference); o.forEach(x => differ(step, 'state ' + x)); st += o.length; }
       driveAt = `${step} tree`;
-      const [tw, tj] = await pair(() => W.tree(), () => J.tree());
+      const [tw, tj] = await pair(() => comparisonTree(W), () => comparisonTree(J));
       const o2 = diffLists(norm(tw), norm(tj), 'tree', other, reference); o2.forEach((x, i) => differ(step, x, crossBrowser ? `tree.${i}` : null)); st += o2.length;
       await onLinux(step, async L => {
         const [sl, tl] = await Promise.all([L.state(), L.tree()]), o = [];
@@ -437,7 +469,7 @@ async function drive(t, report, fail, dir, ws, js) {
         const apart = LINUX_APART[t.name], own = (k, s) => (k === 'slots' ? withoutSlots(apart, s) : s);
         for (const k of STATE_KEYS) diffJSON(own(k, sw[k]), own(k, sl[k]), k, o, 'linux');
         if (!linux.stateOnly) o.push(...diffLists(norm(tw), norm(tl), 'tree', 'linux').slice(0, 4));
-        if (linux.layout) linuxLayout = await L.layout();
+        if (linux.layout) { linuxLayout = await L.layout(); linuxTree = tl; }
         o.forEach(x => fail(step, 'linux ' + x));
         linuxReport = { target: t.name, step, reference: 'linux', differences: o.length };
         report.steps.push(linuxReport);
@@ -450,7 +482,7 @@ async function drive(t, report, fail, dir, ws, js) {
       const o3 = diffLayout(lw, lj, tw, tj, !!crossBrowser, reference, other, documentW, documentJ); o3.forEach(x => differ(step, x.what, crossBrowser ? x.field : null)); st += o3.length;
       if (crossBrowser) report.targets[t.name].maxLayoutDelta = Math.max(report.targets[t.name].maxLayoutDelta ?? 0, o3.maxDelta);
       if (linuxLayout) {
-        const ol = diffLayout(lw, linuxLayout, tw, null, false, reference, 'kernel');
+        const ol = diffLayout(lw, linuxLayout, tw, linuxTree, false, reference, 'kernel');
         ol.forEach(x => fail(step, x.what));
         st += ol.length;
         linuxReport.differences += ol.length;
@@ -476,7 +508,7 @@ async function drive(t, report, fail, dir, ws, js) {
       const still = `document.getElementById('conform-still') || document.head.insertAdjacentHTML('beforeend', '<style id=conform-still>img{image-rendering:pixelated!important}</style>'); new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`;
       await pair(() => W.carrier?.evaluate(still).catch(() => {}), () => J.carrier?.evaluate(still).catch(() => {}));
       // Each picture is the clock's, a transition where it stands, as a film's frame is (a plain
-      // screenshot shows one where it ends, which the wasm target's does not).
+      // screenshot shows one where it ends, LLP 1116.003 D8, which the wasm target's does not).
       if (crossBrowser) {
         // Preserve the other engine's picture even when Chrome's oracle
         // cannot capture (for example a broken GPU process on Linux).
@@ -500,12 +532,12 @@ async function drive(t, report, fail, dir, ws, js) {
     // <target> <dx> <dy> [ms]` (a finger: down, a move over ms of real time,
     // up; a pan or a swipe; `… hold <ms>` holds before the lift, an
     // autoscrolling drag), `drag <target> to <target> [ms]` (it ends on the
-    // other node's middle), `pinch <target> <scale>` (two fingers), `down
+    // other node's middle, LLP 1094 D12), `pinch <target> <scale>` (two fingers), `down
     // <target>`, `move <dx> <dy> [ms]` and `up` (a held contact: press feedback), `prefer <fact>
-    // <value> …` (the device facts: media, page, the fold — at
+    // <value> …` (the device facts: media, page, the fold — LLP 1078 D9's
     // parity, Chromium's own segments on both pages and the kernel's on
     // Linux), `mediasession <target> <action> [seconds]` (the platform's
-    // media session action) — each compared after both settle.
+    // media session action, LLP 1098 D10) — each compared after both settle.
     const script = resolve(here, 'conformance', `${t.urls ? t.app : t.name.replace(/^synthetic-/, '')}.steps`);
     // A page whose settle still owes a list's reader a scroll event is compared too soon: that fails the step.
     // One clock operation on every target: answered, or refused alike with `Poisoned` (a poisoned runner refuses
@@ -636,7 +668,7 @@ async function drive(t, report, fail, dir, ws, js) {
   }
 }
 
-// ---------------------------------------------------------------- activation
+// ---------------------------------------------------------------- activation (LLP 1071 D6)
 // A served page as a reader opens it (no `?agent`, no input): first paint
 // runs no module script; `eager` (undeclared) preloads the entry from the
 // head and adopts after the first paint, `idle` after `load`; an
@@ -698,7 +730,7 @@ async function activation(t, report, fail, url, browser) {
   }
 }
 
-// ---------------------------------------------------------------- the boot document
+// ---------------------------------------------------------------- the boot document (LLP 1048.005)
 // A route with `paint=boot`, served by its data app's render entry: the
 // reader presses a button and types in a field on the boot document, before
 // the settled page arrives (a pass-through holds everything after the boot
@@ -791,13 +823,13 @@ const LINUX_OPS = ['tap', 'type', 'key', 'clock', 'prefer', 'drag', 'down', 'mov
 const LINUX_APART = {
   caltrain: ['tap open-deck', 'its deck screen is an iframe, whose load and message only a browser delivers'],
   'markdown-stress': ['tap toggle-single', "its editor's selection report (formats, links) is the web's markup editor's, which the Linux host's text field does not make"],
-  'native-fixture': [null, 'its views are native modules, which the web and Apple hosts load and the Linux host does not'],
-  'photo-editor': [null, 'its editor is a native module, which the web and Apple hosts load and the Linux host does not'],
+  'native-fixture': [null, 'its views are native modules (LLP 1024), which the web and Apple hosts load and the Linux host does not'],
+  'photo-editor': [null, 'its editor is a native module (LLP 1024), which the web and Apple hosts load and the Linux host does not'],
   'interaction-gallery': ['drag sheet-handle 0 -150 300', "the sheet's full stop is its bay's height (`frame`), under three rows of 12 px buttons whose text each host sets in its own sans: Chrome's system-ui, and on macOS the Linux host's Arial (text/fonts.rs, no fontconfig), a row 1 px shorter, so 521 against the page's 518"],
   'synthetic-iframes': ['tap show', 'the Linux host loads no iframe, whose load and message only a browser delivers'],
   'synthetic-decorations': { slots: ['sizes'], why: "rangeFrame's sizes are each host's fonts' (wasm and JS compare them; Linux's are pinned in host/linux's range_frame_tests.rs)" },
-  'synthetic-user-select-all': ['tap path', "Linux has no text selection on a `text` (`user-select: all` is `auto` there), so `selectionchange` never fires and the path stays empty (docs/contract-grammar.md, text selection)", { slot: 'path', value: '' }],
-  'synthetic-native-buttons': ['tap open-dialog', 'the Linux host does not present dialogs: it refuses a `commandfor` press, so the opener keeps the focus'],
+  'synthetic-user-select-all': ['tap path', "Linux has no text selection on a `text` (`user-select: all` is `auto` there, declared in LLP 1001), so `selectionchange` never fires and the path stays empty (docs/contract-grammar.md, text selection)", { slot: 'path', value: '' }],
+  'synthetic-native-buttons': ['tap open-dialog', 'the Linux host does not present dialogs (LLP 1001, LLP 1021 D2): it refuses a `commandfor` press, so the opener keeps the focus'],
 };
 const linuxCrate = app => { const f = resolve(root, 'apps', app, 'linux', 'Cargo.toml'); return existsSync(f) ? /^name\s*=\s*"([^"]+)"/m.exec(readFileSync(f, 'utf8'))?.[1] : null; };
 function linuxFor(t) {
@@ -831,7 +863,7 @@ const sdir = resolve(here, 'conformance');
 // A named target that is a fixture here — `conformance/<name>.contract`, or a
 // directory holding `app.contract` — is a synthetic plan, not an app:
 // `conform.mjs segments --linux` drives contract/corpus/segments.contract
-// (its link) on the data app's wasm root.
+// (its link) on the data app's wasm root (LLP 1078 D9).
 const fixtureFile = n => existsSync(resolve(sdir, n, 'app.contract')) ? `${n}/app.contract` : lstatSync(resolve(sdir, `${n}.contract`), { throwIfNoEntry: false }) ? `${n}.contract` : null;
 const fixtures = urls >= 0 ? [] : named.filter(n => fixtureFile(n));
 const apps = urls >= 0 || only ? [] : named.length ? named.filter(n => !fixtureFile(n)) : readdirSync(wasmRoot).filter(a => existsSync(resolve(wasmRoot, a, 'app.plan')));
@@ -946,7 +978,7 @@ for (const t of targets) {
 lines.push('', '## Failures', '');
 for (const [t, fs] of Object.entries(byTarget)) { lines.push(`### ${t}`); for (const f of fs) lines.push(`- **${f.step}** — ${f.what}`); lines.push(''); }
 for (const reason of new Set(marked.map(([, m]) => m.reason))) {
-  lines.push(`## Marked: ${reason}`, '', 'Interim: these wasm-vs-JS differences are recorded and counted, not failures; any other failure on these targets still fails.', '');
+  lines.push(`## Marked: ${reason}`, '', 'Interim (theme2 + the lead, 2026-10-30): these wasm-vs-JS differences are recorded and counted, not failures; any other failure on these targets still fails.', '');
   for (const [t, m] of marked.filter(([, m]) => m.reason === reason)) {
     lines.push(`### ${t} — ${m.differences} difference${m.differences === 1 ? '' : 's'} over ${m.steps.length} step${m.steps.length === 1 ? '' : 's'}`);
     for (const l of m.lines.slice(0, 5)) lines.push(`- ${l.replace(/\s+/g, ' ').slice(0, 300)}`);

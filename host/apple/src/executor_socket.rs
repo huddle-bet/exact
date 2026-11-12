@@ -1,4 +1,4 @@
-//! A resource's two-way socket, natively, over ibex2's
+//! A resource's two-way socket, natively (LLP 1016.000 D7), over ibex2's
 //! WebSocket transport (URLSession on Apple, the portable one elsewhere).
 //! Its reader delivers `open`, then every frame in arrival order, text or
 //! binary, never coalesced, and ends with the closing handshake's code and
@@ -7,7 +7,7 @@
 //! stream refused after the frames already queued. A mutation's or a
 //! mapper call's batch ([`exact_runner::SocketSend`]) is checked whole,
 //! then sent in order.
-use super::super::{complete, failed, has_ready, wake, Completed, Core, Shared};
+use super::super::{complete, failed, has_ready, wake, Completed, Core, Quiet, Shared};
 use exact_runner::{FailureKind, Message, Outcome, SocketOp, SocketSend};
 use ibex2::stdlib::{
     abort::AbortController,
@@ -15,12 +15,12 @@ use ibex2::stdlib::{
 };
 use std::sync::Arc;
 
-/// Undelivered frames a socket may hold.
+/// Undelivered frames a socket may hold (D7).
 const RECEIVE_FRAMES: usize = 256;
-/// Bytes allowed beyond the stream's per-message ceiling.
+/// Bytes allowed beyond the stream's per-message ceiling (D7).
 const RECEIVE_BYTES: usize = 1 << 20;
 /// What one batch and the transport's buffer may hold together:
-/// bytes, and frames, the bound past which both ibex2 transports close
+/// bytes (D7), and frames, the bound past which both ibex2 transports close
 /// the connection rather than queue (WHATWG's "full").
 const SEND_BYTES: usize = 1 << 20;
 const SEND_FRAMES: usize = 256;
@@ -107,6 +107,7 @@ pub(super) fn read(
     mut socket: Box<dyn MessageSource>,
     limit: usize,
     abort: AbortController,
+    quiet: Option<Quiet>,
 ) {
     if let Some(sender) = socket.sender() {
         let socket = Socket {
@@ -119,6 +120,7 @@ pub(super) fn read(
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let open = Message {
             event: "open".into(),
+            protocol: socket.protocol().into(),
             ..Message::default()
         };
         if matches!(frame(shared, ticket, open, limit), Frame::Gone) {
@@ -128,9 +130,11 @@ pub(super) fn read(
             let m = match socket.next_event() {
                 Ok(Event::Message(ibex2::stdlib::websocket::Message::Text(data))) => Message {
                     data,
+                    protocol: socket.protocol().into(),
                     ..Message::default()
                 },
                 Ok(Event::Message(ibex2::stdlib::websocket::Message::Binary(bytes))) => Message {
+                    protocol: socket.protocol().into(),
                     binary: Some(bytes),
                     ..Message::default()
                 },
@@ -159,6 +163,9 @@ pub(super) fn read(
                 }
                 Err(e) => return failed(FailureKind::Network, e.to_string()),
             };
+            if let Some(quiet) = &quiet {
+                quiet.heard();
+            }
             match frame(shared, ticket, m, limit) {
                 Frame::Queued => {}
                 // Released, its close on the way: frames are dropped, and the
@@ -176,6 +183,8 @@ pub(super) fn read(
         }
     }))
     .unwrap_or_else(|_| failed(FailureKind::Aborted, "the stream reader panicked"));
+    // Its end is settled before the socket is taken down, which may take a while.
+    let run = Quiet::finish(quiet.as_ref(), run);
     shared.sockets.lock().unwrap().remove(&ticket);
     drop(socket);
     complete(shared, ticket, run);
@@ -224,6 +233,8 @@ fn frame(shared: &Shared, ticket: u64, message: Message, limit: usize) -> Frame 
     }
     exact_runner::stream_timing::received(ticket);
     state.completed[lane].push_back(Completed {
+        cached: false,
+        finished_at: std::time::Instant::now(),
         elapsed_ms,
         ticket,
         outcome: Outcome::Message(message),
@@ -242,7 +253,7 @@ fn frame(shared: &Shared, ticket: u64, message: Message, limit: usize) -> Frame 
 
 impl Core {
     /// Each listener's address and open connections, by its stream ticket,
-    /// read live.
+    /// read live (LLP 1133.005 D12).
     pub(crate) fn listen_reader(&self) -> exact_runner::listen::ListenReader {
         super::listen::reader(self.shared.clone())
     }
@@ -255,7 +266,7 @@ impl Core {
             let sockets = shared.sockets.lock().unwrap();
             (sockets.get(&ticket))
                 .map(|socket| socket.sender.buffered_amount() as u64)
-                // A child's stdin queue.
+                // A child's stdin queue (LLP 1133.007 D2).
                 .or_else(|| super::super::process::queued(&shared, ticket))
         })
     }
@@ -266,7 +277,7 @@ impl Core {
     /// or nothing is sent. For each socket, the frames it accepted and the
     /// bytes it now buffers.
     pub(crate) fn socket(&self, batch: &SocketSend) -> Result<Vec<(u64, u64, u64)>, String> {
-        // A listener's, by connection.
+        // A listener's, by connection (LLP 1133.005 D6).
         if batch.ops.iter().any(|(_, _, op)| op.connection().is_some()) {
             return super::listen::send(&self.shared, batch);
         }
@@ -279,7 +290,7 @@ impl Core {
                 return Err(not_open());
             }
         }
-        // A child's operations are its supervisor's; the
+        // A child's operations are its supervisor's (LLP 1133.007 D2); the
         // batch is checked whole before any of either kind goes.
         let (children, ops): (Vec<_>, Vec<_>) = (batch.ops.iter())
             .map(|(ticket, _, op)| (*ticket, op))

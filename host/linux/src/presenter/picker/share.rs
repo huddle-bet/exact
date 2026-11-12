@@ -1,4 +1,4 @@
-//! A share received by the Linux host. No Linux
+//! A share received by the Linux host (LLP 1133.024 D5, D9). No Linux
 //! desktop's share sheet reaches it, so there only the driver's `share:`
 //! form arrives; on Android the reader's share sheet does (`Shares.kt`).
 //! Each takes the claim path a received share takes on every host: the
@@ -35,7 +35,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// A share the Android reader received while the app runs
-    /// (`Native.share`): its location goes to the navigation root's
+    /// (`Native.share`, D5): its location goes to the navigation root's
     /// `navigate`, as a link's does.
     #[cfg(target_os = "android")]
     pub(crate) fn receive_platform_share(
@@ -107,8 +107,12 @@ impl<D: DataSource> Presenter<D> {
                 .iter_mut()
                 .filter(|f| f.mime.starts_with("image/"))
             {
-                let size = crate::picker::resolve(&f.path)
-                    .and_then(|p| std::fs::read(p).ok())
+                let size = crate::picker::open(&f.path)
+                    .and_then(|mut file| {
+                        let mut bytes = Vec::new();
+                        std::io::Read::read_to_end(&mut file, &mut bytes).ok()?;
+                        Some(bytes)
+                    })
                     .and_then(|b| crate::picker::dimensions(&b));
                 (f.width, f.height) = size.map_or((None, None), |(w, h)| (Some(w), Some(h)));
             }

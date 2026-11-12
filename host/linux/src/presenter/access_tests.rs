@@ -1,4 +1,4 @@
-//! The accessibility tree a shell is told, against a
+//! The accessibility tree a shell is told (LLP 1115.001 D13), against a
 //! stand-in for Android's reader: what Shelf's screens are in the order a
 //! person reads, what a node's identity outlives, what an open surface
 //! leaves of the page, a hosted field's place, what a statement says
@@ -62,7 +62,7 @@ impl DataSource for Data {
 
 const SHELF: &str = include_str!("../../../../apps/shelf/app.contract");
 
-/// A heading, a level with no heading's role (text), a
+/// A heading, a level with no heading's role (text, LLP 1115.000 D12.5), a
 /// checkbox, a switch, a slider, a toggle, a status line the button changes,
 /// a link, a named image, words hidden from assistive technology, a
 /// disabled button, and a field.
@@ -361,7 +361,7 @@ fn shelfs_library_is_read_bar_then_page_then_navigation_bar() {
     );
     assert_eq!(nodes[2].value, "Search", "a hosted field's placeholder");
     // The page: the filter's tabs, which stand over the list and are no
-    // row of it, then the list, a scroller that can go
+    // row of it (LLP 1115.000 D16), then the list, a scroller that can go
     // on and holds each row that shows, a row one node named by its words,
     // which opens and has a menu.
     let filter = &nodes[3];
@@ -473,6 +473,86 @@ fn a_control_is_its_kind_with_its_state_and_what_is_hidden_is_no_node() {
     );
     assert_eq!(field.view, id(&p, "name"));
     assert_eq!(nodes.last().unwrap().id, field.id, "last, as it is written");
+}
+
+#[test]
+fn a_virtual_rows_position_stays_in_its_subtree() {
+    let source = format!(
+        "{ROWS}{}",
+        r#"      button press=pick(-1) height=40
+        text "Done"
+      text "Footer" height=20
+"#
+    );
+    let mut p = boot(&source, (320., 480.), 0);
+    let port = id(&p, "port");
+    for offset in [0.0, 80.0, 8000.0, 0.0] {
+        p.scroll_to(port, (0.0, offset)).unwrap();
+        settle(&mut p);
+        let nodes = read(&mut p);
+        let list = nodes.iter().find(|n| n.view == port).unwrap();
+        let rows: Vec<_> = nodes.iter().filter(|n| n.parent == list.id).collect();
+        assert!(!rows.is_empty());
+        for row in rows {
+            let number: i32 = row.name.strip_prefix("Row ").unwrap().parse().unwrap();
+            assert_eq!((row.role, row.set), (role::BUTTON, (number + 1, 400)));
+        }
+        let done = named(&nodes, "Done");
+        assert_eq!(
+            (done.role, done.parent, done.set),
+            (role::BUTTON, 0, (0, 0))
+        );
+        let footer = named(&nodes, "Footer");
+        assert_eq!(
+            (footer.role, footer.parent, footer.set),
+            (role::TEXT, 0, (0, 0))
+        );
+    }
+}
+
+#[test]
+fn an_explicit_position_restores_the_pending_ancestor_position() {
+    let mut p = boot(
+        r#"component App
+  view
+    column
+      column testId="outer"
+        text "" testId="empty"
+        text "Inner" testId="inner"
+        column
+          text "Outer first"
+          text "Outer second"
+      text "After"
+"#,
+        (320., 480.),
+        0,
+    );
+    for (name, at, size) in [("outer", 2, 5), ("empty", 4, 9), ("inner", 3, 7)] {
+        let node = id(&p, name);
+        p.host.apply_test_ops(&[
+            exact_kernel::Op::SetProp {
+                id: node,
+                prop: PropId::AccessibilityPosInSet,
+                value: exact_kernel::PropValue::Int(at),
+            },
+            exact_kernel::Op::SetProp {
+                id: node,
+                prop: PropId::AccessibilitySetSize,
+                value: exact_kernel::PropValue::Int(size),
+            },
+        ]);
+    }
+    let nodes = read(&mut p);
+    let places: Vec<_> = nodes.iter().map(|n| (n.name.as_str(), n.set)).collect();
+    assert_eq!(
+        places,
+        [
+            ("Inner", (3, 7)),
+            ("Outer first", (2, 5)),
+            ("Outer second", (0, 0)),
+            ("After", (0, 0)),
+        ]
+    );
 }
 
 #[test]
@@ -874,7 +954,7 @@ fn inline_controls_keep_their_labels_geometry_and_native_actions() {
         .any(|line| line.contains("openURL https://example.com/docs")));
 }
 
-/// A table is ARIA's table of a caption and rows of cells,
+/// LLP 1153 D7.3: a table is ARIA's table of a caption and rows of cells,
 /// a `th` its column's or its row's header by its `scope`, and a `dl` a
 /// description list of terms and definitions; each holds its words.
 #[test]
@@ -911,4 +991,41 @@ fn a_table_and_a_description_list_are_their_roles() {
     assert_eq!(parent("Tackle").map(|n| n.role), Some(role::ROW_HEADER));
     assert_eq!(parent("40").map(|n| n.role), Some(role::CELL));
     assert_eq!(parent("Electric").map(|n| n.role), Some(role::DEFINITION));
+}
+
+/// A Markdown text is read as its reader draws it (LLP 1045,
+/// "Accessibility"): syntax hidden, a link by its text, a footnote by its
+/// `[n]`, a rule by its line, and an atom, which this reader draws as its
+/// source, by its source; a Markdown text whose words are its runs is read
+/// by them.
+#[test]
+fn a_markdown_text_is_read_as_its_reader_draws_it() {
+    let faces = r#"[AtomFace(source="@x", label="x.png", icon="", title="", color="", backgroundColor="", direction="", ariaLabel="Image attachment")]"#;
+    let source = format!(
+        "atom mention prefix=\"@\"\n\ncomponent App\n  derive faces = {faces}\n  view\n    column width=320 height=600\n{}",
+        [
+            r#"text "**Bold** and *italic*" markup="markdown""#,
+            r##"text "# Title\n\nSee [the docs](https://example.com) and `code`." markup="markdown""##,
+            r#"text "End[^1].\n\n[^1]: Note." markup="markdown""#,
+            r#"text "---" markup="markdown""#,
+            r#"text "**see** @x ok" markup="markdown" atoms="mention" atomFaces=faces"#,
+            "text markup=\"markdown\"\n        text \"Hello\"",
+        ]
+        .map(|line| format!("      {line}\n"))
+        .concat()
+    );
+    let mut p = boot(&source, (320., 600.), 0);
+    let nodes = read(&mut p);
+    for name in [
+        "Bold and italic",
+        "End[1].\n\n[1] Note.",
+        "──────────",
+        "see @x ok",
+        "Hello",
+    ] {
+        named(&nodes, name);
+    }
+    assert!(nodes
+        .iter()
+        .any(|n| n.name.starts_with("Title") && n.name.ends_with("See the docs and code.")));
 }

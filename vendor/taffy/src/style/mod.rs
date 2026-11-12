@@ -315,7 +315,7 @@ impl Default for BoxGenerationMode {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Position {
-    /// EXACT PATCH 20: CSS `position: static`. The box is laid out in flow, its
+    /// EXACT PATCH 20 (LLP 1074 T1): CSS `position: static`. The box is laid out in flow, its
     /// insets do nothing, and it is not the containing block of an absolutely positioned
     /// descendant: the nearest ancestor that is not `Static` is (see
     /// [`LayoutPartialTree::hoisted_absolute`](crate::LayoutPartialTree::hoisted_absolute)).
@@ -1245,6 +1245,10 @@ impl<S: CheapCloneStr> GridContainerStyle for Style<S> {
         self.grid_auto_flow
     }
     #[inline(always)]
+    fn grid_line_limit(&self) -> u16 {
+        self.rare.grid_line_limit
+    }
+    #[inline(always)]
     fn gap(&self) -> Size<LengthPercentage> {
         self.gap
     }
@@ -1351,6 +1355,10 @@ impl<T: GridContainerStyle> GridContainerStyle for &'_ T {
     #[inline(always)]
     fn grid_template_area_column_count(&self) -> u16 {
         (*self).grid_template_area_column_count()
+    }
+    #[inline(always)]
+    fn grid_line_limit(&self) -> u16 {
+        (*self).grid_line_limit()
     }
     #[cfg(feature = "grid")]
     #[inline(always)]

@@ -1,5 +1,5 @@
 //! Compiler-owned navigation and refusal hints over the authored source.
-//! JSON queries, ahead of any editor protocol, and diagnostics.
+//! @ref LLP 1035.005 D2 — JSON queries before an editor protocol; LLP 1006 §3 — diagnostics.
 
 use crate::{
     sources::{self, Sources},
@@ -8,7 +8,18 @@ use crate::{
 use contract_syntax::scope::Kind;
 use contract_syntax::*;
 use contract_types::{Ref, Scope, Ty, Types};
-use std::{collections::BTreeMap, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Write,
+    path::Path,
+};
+
+mod partial;
+
+/// A component's members, in the namespace its expressions read.
+const MEMBERS: [&str; 7] = [
+    "prop", "inject", "state", "derive", "resource", "mutation", "action",
+];
 
 struct Definition {
     kind: &'static str,
@@ -17,7 +28,7 @@ struct Definition {
     component: Option<String>,
     owner: Option<String>,
     /// An action's inferred effects, in its component's slot order
-    /// What `writes` used to restate.
+    /// (LLP 1035.005.000 D1): what `writes` used to restate.
     writes: Option<Vec<String>>,
 }
 struct Reference {
@@ -34,6 +45,12 @@ struct Graph {
     // temporary component/owner/name Strings for every lookup.
     index: BTreeMap<&'static str, BTreeMap<String, Owners>>,
     ids: BTreeMap<String, Vec<usize>>,
+    /// Definitions that share their namespace and name with another, which
+    /// only a refused program has: no reference to one is resolved.
+    ambiguous: BTreeSet<usize>,
+    /// What the syntax refused: a reference spelled as one in its scope may
+    /// mean it, so it gets no edge.
+    hidden: Vec<partial::Shadow>,
 }
 impl Graph {
     fn define(
@@ -49,14 +66,14 @@ impl Graph {
         // testId/provide are declarations only. All stay in navigation output,
         // without unused entries in the named-declaration lookup index.
         if !matches!(kind, "local" | "parameter" | "id" | "testId" | "provide") {
-            self.index
-                .entry(kind)
-                .or_default()
+            let names = (self.index.entry(kind).or_default())
                 .entry(component.unwrap_or("").into())
                 .or_default()
                 .entry(owner.unwrap_or("").into())
-                .or_default()
-                .insert(name.into(), index);
+                .or_default();
+            if let Some(first) = names.insert(name.into(), index) {
+                self.ambiguous.extend([first, index]);
+            }
         }
         self.definitions.push(Definition {
             kind,
@@ -78,15 +95,31 @@ impl Graph {
         component: Option<&str>,
         owner: Option<&str>,
     ) -> Option<usize> {
-        self.index
-            .get(kind)?
-            .get(component.unwrap_or(""))?
-            .get(owner.unwrap_or(""))?
-            .get(name)
-            .copied()
+        self.unique(&[kind], name, component, owner)
+    }
+    /// The one definition of `name` among `kinds`, or none when there is
+    /// none or more than one.
+    fn unique(
+        &self,
+        kinds: &[&'static str],
+        name: &str,
+        component: Option<&str>,
+        owner: Option<&str>,
+    ) -> Option<usize> {
+        let mut found = kinds.iter().filter_map(|kind| {
+            self.index
+                .get(kind)?
+                .get(component.unwrap_or(""))?
+                .get(owner.unwrap_or(""))?
+                .get(name)
+                .copied()
+        });
+        let first = found.next()?;
+        (found.next().is_none() && !self.ambiguous.contains(&first)).then_some(first)
     }
     fn refer(&mut self, span: Span, to: usize) {
-        if span != self.definitions[to].span {
+        let target = &self.definitions[to];
+        if span != target.span && !self.hidden.iter().any(|h| h.hides(span, target)) {
             self.references.push(Reference { span, to });
         }
     }
@@ -105,7 +138,7 @@ impl Graph {
             }
         }
     }
-    fn json(&self, sources: &Sources, name: Option<&str>) -> String {
+    fn json(&self, sources: &Sources, name: Option<&str>, errors: &[CompileError]) -> String {
         // Emit the existing graph directly, without cloning every name and
         // filename into a second tree of JSON objects.
         let mut out = Vec::with_capacity(if name.is_some() {
@@ -151,9 +184,25 @@ impl Graph {
             );
             count += 1;
         }
-        out.extend_from_slice(b"]}");
-        String::from_utf8(out).expect("JSON serialization is UTF-8")
+        out.push(b']');
+        close(out, errors)
     }
+}
+
+/// The JSON object begun in `out`, with `errors` when there are any.
+fn close(mut out: Vec<u8>, errors: &[CompileError]) -> String {
+    if !errors.is_empty() {
+        out.extend_from_slice(b",\"errors\":[");
+        for (i, error) in errors.iter().enumerate() {
+            if i != 0 {
+                out.push(b',');
+            }
+            out.extend_from_slice(error.to_json().as_bytes());
+        }
+        out.push(b']');
+    }
+    out.push(b'}');
+    String::from_utf8(out).expect("JSON serialization is UTF-8")
 }
 
 fn write_symbol(
@@ -200,56 +249,106 @@ fn quote(out: &mut Vec<u8>, value: &str) {
     serde_json::to_writer(out, value).expect("writing JSON into a Vec cannot fail");
 }
 
+/// What [`symbols_json`] found in a program it refused.
+#[derive(Debug)]
+pub struct PartialSymbols {
+    /// The JSON, with `errors` after `references`.
+    pub json: String,
+    /// The refusals of loading, the syntax and the type check, in `build`'s
+    /// order.
+    pub errors: Vec<CompileError>,
+}
+
 /// Definitions and references as JSON, with exact original byte ranges.
 /// Uses the build's import policy and type checker. No plan or bake is produced.
 /// Local bindings, parameters and shape fields are included; built-in names have
 /// no authored definition. Repeated ID declarations produce multiple edges.
 /// `name` selects every exact matching declaration and its references, with `to`
 /// indices local to that response. Validation still covers the whole source graph.
-pub fn symbols_json(path: &Path, name: Option<&str>) -> Result<String, CompileError> {
-    let src = std::fs::read_to_string(path).map_err(|e| CompileError {
-        pass: "use",
-        id: "contract-use-unreadable".into(),
-        message: e.to_string(),
-        span: Span::default(),
-        file: Some(path.into()),
-        related: Box::new([]),
-    })?;
-    let root = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .canonicalize()
-        .map_err(|e| CompileError {
+///
+/// A refused program still gives the symbols of what parsed, and no action
+/// carries `writes`. A declaration the syntax refused is absent, as is every
+/// reference in its scope spelled as its name; so is a reference to a name
+/// declared twice in one namespace. When the type check refused, a reference
+/// that needs an inferred type (a field read through a value, an action
+/// value called) has no edge, nor does one to a shape or function the check
+/// refused. When loading stops, each file that parsed is read on its own.
+pub fn symbols_json(path: &Path, name: Option<&str>) -> Result<String, PartialSymbols> {
+    let nothing = |errors: Vec<CompileError>| PartialSymbols {
+        json: close(b"{\"definitions\":[],\"references\":[]".to_vec(), &errors),
+        errors,
+    };
+    let unreadable = |e: std::io::Error| {
+        nothing(vec![CompileError {
             pass: "use",
             id: "contract-use-unreadable".into(),
             message: e.to_string(),
             span: Span::default(),
             file: Some(path.into()),
             related: Box::new([]),
-        })?;
-    let (file, sources) = sources::load(path, &src, &root).map_err(|mut all| all.swap_remove(0))?;
-    let (types, expanded) = if file.components.is_empty() {
-        (
-            Types {
-                shapes: contract_types::check_declarations(&file)
-                    .map_err(|e| sources.resolve(e.into()))?,
-                components: Vec::new(),
-            },
-            None,
-        )
-    } else {
-        let strings = crate::strings::load(&root, path).map_err(|mut all| all.swap_remove(0))?;
-        let checked = contract_types::check_all(&file, false, contract_lower::tags::style, strings)
-            .map_err(|mut all| {
-                sources.resolve(authored_action_hint(&file, all.swap_remove(0).into()))
-            })?;
-        (checked.types, Some(checked.expanded))
+        }])
     };
+    // The text `with_contract_texts` holds for the file (an editor's unsaved
+    // buffer, `symbols --stdin`), else the file's.
+    let src = sources::contract_text(path)
+        .map_or_else(|| std::fs::read_to_string(path), Ok)
+        .map_err(unreadable)?;
+    let root = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .map_err(unreadable)?;
+    // As the build does, the passes after the syntax check what parsed.
+    // Refused tables are reported by the check; recovery reads without them.
+    let strings = crate::strings::load(&root, path);
+    let tables = strings.as_ref().ok().cloned().flatten();
+    let mut refused = sources::Refused::default();
+    let (file, sources) = match sources::load_partial(path, &src, &root, &mut refused) {
+        Ok(loaded) => loaded,
+        Err(all) => {
+            let errors = refused.join::<()>(Err(all)).unwrap_err();
+            let sources = sources::read_all(path, &src, &root);
+            let json = partial::file_by_file(&sources, &tables).json(&sources, name, &errors);
+            return Err(PartialSymbols { json, errors });
+        }
+    };
+    let checked = strings.and_then(|strings| {
+        if file.components.is_empty() {
+            contract_types::check_declarations(&file, strings)
+                .map(|shapes| (shapes, Vec::new(), None))
+                .map_err(|e| vec![sources.resolve(e.into())])
+        } else {
+            contract_types::check_all(&file, false, contract_lower::tags::style, strings)
+                .map(|c| (c.types.shapes, c.types.components, Some(c.expanded)))
+                .map_err(|all| {
+                    (all.into_iter().take(crate::MAX_DIAGNOSTICS))
+                        .map(|e| sources.resolve(authored_action_hint(&file, e.into())))
+                        .collect()
+                })
+        }
+    });
+    let typed = checked.is_ok();
+    let ((shapes, components, expanded), errors) = match checked {
+        Ok(checked) => (checked, refused.join(Ok(())).err().unwrap_or_default()),
+        // A refused check's inferences may be wrong where it refused; its
+        // declarations' types are checked before anything is inferred.
+        Err(all) => (
+            (partial::declared(&file, &tables), Vec::new(), None),
+            refused.join::<()>(Err(all)).unwrap_err(),
+        ),
+    };
+    let types = Types { shapes, components };
     let mut r = Resolver {
         file: &file,
         types: &types,
-        graph: Graph::default(),
+        typed,
+        whole: errors.is_empty(),
+        graph: Graph {
+            hidden: partial::shadows(&file, &refused.hidden),
+            ..Graph::default()
+        },
+        members: None,
         component: None,
         scope: Scope::default(),
         locals: Vec::new(),
@@ -266,19 +365,28 @@ pub fn symbols_json(path: &Path, name: Option<&str>) -> Result<String, CompileEr
             Kind::Keyframes => &["keyframes"],
             Kind::Timeline => &[],
         };
-        for kind in kinds {
-            if let Some(to) = r.graph.find(kind, &import.name, None, None) {
-                r.graph.refer(import.span, to);
-            }
+        if let Some(to) = r.graph.unique(kinds, &import.name, None, None) {
+            r.graph.refer(import.span, to);
         }
     }
     r.file(expanded.as_ref().map(|e| &e.root));
-    Ok(r.graph.json(&sources, name))
+    let json = r.graph.json(&sources, name, &errors);
+    match errors.is_empty() {
+        true => Ok(json),
+        false => Err(PartialSymbols { json, errors }),
+    }
 }
 
 struct Resolver<'a> {
     file: &'a File,
     types: &'a Types,
+    /// Whether the type check accepted the program: `types` holds only its
+    /// declarations' otherwise.
+    typed: bool,
+    /// Whether nothing was refused.
+    whole: bool,
+    /// The component that is a members file's block, read on its own.
+    members: Option<usize>,
     graph: Graph,
     component: Option<&'a Component>,
     scope: Scope,
@@ -288,7 +396,7 @@ struct Resolver<'a> {
 impl<'a> Resolver<'a> {
     fn declarations(&mut self) {
         let names = &self.file.names;
-        // An action writes what the actions it calls write:
+        // An action writes what the actions it calls write (LLP 1089 D5):
         // its effects are read with its component's calls expanded. A prop
         // or inject call writes another component's slots, which no slot
         // of this one is.
@@ -336,8 +444,10 @@ impl<'a> Resolver<'a> {
                 .define("fn", &f.name, names.name(f.span), None, None);
         }
         for (ci, c) in self.file.components.iter().enumerate() {
-            self.graph
-                .define("component", &c.name, names.name(c.span), None, None);
+            if self.members != Some(ci) {
+                self.graph
+                    .define("component", &c.name, names.name(c.span), None, None);
+            }
             let cn = Some(c.name.as_str());
             for (kind, params) in [("prop", &c.props), ("inject", &c.injects)] {
                 for p in params {
@@ -379,6 +489,10 @@ impl<'a> Resolver<'a> {
                 let at =
                     self.graph
                         .define("action", &action.name, names.name(action.span), cn, None);
+                // What a refused line wrote is not among its effects.
+                if !self.whole {
+                    continue;
+                }
                 let effects = called.components[ci].actions[ai].effects();
                 let writes = slots
                     .iter()
@@ -394,13 +508,11 @@ impl<'a> Resolver<'a> {
             self.ids(&c.view, &c.name);
         }
         if let Some(routes) = &self.file.routes {
-            self.graph.define(
-                "state",
-                &routes.slot,
-                names.name(routes.span),
-                Some(&self.file.components[0].name),
-                None,
-            );
+            // A file of routes and no component is refused, and still read.
+            if let Some(first) = self.file.components.first() {
+                let span = names.name(routes.span);
+                (self.graph).define("state", &routes.slot, span, Some(&first.name), None);
+            }
             for route in &routes.rows {
                 self.graph
                     .define("route", &route.name, names.name(route.span), None, None);
@@ -460,26 +572,27 @@ impl<'a> Resolver<'a> {
             self.graph.refer(span, *to);
             return;
         }
+        self.target(&MEMBERS, name, span);
+    }
+    /// The member of `kinds` named `name`, when no other member of the
+    /// component has the name.
+    fn target(&mut self, kinds: &[&'static str], name: &str, span: Span) {
         if let Some(c) = self.component {
-            for kind in [
-                "prop", "inject", "state", "derive", "resource", "mutation", "action",
-            ] {
-                if let Some(to) = self.graph.find(kind, name, Some(&c.name), None) {
+            if let Some(to) = self.graph.unique(&MEMBERS, name, Some(&c.name), None) {
+                if kinds.contains(&self.graph.definitions[to].kind) {
                     self.graph.refer(span, to);
-                    return;
                 }
             }
         }
     }
-    fn target(&mut self, kinds: &[&'static str], name: &str, span: Span) {
-        if let Some(c) = self.component {
-            for kind in kinds {
-                if let Some(to) = self.graph.find(kind, name, Some(&c.name), None) {
-                    self.graph.refer(span, to);
-                    return;
-                }
-            }
+    /// A call's `kind` of callee, when no other shape or `fn` has the name.
+    fn callee(&mut self, kind: &str, name: &str, span: Span) -> bool {
+        let to = self.graph.unique(&["shape", "fn"], name, None, None);
+        let found = to.filter(|&to| self.graph.definitions[to].kind == kind);
+        if let Some(to) = found {
+            self.graph.refer(span, to);
         }
+        found.is_some()
     }
     fn local(&mut self, kind: &'static str, name: &str, span: Span, ty: Ty) {
         let to = self.graph.define(
@@ -509,6 +622,9 @@ impl<'a> Resolver<'a> {
         }
     }
     fn infer(&self, expr: &Expr) -> Ty {
+        if !self.typed {
+            return Ty::Unknown;
+        }
         contract_types::infer(expr, &self.scope, &self.types.shapes).unwrap_or(Ty::Unknown)
     }
     fn file(&mut self, expanded_root: Option<&Component>) {
@@ -525,14 +641,13 @@ impl<'a> Resolver<'a> {
         for f in &self.file.fns {
             self.owner = Some(f.name.clone());
             for p in &f.params {
-                let ty = p.ty.as_ref().expect("checked function parameter");
-                self.ty(ty);
-                self.local(
-                    "parameter",
-                    &p.name,
-                    p.span,
-                    self.types.shapes.resolve(ty).expect("checked type"),
-                );
+                // Unchecked, a parameter may lack a type or name no shape.
+                let mut resolved = Ty::Unknown;
+                if let Some(ty) = &p.ty {
+                    self.ty(ty);
+                    resolved = self.types.shapes.resolve(ty).unwrap_or(Ty::Unknown);
+                }
+                self.local("parameter", &p.name, p.span, resolved);
             }
             self.ty(&f.ret);
             self.expr(&f.body);
@@ -543,14 +658,17 @@ impl<'a> Resolver<'a> {
         }
         for (ci, c) in self.file.components.iter().enumerate() {
             self.component = Some(c);
-            self.scope = self.types.component_scope(
-                if ci == 0 {
-                    expanded_root.expect("component present")
-                } else {
-                    c
-                },
-                &self.types.components[ci],
-            );
+            self.scope = match self.typed {
+                true => self.types.component_scope(
+                    if ci == 0 {
+                        expanded_root.expect("component present")
+                    } else {
+                        c
+                    },
+                    &self.types.components[ci],
+                ),
+                false => Scope::default(),
+            };
             for p in c.props.iter().chain(&c.injects) {
                 if let Some(ty) = &p.ty {
                     self.ty(ty);
@@ -566,7 +684,7 @@ impl<'a> Resolver<'a> {
                     self.expr(arg);
                 }
                 // `empty(…)` is the compiler's constant, not a source
-                //.
+                // (LLP 1054.000.002 D2).
                 if let Some(p) = r
                     .placeholder
                     .as_ref()
@@ -592,14 +710,13 @@ impl<'a> Resolver<'a> {
                     if let Some(ty) = &p.ty {
                         self.ty(ty);
                     }
-                    self.local(
-                        "parameter",
-                        &p.name,
-                        p.span,
-                        self.types.components[ci].actions[ai][pi].clone(),
-                    );
+                    let ty = match self.typed {
+                        true => self.types.components[ci].actions[ai][pi].clone(),
+                        false => Ty::Unknown,
+                    };
+                    self.local("parameter", &p.name, p.span, ty);
                 }
-                // Geometry reads type-check only in an action.
+                // Geometry reads type-check only in an action (LLP 1051.000 D2).
                 self.scope.enter_action();
                 self.stmts(&a.body);
                 self.scope.leave_action();
@@ -631,7 +748,7 @@ impl<'a> Resolver<'a> {
         for stmt in stmts {
             match stmt {
                 // A `let` reads as a local through the rest of its block
-                //.
+                // (LLP 1035.005.000 D2).
                 Stmt::Let { name, expr, span } => {
                     self.expr(expr);
                     let ty = self.infer(expr);
@@ -648,8 +765,8 @@ impl<'a> Resolver<'a> {
                     {
                         self.graph.id(id, *span);
                     }
-                    // A call of an action, an action prop or an inject
-                    // refers to it; a host command keeps its name.
+                    // A call of an action, an action prop or an inject (LLP
+                    // 1089 D1) refers to it; a host command keeps its name.
                     if !contract_syntax::HOST_COMMANDS.contains(&name.as_str()) {
                         self.name(name, self.file.names.name(*span));
                     }
@@ -855,16 +972,17 @@ impl<'a> Resolver<'a> {
             }
             Expr::Call(name, args, span) => {
                 if contract_types::records::is_record_call(name, &self.types.shapes) {
-                    // `Shape(field=…)`: the shape and
+                    // `Shape(field=…)` (LLP 1035.005.000 D3): the shape and
                     // each field it names.
-                    self.refer("shape", name, *span, None, None);
-                    for arg in args {
-                        if let Expr::NamedArg(field, _, at) = arg {
-                            self.refer("field", field, *at, None, Some(name));
+                    if self.callee("shape", name, *span) {
+                        for arg in args {
+                            if let Expr::NamedArg(field, _, at) = arg {
+                                self.refer("field", field, *at, None, Some(name));
+                            }
                         }
                     }
                 } else if self.types.shapes.fns.contains_key(name) {
-                    self.refer("fn", name, *span, None, None);
+                    self.callee("fn", name, *span);
                 } else if name == "path" {
                     if let Some(Expr::Str(route, span)) = args.first() {
                         self.refer("route", route, *span, None, None);
@@ -874,7 +992,7 @@ impl<'a> Resolver<'a> {
                 }
                 for (i, arg) in args.iter().enumerate() {
                     match arg {
-                        // A `map`/`filter` callback's item and index.
+                        // A `map`/`filter` callback's item and index (LLP 1017.003).
                         Expr::Arrow { params, body, span } if i == 1 => {
                             let item = match self.infer(&args[0]) {
                                 Ty::List(t) => *t,
@@ -933,7 +1051,7 @@ impl<'a> Resolver<'a> {
 // can say which action spellings the author can use at a failing handler.
 // Walk it on refusal only; successful compilation does no diagnostic work.
 pub(crate) fn authored_action_hint(file: &File, mut error: CompileError) -> CompileError {
-    // An ambiguous call: the declaration it collides with.
+    // An ambiguous call (LLP 1089 D1): the declaration it collides with.
     if error.id == contract_syntax::inline::calls::Ambiguous::ID {
         let found = contract_syntax::inline::calls::ambiguous(file);
         if let Some(a) = found.into_iter().find(|a| a.span == error.span) {
@@ -989,8 +1107,10 @@ pub(crate) fn authored_action_hint(file: &File, mut error: CompileError) -> Comp
         for candidate in names {
             if shadowed.contains(&candidate)
                 || (call
-                    && (matches!(candidate, "pending" | "failed" | "failure" | "path")
-                        || file.fns.iter().any(|f| f.name == candidate)))
+                    && (matches!(
+                        candidate,
+                        "pending" | "failed" | "failure" | "current" | "path"
+                    ) || file.fns.iter().any(|f| f.name == candidate)))
                 || !contract_syntax::one_spelling_edit(name.as_bytes(), candidate.as_bytes())
             {
                 continue;
@@ -1079,7 +1199,7 @@ pub(crate) fn authored_action_hint(file: &File, mut error: CompileError) -> Comp
         None
     }
     // A provided value is written in the component's `provide` section,
-    // where no view local shadows an action.
+    // where no view local shadows an action (LLP 1035.005.000 D9).
     fn provided(
         file: &File,
         c: &Component,
@@ -1138,7 +1258,7 @@ pub(crate) fn authored_action_hint(file: &File, mut error: CompileError) -> Comp
     }
     /// What the use at `use_span` in `c`'s view is given for `name`: its
     /// argument, or for an inject `c`'s own provided value (a section covers
-    /// the whole view).
+    /// the whole view, LLP 1035.005.000 D9).
     fn supplied<'a>(
         c: &'a Component,
         use_span: Span,

@@ -8,7 +8,8 @@ component-level semantics (`Contract.CompSem`).
 
   * `Subst`: capture-avoiding substitution (subst.rs): a binder whose name
     a replacement mentions is renamed `x@k`.
-  * `renameNodes`: a child's view binders renamed `x#n` (inline.rs).
+  * `renameNodes`: view binders renamed `x#viewN`, with 0 for the root
+    (inline.rs).
   * `resolvedDerives`: a child's derives resolved through one another,
     a dependency read twice on every path bound once by a `let` (derives.rs).
   * `inlineNodes`: uses inlined, props substituted, injects filled from
@@ -16,7 +17,7 @@ component-level semantics (`Contract.CompSem`).
     actions lifted into the root as `name#n` with their owners, props
     captured as hidden action parameters `@capture:n:i` (inline.rs).
   * `ownCalls`, `callMarked`, `resolveCalls`, `hygiene`: action calls
-    (calls.rs). A call stays a `call`, as `contract lean` emits
+    (calls.rs, LLP 1089). A call stays a `call`, as `contract lean` emits
     it; its caller's parameters and binders are renamed as Rust's hygiene
     renames them.
 -/
@@ -126,7 +127,7 @@ structure Subst where
   binders : List (String × Option String) := []
   /-- Whether a call's head is replaced too. -/
   calls : Bool := true
-  /-- States, derives and device resources replace value reads only. -/
+  /-- Value props, injects, states, derives and device resources replace value reads only. -/
   valueOnly : List String := []
   /-- Record constructors: a call naming one keeps its head. -/
   records : List String := []
@@ -613,7 +614,7 @@ def resolvedDerives (c : CComponent) : Except String (List (String × Expr)) := 
 /-! ## Calls (calls.rs, and inline.rs `with_captures`, `call_marked`)
 
 `contract lean` emits a call by its callee and whole argument list, never
-the body Rust expanded, so only what decides those is
+the body Rust expanded (LLP 1089 D9), so only what decides those is
 transcribed here: which statements are calls, the callee's lifted name,
 the arguments, and the names hygiene draws. -/
 
@@ -710,7 +711,7 @@ def binders : List Stmt → Nat
   | .matchS _ _ a b :: rest => 1 + binders a + binders b + binders rest
   | _ :: rest => binders rest
 
-/-- The names the resolver drew for the calls in a block
+/-- The names LLP 1017 §11's resolver drew for the calls in a block
 (calls.rs `drawn`): one for each call's parameters, one for each binder of
 the callee's statements, and its own calls' in turn. A call that does not
 expand (its arity refused) drew one. -/
@@ -745,14 +746,28 @@ def hygiene (records : List String) (actions : List ActionDecl) : TailM (List Ac
 
 /-! ## Inlining (inline.rs) -/
 
-/-- Rename every name a child's view binds with the use's number
-(inline.rs `rename_nodes`): `each` and `match` binders become `x#n`. -/
+/-- Style and surface names are syntax; only their conditions and arguments are values. -/
+def mapAttrValue (f : Expr → Expr) (name : String) (e : Expr) : Expr :=
+  match name, e with
+  | "class", .ternary c a b => .ternary (f c) a b
+  | "surface", .call a args => .call a (args.map f)
+  | "class", _ | "surface", _ => e
+  | _, _ => f e
+
+def mapPositional (f : Expr → Expr) (tag : String) (e : Expr) : Expr :=
+  match tag, e with
+  | "input", .var "switch" | "input", .var "multiple" | "scroll", .var "document" => e
+  | _, _ => f e
+
+/-- View binders differ from lifted declarations so substituted derives
+and provided expressions retain their component's scope (inline.rs `rename_nodes`). -/
 def renameNodes (n : Nat) : SMap → List CNode → List CNode
   | _, [] => []
   | map, nd :: rest =>
     let here := match nd with
       | .element tag pos props hs kids =>
-        .element tag (pos.map (renamedLocals map)) (props.map fun (a, e) => (a, renamedLocals map e))
+        .element tag (pos.map (mapPositional (renamedLocals map) tag))
+          (props.map fun (a, e) => (a, mapAttrValue (renamedLocals map) a e))
           (hs.map fun (ev, a, args) =>
             -- A handler without arguments is a name (an `Ident`), renamed as one.
             let a := if args.isEmpty then
@@ -767,15 +782,15 @@ def renameNodes (n : Nat) : SMap → List CNode → List CNode
       | .children id => .children id
       | .when id c a b => .when id (renamedLocals map c) (renameNodes n map a) (renameNodes n map b)
       | .each id x ix l k body =>
-        let inner := map.insert x (.var s!"{x}#{n}")
+        let inner := map.insert x (.var s!"{x}#view{n}")
         let inner := match ix with
-          | .some i => inner.insert i (.var s!"{i}#{n}")
+          | .some i => inner.insert i (.var s!"{i}#view{n}")
           | .none => inner
-        .each id s!"{x}#{n}" (ix.map fun i => s!"{i}#{n}") (renamedLocals map l)
+        .each id s!"{x}#view{n}" (ix.map fun i => s!"{i}#view{n}") (renamedLocals map l)
           (renamedLocals inner k) (renameNodes n inner body)
       | .matchN id subj x a b =>
-        let inner := map.insert x (.var s!"{x}#{n}")
-        .matchN id (renamedLocals map subj) s!"{x}#{n}" (renameNodes n inner a) (renameNodes n map b)
+        let inner := map.insert x (.var s!"{x}#view{n}")
+        .matchN id (renamedLocals map subj) s!"{x}#view{n}" (renameNodes n inner a) (renameNodes n map b)
     here :: renameNodes n map rest
 
 mutual
@@ -855,12 +870,13 @@ def baseMap (s : Subst) (c : CComponent) (args provides : List (String × Expr))
   let m := insertAll (insertAll (insertAll [] pa) ia) (c.states.map fun st => (st.name, .var (lifted st.name n)))
   pure (insertAll m (c.deviceResources.map fun r => (r.name, .var (hoisted c.name r.name))))
 
-/-- State and device-resource reads leave same-named function calls intact. -/
+/-- Value bindings leave same-named function calls intact. -/
 def valueNames (c : CComponent) : List String :=
-  c.states.map (·.name) ++ c.deviceResources.map (·.name)
+  c.states.map (·.name) ++ c.deviceResources.map (·.name) ++
+    ((c.props ++ c.injects).filter (!·.action)).map (·.name)
 
 /-- The derives, each resolved expression substituted against `m`, inserted
-as value-only bindings, alongside states and device resources. -/
+as value-only bindings, alongside the component's other values. -/
 def withDerives (records values : List String) (m : SMap) (derives : List (String × Expr)) : Subst :=
   let valueOnly := values ++ derives.map (·.1)
   { map := insertAll m (derives.map fun (d, e) => (d, substExpr { map := m, records, valueOnly } e)),
@@ -897,7 +913,7 @@ def inlineNode (p : CProgram) : Nat → Subst → CNode → ExM (List Node)
       let hs ← hs.mapM fun (ev, a, args) => do
         let (a, args) ← substHandler s a args
         pure (ev, a, args)
-      let props := substFields s props
+      let props := props.map fun (a, e) => (a, mapAttrValue (substExpr s) a e)
       let tabs := (← get).tabs
       let panel := tabs && !kids.isEmpty &&
         ((lookupField "role" props).map tabLiteral matches .some (.str "tabpanel")) &&
@@ -910,7 +926,7 @@ def inlineNode (p : CProgram) : Nat → Subst → CNode → ExM (List Node)
           pure [Node.when arm (.bool true) body []]
         else inlineNodes p fuel s kids
       modify fun ctx => { ctx with tabs }
-      pure [Node.element tag (substList s pos) props hs kids]
+      pure [Node.element tag (pos.map (mapPositional (substExpr s) tag)) props hs kids]
     | .when _ c a b => do
       let tag ← freshTag
       let a ← inArm tag 0 (inlineNodes p fuel s a)
@@ -1016,7 +1032,7 @@ end
 /-- The flat program `p` expands to (inline.rs `expand`): the root's own
 declarations (the router's slot first), the inlined view, every lifted
 state and action, every call resolved and its caller's names drawn apart
-. -/
+(LLP 1089). -/
 def expand (p : CProgram) : Except String Program := do
   let p := ownCallsProgram p
   let root := p.root
@@ -1025,7 +1041,8 @@ def expand (p : CProgram) : Except String Program := do
     | .none => []
   let s0 : Subst := { map := [], records := p.records }
   let provides := root.provides.map fun (x, e) => (x, substExpr s0 e)
-  let (view, ctx) ← (inlineNodes p (1 <<< 20) s0 root.view).run { provides }
+  let renamed := renameNodes 0 [] root.view
+  let (view, ctx) ← (inlineNodes p (1 <<< 20) s0 renamed).run { provides }
   let actions := root.actions ++ ctx.extraActions
   let actions ← actions.mapM fun a => do pure { a with body := ← resolveCalls actions a.body }
   let (actions, _) ← (hygiene p.records actions).run 0

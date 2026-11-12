@@ -1,4 +1,4 @@
-//! The window a shell shows the page in: what the
+//! The window a shell shows the page in (LLP 1115.001 D3.3, D3.6): what the
 //! presenter makes of the raw insets, and the colour behind the page.
 use super::*;
 
@@ -346,7 +346,7 @@ fn an_authored_swipe_yields_the_edges_the_systems_gesture_starts_from() {
     assert_eq!(swiped(&mut p, 5., 0.), "1");
 }
 
-/// A TV's window: no bars, no cutout, at 1080 points tall.
+/// A TV's window: no bars, no cutout, at 1080 points tall (LLP 1115.001.003 D6).
 fn tv_window() -> Window {
     Window {
         size: (1920., 1080.),
@@ -396,4 +396,13 @@ fn a_phone_with_no_bars_has_no_margin() {
     let env = env(&mut p);
     assert_eq!(env["safe-area-inset-top"], 0);
     assert_eq!(env["safe-area-inset-left"], 0);
+}
+
+#[test]
+fn status_bar_style_reaches_chrome_independently_of_the_scheme() {
+    let mut p = boot(&page("status-bar-style=\"light-content\""));
+    let layout: serde_json::Value = serde_json::from_str(&p.layout_json(None, false)).unwrap();
+    assert_eq!(layout["statusBar"]["style"], "light-content");
+    assert!(p.chrome().status_light_icons);
+    assert!(!p.chrome().dark);
 }

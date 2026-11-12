@@ -224,6 +224,18 @@ impl Geometry {
         (x, line.top, 1., line.height)
     }
 
+    pub(crate) fn horizontal_bounds(&self) -> (f32, f32) {
+        self.lines
+            .iter()
+            .flat_map(|line| {
+                std::iter::once(line.empty_x)
+                    .chain(line.spans.iter().flat_map(|s| [s.left, s.right]))
+            })
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(left, right), x| {
+                (left.min(x), right.max(x))
+            })
+    }
+
     fn on_line(&self, index: usize, x: f32) -> Cursor {
         let line = &self.lines[index];
         let offset = line
@@ -298,7 +310,7 @@ impl Geometry {
         }
     }
 
-    /// `rangeFrame`'s boxes, field-local, as Chrome's
+    /// `rangeFrame`'s boxes (LLP 1114.007), field-local, as Chrome's
     /// `Range.getClientRects()` gives them for a textarea: each a text box,
     /// its glyphs across and its font's content area down. Collapsed, the
     /// caret's at width 0, upstream at a wrap (the line it ends); wider,

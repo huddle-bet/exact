@@ -1,4 +1,4 @@
-//! Type and family tokens. `font="type.body"`
+//! Type and family tokens (LLP 1121 D3, D6; stage 6 C). `font="type.body"`
 //! writes only the longhands the token names: one row each, every row
 //! naming the token, and the kernel reads each row's part of its value
 //! (`exact_kernel::style::theme::typeface`). `font-family="family.text"` is
@@ -33,7 +33,7 @@ impl Lowerer<'_> {
     /// type or family token's family as the stack it declares here (`#12`),
     /// every tuple's declared so the runner finds each in the plan.
     pub(super) fn theme_stacks(&mut self) -> Vec<String> {
-        let entries: Vec<(tamber::Kind, Vec<String>)> = self
+        let entries: Vec<(tamber::Kind, Vec<String>, Span)> = self
             .theme
             .iter()
             .map(|e| {
@@ -43,12 +43,13 @@ impl Lowerer<'_> {
                         .chain(&e.slices)
                         .cloned()
                         .collect(),
+                    e.span,
                 )
             })
             .collect();
         let mut stacks: Vec<(String, u16)> = Vec::new();
         let mut out = Vec::new();
-        for (kind, values) in entries {
+        for (kind, values, span) in entries {
             let kernel = match kind {
                 tamber::Kind::Type => exact_kernel::style::theme::Kind::Type,
                 tamber::Kind::Family => exact_kernel::style::theme::Kind::Family,
@@ -66,7 +67,7 @@ impl Lowerer<'_> {
                 if stacks.iter().any(|(f, _)| f == family) {
                     continue;
                 }
-                let mut stack = Expr::Str(family.to_string(), Span::default());
+                let mut stack = Expr::Str(family.to_string(), span);
                 match self.replace_family(&mut stack) {
                     Ok(()) => {
                         if let Expr::Number(n, _) = stack {
@@ -214,7 +215,8 @@ fn bundled_faces(
 /// too (`theme::rows`), so its words are the build's.
 /// A choice of a token and anything else is refused, and so is a token
 /// that varies by an app axis on a node with element children, which
-/// would inherit its rows (a pin re-selects a colour, not inherited type).
+/// would inherit its rows (theme2's ruling: a pin re-selects a colour,
+/// not inherited type).
 pub(crate) fn tokens_named(
     a: &Attr,
     kind: tamber::Kind,
@@ -294,7 +296,7 @@ pub(crate) fn tokens_named(
                 if rows.is_some() && written != rows {
                     return err(
                         "tamber-type-longhands",
-                        format!("`{name}` writes other longhands than another value `{}` may be (`{value}`): a type token's tuples, and the tokens one row chooses between, write the same longhands, since which rows a token writes is lowered", a.name),
+                        format!("`{name}` writes other longhands than another value `{}` may be (`{value}`): a type token's tuples, and the tokens one row chooses between, write the same longhands, since which rows a token writes is lowered (D6)", a.name),
                         *span,
                     );
                 }

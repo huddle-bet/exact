@@ -1,4 +1,4 @@
-// The network form of the dev plan: given the app
+// The network form of the dev plan (LLP 1023 D1–D3, Stage 1): given the app
 // URL — the same one a browser opens — resolve the envelope (negotiated
 // directly, or through index.html's rel=alternate link), fetch and verify
 // the complete plan and asset manifest, hand the verified generation to
@@ -10,7 +10,7 @@
 // new plan against this binary's data crate would be a poisoned boot — but
 // the host stays connected and registered, reconnects across restarts, and
 // takes the next generation for its own program; rebuilding the host, or the
-// menu's Reload, starts over. One connection per app, never
+// menu's Reload, starts over. One connection per app (LLP 1031 D11), never
 // per session.
 import CryptoKit
 import Foundation
@@ -37,7 +37,7 @@ enum DevelopmentModules {
 }
 
 /// A local development bake is a plan plus its optional, inseparable module
-/// pair. Watch all three files: a writer can replace them in
+/// pair (LLP 1027 D7). Watch all three files: a writer can replace them in
 /// either order, and a refused partial bake must be retried when it finishes.
 public struct ExactDevelopmentPlan {
     private let baseFiles: [URL]
@@ -117,7 +117,7 @@ public struct ExactDevelopmentPlan {
     }
 
     /// The plan and its module pair as the launch generation (`EXACT_PLAN`
-    /// naming a local bake): the first boot runs it as a build
+    /// naming a local bake, LLP 1116.003): the first boot runs it as a build
     /// that baked it would, fresh, with nothing carried from the embedded
     /// plan. Call before the first session; nil once installed, else why not.
     public func installInitial(on app: ExactApp) -> String? {
@@ -132,7 +132,7 @@ public struct ExactDevelopmentPlan {
     }
 }
 
-/// Explicit development-only opening action. The locator
+/// Explicit development-only opening action (LLP 1030.000 §7). The locator
 /// stays an HTTP(S) URL; the outer app-specific scheme only selects the client.
 /// The scheme is derived from the public app id and the loader's identity and
 /// compatibility checks are computable by anyone, so neither is trust: a link
@@ -171,7 +171,7 @@ public enum ExactDevelopmentLink {
     }
 
     /// A link in this build's development scheme is consumed here, admitted
-    /// or refused; it never becomes an app location.
+    /// or refused; it never becomes an app location (LLP 1038 D11).
     public static func claims(_ link: URL) -> Bool {
         guard let baked else { return false }
         return link.scheme?.lowercased() == baked.scheme
@@ -319,7 +319,7 @@ private final class BoundedFetch: NSObject, URLSessionDataDelegate, URLSessionTa
 final class PlanURL: NSObject, URLSessionDataDelegate {
     static let envelopeType = "application/vnd.exact.envelope+json"
     /// A dev loop's answer while its producers start, or after their start
-    /// failed (host/web/dev-phase.mjs): a status, not a failure.
+    /// failed (llp/1023.001; host/web/dev-phase.mjs): a status, not a failure.
     static let devStatusType = "application/vnd.exact.dev-status+json"
     static let pageLimit = 64 * 1024
     static let envelopeLimit = 64 * 1024
@@ -388,23 +388,38 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
     private let runningPlan: () -> String?
     /// The candidate, its label, and `letGo` (requests in flight do not hold it back).
     private let applyGeneration: (Generation, String, Bool) -> Bool
-    /// A live design batch or snapshot applied to the
+    /// A live design batch or snapshot (LLP 1121 stage 4) applied to the
     /// app; answers applied, stale, structure or refused.
     private let applyDesign: (String) -> String
-    /// A build-channel frame: a hello with a new nonce, or a
+    /// A build-channel frame (LLP 1122 D4): a hello with a new nonce, or a
     /// command (`BuildChannel.commands`).
     private let channel: ([String: Any]) -> Void
     private let preparationPending: () -> Bool
     /// Whether requests in flight held the last preparation back (its second's clock).
     private let requestsHeld: () -> Bool
     private let acceptProgram: (String?) -> Bool
-    var terminal: String?
+    var terminal: String? { didSet { tellNotice() } }
     /// What the dev loop said it is doing before it had a plan to give:
     /// preparing (its producers' first build), or its start's error.
     enum DevStatus: Equatable { case preparing(String), failed(String) }
-    private(set) var devStatus: DevStatus?
-    /// Told each change of `devStatus` (the window's dev pill); nil when a plan came.
-    var onDevStatus: ((DevStatus?) -> Void)?
+    private(set) var devStatus: DevStatus? { didSet { tellNotice() } }
+    /// The first line of the last save's error, until a generation is taken
+    /// (LLP 1159.001 D1): the app on screen is older than the source.
+    private(set) var refused: String? { didSet { tellNotice() } }
+    /// What the window's dev pill says, the first that holds (LLP 1159.001 D2):
+    /// the loop's own status, a host whose native code the server no longer
+    /// runs (`terminal`), or a save that did not apply.
+    enum DevNotice: Equatable { case loop(DevStatus), stale, refused(String) }
+    var notice: DevNotice? { devStatus.map(DevNotice.loop) ?? (terminal != nil ? .stale : refused.map(DevNotice.refused)) }
+    /// Told each change of `notice`; nil when nothing is left to say.
+    var onDevNotice: ((DevNotice?) -> Void)?
+    private var told: DevNotice?
+    private func tellNotice() {
+        let now = closed ? nil : notice
+        guard now != told else { return }
+        told = now
+        onDevNotice?(now)
+    }
     /// Where a status line goes (stderr; a test's own).
     var log: (String) -> Void = { fputs("exact url: \($0)\n", stderr) }
     /// The program of the last generation this host took (or the app ran
@@ -455,8 +470,8 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
     }
 
     func close() {
-        loopDone() // its status leaves the windows with it
         closed = true
+        tellNotice() // what it said leaves the windows with it
         beginResolution()
         stream?.cancel()
         stream = nil
@@ -470,7 +485,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         resolveAndBoot()
     }
 
-    // MARK: discovery and immutable generation fetches
+    // MARK: discovery and immutable generation fetches (LLP 1023 D1–D3)
 
     private func resolveAndBoot() {
         guard !closed else { return }
@@ -707,7 +722,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         }
         // Subscribe before payloads finish: hello repairs an edit between
         // discovery and the stream opening, including an asset-only edit.
-        guard currentGeneration() != identity else { pending = nil; return }
+        guard currentGeneration() != identity else { refused = nil; pending = nil; return }
         fetchGeneration(plan: plan, assets: assets, module: module, rust: rustModule, identity: identity, generation: generation)
     }
 
@@ -744,12 +759,13 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
                         payloads.removeAll()
                         let fetched = ProcessInfo.processInfo.systemUptime
                         // Asked again while the host is preparing, or while requests are in flight;
-                        // a second after they first held it, they are let go, as the web's dev loop does.
+                        // a second after they first held it, they are let go, as the web's dev loop does (LLP 1007 §6).
                         var heldSince: TimeInterval?
                         func commitCandidate() {
                             guard !self.closed, self.terminal == nil, generation == self.resolution else { return }
                             let letGo = heldSince.map { ProcessInfo.processInfo.systemUptime - $0 >= 1 } ?? false
                             if applyGeneration(candidate, "generation ← " + (page.host ?? ""), letGo) {
+                                refused = nil
                                 // Its plan carries its own design; value-only edits since are the server's.
                                 syncDesign()
                                 status(String(format: "generation %@: envelope %.1f ms, payloads %.1f ms, preparation %.1f ms", String(identity.prefix(12)), envelopeMs, (fetched - payloadStarted) * 1000, (ProcessInfo.processInfo.systemUptime - fetched) * 1000))
@@ -757,6 +773,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
                                 if requestsHeld() { heldSince = heldSince ?? ProcessInfo.processInfo.systemUptime }
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: commitCandidate)
                             } else {
+                                refused = "this app refused the new build"
                                 status("the host refused the generation; keeping the running app")
                             }
                         }
@@ -790,6 +807,14 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         pump()
     }
 
+    /// An error's first line as the pill has room for it: a leading file's
+    /// directory dropped, so the line and what is wrong there are what show.
+    static func brief(_ error: String) -> String {
+        guard let line = error.split(whereSeparator: \.isNewline).first.map(String.init) else { return "the save did not build" }
+        guard line.hasPrefix("/"), let colon = line.firstIndex(of: ":"), let slash = line[..<colon].lastIndex(of: "/") else { return line }
+        return String(line[line.index(after: slash)...])
+    }
+
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     /// JSON.stringify escaping, without Foundation's optional slash escaping.
     /// Names sort by UTF-8 bytes, matching the server's canonical manifest.
@@ -811,7 +836,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         return result + "\""
     }
 
-    // MARK: reconnect and ordering
+    // MARK: reconnect and ordering (LLP 1023 D3)
 
     private func subscribe(_ url: URL) {
         stream?.cancel()
@@ -899,7 +924,6 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
             case .preparing(let message): status("dev loop: \(message)")
             case .failed(let message): status("dev loop failed to start: \(message)")
             }
-            onDevStatus?(said)
         }
         pending = nil
         retrySeconds = 1
@@ -914,7 +938,6 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
     private func loopDone() {
         guard devStatus != nil else { return }
         devStatus = nil
-        onDevStatus?(nil)
     }
 
     private func failed(_ message: String, generation: UInt64) {
@@ -946,12 +969,16 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
             waitForProgram()
             return
         }
-        if let error = frame["error"] as? String { status("dev: \(error)"); return }
+        if let error = frame["error"] as? String {
+            refused = PlanURL.brief(error)
+            status("dev: \(error)")
+            return
+        }
         if let kind = frame["kind"] as? String, kind == "tamber-batch" || kind == "tamber-snapshot" {
             design(frame)
             return
         }
-        // The build channel, development builds only: a command
+        // The build channel (LLP 1122 D4), development builds only: a command
         // before any generation; a new stream's hello registers again, under
         // the same id.
         if let kind = frame["kind"] as? String, BuildChannel.commands.contains(kind) { if BuildChannel.enabled { channel(frame) }; return }
@@ -962,7 +989,8 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         }
         if frame["ready"] as? Bool == false { return }
         guard let revision = PlanURL.revision(frame), observe(revision) else { return }
-        if currentGeneration() == revision.identity { settle(); return }
+        // The source is what runs again: a save that was refused has been repaired.
+        if currentGeneration() == revision.identity { refused = nil; settle(); return }
         guard pending != revision,
               let path = frame["envelope"] as? String, let url = URL(string: path, relativeTo: page)?.absoluteURL,
               PlanURL.sameOrigin(url, page) else { return }
@@ -971,7 +999,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         fetchEnvelope(url, subscribe: false, generation: generation, expected: revision)
     }
 
-    // MARK: the live table
+    // MARK: the live table (LLP 1121 D13, stage 4)
 
     /// A batch (a notice is one with no tokens) applied on its base; a build
     /// on another design fetches the snapshot. One at a time, in the stream's
@@ -1028,7 +1056,7 @@ final class PlanURL: NSObject, URLSessionDataDelegate {
         }
     }
 
-    // MARK: the build channel
+    // MARK: the build channel (LLP 1122 D4)
 
     /// The nonce the stream's hello gave, which every report carries; nil
     /// once that stream ends.

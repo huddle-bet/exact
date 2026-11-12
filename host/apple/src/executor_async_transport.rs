@@ -1,5 +1,5 @@
 //! Transport admission and physical-retirement accounting for one Exact lane.
-//! The runner retains scheduling.
+//! @ref LLP 1120#d1-ibex2-an-asynchronous-transport-and-a-fetch-state-machine — the runner retains scheduling.
 use super::*;
 
 impl AsyncTransport for Tracked {
@@ -95,6 +95,9 @@ impl Sink for TrackedSink {
     }
     fn metrics(&mut self, metrics: HopMetrics) {
         self.inner.metrics(metrics);
+    }
+    fn observed(&mut self, status: u16, headers: &ibex2::stdlib::fetch::Headers) {
+        self.inner.observed(status, headers);
     }
 }
 

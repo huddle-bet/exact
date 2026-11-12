@@ -1,4 +1,4 @@
-//! A text field's selection: the start, end and
+//! A text field's selection (x2apps codeedit #2): the start, end and
 //! direction HTML gives an `input` or a `textarea`, in UTF-16 units of its
 //! value. Typing replaces it and leaves a caret after the text, the arrows
 //! move or (with Shift) extend it, `setSelectionRange` and `select()` set it
@@ -260,7 +260,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// What `id` shows: typed text kept against its bound value, else that
-    /// value. A selection indexes this, not the prop a
+    /// value (LLP 1069.001 D4). A selection indexes this, not the prop a
     /// later write replaced.
     fn field_value(&self, id: ViewId) -> String {
         self.field_text(id)
@@ -370,7 +370,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// [`Presenter::mark_field`] for a selection the shell's own field
-    /// already shows: kept for the next `input`, and
+    /// already shows (LLP 1115.001 D8): kept for the next `input`, and
     /// nothing here is painted again for it.
     pub(super) fn note_field(&mut self, id: ViewId, value: &str, selection: FieldSelection) {
         let mark = FieldMark {
@@ -635,8 +635,8 @@ impl<D: DataSource> Presenter<D> {
         }
     }
 
-    /// `setSelectionRange(id, start, end[, direction])`:
-    /// clamped as HTML clamps it, the focus unmoved; an unfocused field
+    /// `setSelectionRange(id, start, end[, direction])` (x2apps codeedit
+    /// #2): clamped as HTML clamps it, the focus unmoved; an unfocused field
     /// keeps it, and the next typing there edits at it.
     pub(crate) fn set_selection_range(&mut self, args: &[exact_plan::Value]) {
         let Some(name) = args.first().and_then(exact_plan::Value::as_str) else {
@@ -865,7 +865,7 @@ impl<D: DataSource> Presenter<D> {
     /// typed into (its `change` waits for blur or Enter), and its `input`,
     /// which carries the selection. The watch is the bound value from before
     /// the dispatch, so a write during the edit replaces the typed text and
-    /// one that writes nothing leaves it.
+    /// one that writes nothing leaves it (LLP 1069.001 D4).
     pub(super) fn field_edit(
         &mut self,
         id: ViewId,
@@ -999,7 +999,7 @@ impl<D: DataSource> Presenter<D> {
         {
             return;
         }
-        let (textarea, limit, readonly) = {
+        let (textarea, limit, readonly, number) = {
             let Some(node) = self.host.kernel().node(id) else {
                 return;
             };
@@ -1010,6 +1010,7 @@ impl<D: DataSource> Presenter<D> {
                 node.props.str(PropId::SemanticTag) == Some("textarea"),
                 exact_kernel::control::text_maxlength(node.props),
                 node.props.bool(PropId::Editable) == Some(false),
+                number::Number::of(node.props),
             )
         };
         // What earlier commits replaced goes first: this edit starts from what shows.
@@ -1018,6 +1019,17 @@ impl<D: DataSource> Presenter<D> {
         let selection = self.field_selection(id);
         // A Control or Meta chord types nothing, as in a browser.
         let chord = self.held & 0b1100_1100 != 0;
+        let typed = self.key_text.take();
+        // A number field's vertical arrows step it (`number.rs`).
+        if let Some(number) = number
+            .as_ref()
+            .filter(|_| !chord && matches!(name, "ArrowUp" | "ArrowDown"))
+        {
+            if !readonly {
+                self.step_number(id, number, &value, name == "ArrowUp", now_ms);
+            }
+            return;
+        }
         if matches!(
             name,
             "ArrowLeft" | "ArrowRight" | "Home" | "End" | "ArrowUp" | "ArrowDown"
@@ -1068,7 +1080,25 @@ impl<D: DataSource> Presenter<D> {
                     None => return,
                 }
             }
-            s if s.chars().count() == 1 && !chord => replace(&value, selection, s),
+            s if s.chars().count() == 1 && !chord => {
+                // A key may type other than its name: a dead key's accent
+                // before Space or a letter (`hardware_key_typing`).
+                let s = typed.as_deref().unwrap_or(s);
+                match &number {
+                    Some(_) => {
+                        let (start, end) = (
+                            byte_at(&value, selection.start),
+                            byte_at(&value, selection.end),
+                        );
+                        let taken = number::insertion(s, &value, start, end);
+                        if taken.is_empty() {
+                            return;
+                        }
+                        replace(&value, selection, &taken)
+                    }
+                    None => replace(&value, selection, s),
+                }
+            }
             _ => return,
         };
         // maxlength stops typing that would lengthen past it, as HTML's does.
@@ -1084,7 +1114,7 @@ impl<D: DataSource> Presenter<D> {
             "Backspace" => ("deleteContentBackward", None),
             "Delete" => ("deleteContentForward", None),
             "Enter" => ("insertLineBreak", None),
-            _ => ("insertText", Some(name.to_owned())),
+            _ => ("insertText", Some(typed.unwrap_or_else(|| name.to_owned()))),
         };
         if let Some(e) = self.edit_field(
             id,
@@ -1106,7 +1136,7 @@ impl<D: DataSource> Presenter<D> {
     /// its selection (a field's own paste still inserts, beside any `paste`
     /// handler), within its `maxlength`.
     pub(crate) fn paste_field(&mut self, id: ViewId, text: &str, now_ms: f64) {
-        let limit = {
+        let (limit, number) = {
             let Some(node) = self.host.kernel().node(id) else {
                 return;
             };
@@ -1116,11 +1146,30 @@ impl<D: DataSource> Presenter<D> {
             {
                 return;
             }
-            exact_kernel::control::text_maxlength(node.props)
+            (
+                exact_kernel::control::text_maxlength(node.props),
+                number::Number::of(node.props).is_some(),
+            )
         };
         self.forget_replaced_choices();
         let value = self.field_text(id);
         let selection = self.field_selection(id);
+        let numeric;
+        let text = match number {
+            true => {
+                let (start, end) = (
+                    byte_at(&value, selection.start),
+                    byte_at(&value, selection.end),
+                );
+                numeric = number::insertion(text, &value, start, end);
+                // Nothing a number takes leaves the field as it was.
+                if numeric.is_empty() && !text.is_empty() {
+                    return;
+                }
+                &numeric
+            }
+            false => text,
+        };
         let text = fit(text, &value, selection, limit).to_owned();
         let (next, after) = replace(&value, selection, &text);
         if let Some(e) = self.edit_field(

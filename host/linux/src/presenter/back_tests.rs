@@ -1,6 +1,6 @@
-//! System Back, in order: the authored control, the root's
+//! System Back, in order (LLP 1115.001 D6): the authored control, the root's
 //! `navigate`, the runner's own `back`, and who takes nothing; and a
-//! desktop's Back keys, whose default action it is.
+//! desktop's Back keys, whose default action it is (LLP 1115.000 D5.4).
 use super::*;
 
 /// A two-route app. `ROOT` is the navigation root's own attributes, `BACK`
@@ -126,7 +126,7 @@ fn a_control_that_does_not_resolve_refuses_back_and_keeps_the_app() {
 
 #[test]
 fn a_node_that_only_has_the_id_back_is_no_back_control() {
-    // No navigation root names it, so the id alone makes no Back control.
+    // No navigation root names it: what the host pressed before LLP 1115.001 D6.
     let (mut p, error) = Presenter::boot_with(
         &contract::compile(
             "component App\n  state pressed = 0\n  action back\n    pressed = pressed + 1\n  view\n    column width=300 height=300\n      button id=\"back\" press=back testId=\"back\"\n        text \"Back\"\n",
@@ -201,7 +201,7 @@ fn a_desktops_back_keys_go_back_in_the_same_order() {
     assert_eq!(slot(&p, "followed"), 1.0, "one visit back, of two");
 }
 
-/// A mouse's back and forward buttons step history at
+/// LLP 1115.000 D5.5: a mouse's back and forward buttons step history at
 /// their release, as Chrome's do, unless a `pointerup` prevented it; Forward
 /// goes where Back left, by the root's `navigate` or the runner's own `go`,
 /// and Alt+Right and the Forward key go there too.
@@ -264,6 +264,65 @@ fn the_mouses_back_and_forward_buttons_step_history_at_their_release() {
 }
 
 #[test]
+fn forward_to_a_location_beneath_the_top_consumes_history() {
+    let app = r#"routes nav
+  home "/"
+    thread "/t/:thread"
+component App
+  action open(url: string)
+    nav = push(nav, url)
+  action follow(url: string)
+    nav = go(nav, url)
+  view
+    main navigationKey=`${top(nav).id}` ROOT width="100%" height="100%"
+      for e in stack(nav) key=e.id
+        column navigationKey=`${e.id}` position="absolute" inset=0
+          text e.url
+          button press=open("/t/a") testId=`a${e.id}`
+            text "Thread a"
+          button press=open("/t/b") testId=`b${e.id}`
+            text "Thread b"
+"#;
+    for root in ["navigate=follow", ""] {
+        let (mut p, error) = Presenter::boot_with(
+            &crate::test_plan(&app.replace("ROOT", root)),
+            (),
+            (400., 800.),
+            1.,
+            PathBuf::new(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        for letter in ["a", "b", "a"] {
+            let router = p.host().runner().carry().router.unwrap().1;
+            let top = exact_route::top(&router).unwrap().id;
+            let button = id(&p, &format!("{letter}{top}")).unwrap();
+            p.dispatch_press(button, 0., false);
+        }
+        let router = p.host().runner().carry().router.unwrap().1;
+        let original = exact_route::stack(&router).to_vec();
+        assert_eq!(
+            original.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
+            ["/", "/t/a", "/t/b", "/t/a"]
+        );
+        p.pointer_aux(8, true, 300., 700., 1.);
+        p.pointer_aux(8, false, 300., 700., 2.);
+        assert_eq!(p.host().runner().location_ahead().as_deref(), Some("/t/a"));
+        p.pointer_aux(16, true, 300., 700., 3.);
+        p.pointer_aux(16, false, 300., 700., 4.);
+        let after = p.host().runner().carry().router.unwrap().1;
+        assert_eq!(exact_route::stack(&after), &original[..2], "{root:?}");
+        assert_eq!(p.host().runner().location_ahead(), None, "{root:?}");
+        p.pointer_aux(16, true, 300., 700., 5.);
+        p.pointer_aux(16, false, 300., 700., 6.);
+        device_key(&mut p, ALT, "ArrowRight");
+        device_key(&mut p, &[], "BrowserForward");
+        assert_eq!(p.host().runner().carry().router.unwrap().1, after);
+    }
+}
+
+#[test]
 fn back_is_its_keys_default_action_after_the_authors() {
     // In a text field Alt+Left goes back; the caret's keys are the bare arrows.
     let mut p = boot("navigate=follow", "input value=\"abc\" testId=\"field\"");
@@ -304,7 +363,7 @@ fn back_is_its_keys_default_action_after_the_authors() {
     assert!(!on_detail(&p), "the drive's Alt+Left popped the route");
 }
 
-/// A test's `back` is system Back, the wire's `tap` with
+/// LLP 1116.006 D4: a test's `back` is system Back, the wire's `tap` with
 /// `back`; with nowhere to go back to it is an error that says so, and a
 /// control that refuses it is the reply's `refused`.
 #[test]

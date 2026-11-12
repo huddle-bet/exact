@@ -1,8 +1,9 @@
-// A list and its detail are a split view on the Mac:
+// @ref LLP 1115.002 D4 — a list and its detail are a split view on the Mac:
 // which stack splits (the runner's rule), what each pane holds (the page as
 // the list's column, the detail's routes in a pane of their own through the
 // kernel's containing block), the widths and minimums AppKit gives three
-// columns and two, the selected row, Back, the two headers in one bar, a sheet over the split, and what the driver sees.
+// columns and two, the selected row, Back, the two headers in one bar (§5
+// Q10), a sheet over the split, and what the driver sees.
 #if os(macOS)
 import AppKit
 import XCTest
@@ -105,7 +106,7 @@ final class SplitMacTests: XCTestCase {
         """
     }
 
-    private func boot(tabs: Bool, size: CGSize, source: String? = nil) throws -> ExactSession {
+    private func boot(tabs: Bool, size: CGSize, source: String? = nil, location: String? = nil) throws -> ExactSession {
         _ = NSApplication.shared
         let dir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("../../target/split-test-" + UUID().uuidString).standardizedFileURL
@@ -121,6 +122,7 @@ final class SplitMacTests: XCTestCase {
         XCTAssertEqual(compiler.terminationStatus, 0, String(decoding: said.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
         let session = ExactApp.shared.makeSession(label: "split-" + UUID().uuidString)
         self.session = session
+        if let location { XCTAssertTrue(session.openIncoming(location)) }
         XCTAssertNil(session.boot(plan: try Data(contentsOf: plan), size: size).error)
         return session
     }
@@ -518,7 +520,7 @@ final class SplitMacTests: XCTestCase {
         XCTAssertNil(columns.detail.saysNothing)
         XCTAssertEqual(feed.table.selectedRow, 1, "the row whose detail shows stays selected")
         XCTAssertEqual(split.shown?.row, try node("row-b").id)
-        // The list owns the window: its heading is the title, and the detail's stays the first line of its pane.
+        // The list owns the window (§5 Q10): its heading is the title, and the detail's stays the first line of its pane.
         XCTAssertEqual(window.title, "Library")
         let title = try node("title-b")
         XCTAssertFalse(title.isHiddenOrHasHiddenAncestor)
@@ -598,6 +600,154 @@ final class SplitMacTests: XCTestCase {
         XCTAssertFalse(has("route-book-b"))
         XCTAssertEqual(columns.detail.saysNothing, "No Selection")
         XCTAssertEqual(feed.table.selectedRow, -1)
+    }
+
+    func testAProgrammaticDetailSelectsTheCurrentRowUntilAPressOwnsIt() throws {
+        for painted in [false, true] {
+            var source = app(tabs: false)
+                .replacingOccurrences(of: "  state query = \"\"", with: """
+                  state current = "b"
+                  state books = ["a", "b", "c"]
+                  state hidden = false
+                  state query = ""
+                """)
+                .replacingOccurrences(of: "  action count\n", with: """
+                  action mark(id: string)
+                    current = id
+                  action replaceRows
+                    books = ["c", "d"]
+                  action removeSelected
+                    books = ["c", "e"]
+                  action toggleHidden
+                    hidden = not hidden
+                  action replaceDetail
+                    nav = replace(nav, "/book/c")
+                    current = "c"
+                  action count
+
+                """)
+                .replacingOccurrences(of: "for id in [\"a\", \"b\", \"c\"] key=id", with: "for id in books key=id")
+                .replacingOccurrences(of: "link href=path(\"book\", id)", with: "button press=follow(path(\"book\", id)) aria-current=(id == current ? \"page\" : \"false\")")
+            source = replacing("input type=\"search\"", with: [
+                "button press=follow(\"/book/b\") testId=\"open-detail\"",
+                "  text \"Open\"",
+                "button press=mark(\"c\") testId=\"current-c\"",
+                "  text \"Current C\"",
+                "button press=mark(\"b\") testId=\"current-b\"",
+                "  text \"Current B\"",
+                "button press=mark(\"\") testId=\"current-none\"",
+                "  text \"No Current\"",
+                "button press=replaceRows testId=\"replace-rows\"",
+                "  text \"Replace Rows\"",
+                "button press=removeSelected testId=\"remove-selected\"",
+                "  text \"Remove Selected\"",
+                "button press=toggleHidden testId=\"toggle-hidden\"",
+                "  text \"Toggle Hidden\"",
+                "button press=replaceDetail testId=\"replace-detail\"",
+                "  text \"Replace Detail\"",
+            ], in: source)
+            if painted {
+                source = source.replacingOccurrences(of: "list testId=\"books\"", with: "list testId=\"books\" appearance=\"auto\" listStyle=\"plain\"")
+                source = replacing("for id in books", with: ["section", "  for id in books key=id"], in: source)
+                source = replacing("button press=follow(path(\"book\", id))", with: [
+                    "  button press=follow(path(\"book\", id)) aria-current=(id == current ? \"page\" : \"false\") testId=`row-${id}`",
+                ], in: source)
+                source = replacing("text `Book ${id}`", with: ["  text `Book ${id}`"], in: source)
+            } else {
+                source = replacing("text `Book ${id}`", with: [], in: source)
+                source = replacing("button press=follow(path(\"book\", id))", with: [
+                    "if id == \"c\"",
+                    "  box",
+                    "    button press=follow(path(\"book\", id)) aria-current=(id == current ? \"page\" : \"false\") testId=`row-${id}`",
+                    "      text `Book ${id}`",
+                    "else",
+                    "  button press=follow(path(\"book\", id)) aria-current=(id == current ? \"page\" : \"false\") testId=`row-${id}`",
+                    "    text `Book ${id}`",
+                ], in: source)
+            }
+            source = source.replacingOccurrences(of: "text `Book ${id}`", with: "text `Book ${id}` testId=`name-${id}`")
+                .replacingOccurrences(of: "testId=`row-${id}`", with: "testId=`row-${id}` display=(id == \"d\" and hidden ? \"none\" : \"flex\")")
+            let session = try boot(tabs: false, size: CGSize(width: 1000, height: 500), source: source, location: "/book/b")
+            let columns = compose(ExactView(session: session), width: 1000, sidebar: false, window: KeyedWindow.self)
+            let p = session.presenter, split = p.navigation.split
+            let feed = p.tables.feeds[try node("books").id]
+            XCTAssertEqual(feed == nil, painted)
+            func selected(_ id: String?, index: Int = -1) throws {
+                let row = try id.map { try node("row-" + $0) }
+                XCTAssertEqual(split.shown?.row, row?.id)
+                if let feed {
+                    XCTAssertEqual(feed.table.selectedRow, index)
+                    if index >= 0 { XCTAssertEqual(feed.table.rowView(atRow: index, makeIfNecessary: true)?.isSelected, true) }
+                } else {
+                    XCTAssertEqual(split.summary["marked"] as? Int, row.map { Int($0.id) })
+                }
+            }
+            XCTAssertTrue(try node("route-book-b").superview === columns.detailPane)
+            try selected("b", index: 1)
+            if painted {
+                let window = try XCTUnwrap(self.window as? KeyedWindow)
+                window.appearance = NSAppearance(named: .aqua)
+                window.key = true
+                NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+                XCTAssertTrue(window.makeFirstResponder(nil))
+                let spec = try node("name-b").paragraphSpec()
+                XCTAssertEqual(spec.runs.first?.color ?? spec.color, [255, 255, 255, 255])
+            }
+            try press("current-c")
+            try selected("c", index: 2)
+            try press("current-none")
+            try selected(nil)
+            try press("current-b")
+            try selected("b", index: 1)
+            try press("replace-rows")
+            XCTAssertFalse(has("row-b"))
+            try selected(nil)
+            try press("current-c")
+            try selected("c", index: 0)
+            XCTAssertTrue(split.closeDetail())
+            try selected(nil)
+            try press("open-detail")
+            try selected("c", index: 0)
+            if let feed { XCTAssertTrue(feed.pressRow(1)) } else { try press("row-d") }
+            try selected("d", index: 1)
+            try press("current-b")
+            try selected("d", index: 1)
+            if let feed {
+                let row = try node("row-d")
+                try press("toggle-hidden")
+                XCTAssertTrue(try node("row-d") === row)
+                XCTAssertEqual(feed.table.selectedRow, -1)
+                XCTAssertNotNil(split.shown?.detail)
+                try press("toggle-hidden")
+                try selected("d", index: 1)
+            }
+            let detail = try XCTUnwrap(split.shown?.detail), base = split.shown?.base
+            try press("replace-detail")
+            XCTAssertTrue(split.shown?.detail === detail, "replace keeps the route's identity")
+            XCTAssertEqual(split.shown?.base, base)
+            XCTAssertFalse(p.navigation.canGoBack)
+            try selected("c", index: 0)
+            if let feed { XCTAssertTrue(feed.pressRow(1)) } else { try press("row-d") }
+            try selected("d", index: 1)
+            if let feed {
+                try press("toggle-hidden")
+                XCTAssertEqual(feed.table.selectedRow, -1)
+                XCTAssertTrue(split.closeDetail())
+                try press("toggle-hidden")
+                try selected(nil)
+                XCTAssertTrue(feed.pressRow(1))
+                try selected("d", index: 1)
+            }
+            try press("remove-selected")
+            try press("current-c")
+            XCTAssertFalse(has("row-d"))
+            XCTAssertEqual(feed?.table.selectedRow ?? -1, -1)
+            XCTAssertNil(split.summary["marked"] as? Int, "a lost press owner does not adopt the current row")
+            XCTAssertTrue(split.closeDetail())
+            try selected(nil)
+            window?.close(); window = nil
+            session.destroy(); self.session = nil
+        }
     }
 
     func testTheColumnsNarrowAsAppKitsDoAndTheWindowStopsAtTheirMinimums() throws {
@@ -880,7 +1030,8 @@ final class SplitMacTests: XCTestCase {
     /// A popover declared in a route the split shows in its detail pane opens,
     /// painted and as AppKit's: the pane is a block's native container, and
     /// whether the popover is in the page walks out of it to the route's
-    /// authored home (the pane is under no page root).
+    /// authored home (theme2 12:32; it had never opened there, the pane being
+    /// under no page root).
     func testAPopoverInTheDetailPaneOpens() throws {
         for painted in [true, false] {
             let source = app(tabs: false).replacingOccurrences(
@@ -999,11 +1150,11 @@ final class SplitMacTests: XCTestCase {
         }.joined(separator: "\n")
     }
 
-    /// The box the root route marks `navigationSplit="placeholder"` is
-    /// what the empty pane shows, in place of AppKit's "No Selection":
-    /// laid out at the pane's size, its content centred, its size kept
-    /// when the author's rows change, and `display: none` in its route
-    /// again while a detail shows.
+    /// LLP 1116.006 D2: the box the root route marks
+    /// `navigationSplit="placeholder"` is what the empty pane shows, in
+    /// place of AppKit's "No Selection": laid out at the pane's size, its
+    /// content centred, its size kept when the author's rows change, and
+    /// `display: none` in its route again while a detail shows.
     func testTheAuthorsPlaceholderIsTheEmptyPanes() throws {
         let source = replacing("list testId=\"books\"", with: [
             "column navigationSplit=\"placeholder\" width=50 margin-left=(counted > 0 ? 30 : 0) testId=\"own\"",
@@ -1046,8 +1197,8 @@ final class SplitMacTests: XCTestCase {
         XCTAssertEqual(own.style["display"]?.string, "none")
     }
 
-    /// The library with its books in the painted grouped form, as
-    /// a chat app's channels are: a section of rows whose press is an action
+    /// The library with its books in the painted grouped form (D6), as
+    /// Excord's channels are: a section of rows whose press is an action
     /// that pushes the book. A book's Next replaces it with the next.
     private func paintedList() -> String {
         let swapping = app(tabs: false).replacingOccurrences(of: "  action count\n", with: "  action swap(url: string)\n    nav = replace(nav, url)\n  action count\n")
@@ -1072,9 +1223,9 @@ final class SplitMacTests: XCTestCase {
         ], in: bare)
     }
 
-    /// The list's column draws no disclosure chevron, as
+    /// LLP 1115.002 D5: the list's column draws no disclosure chevron, as
     /// a hand-built Mac list beside its detail has none, also where the list
-    /// is no table but the painted grouped form, as a chat app's channels
+    /// is no table but the painted grouped form (D6), as Excord's channels
     /// are. Pushed, the rows draw them again.
     func testAPaintedListBesideItsDetailDrawsNoChevrons() throws {
         let session = try boot(tabs: false, size: CGSize(width: 1000, height: 500), source: paintedList())
@@ -1093,7 +1244,7 @@ final class SplitMacTests: XCTestCase {
         XCTAssertEqual(try drawn("chevron-a"), 0)
     }
 
-    /// The painted list's row whose detail shows is drawn
+    /// LLP 1115.002 D5: the painted list's row whose detail shows is drawn
     /// selected, as a table's row is: AppKit's selection, the separators
     /// beside it not drawn, and while the window is key with the keyboard
     /// in the list or nowhere, emphasized, its text in the selected item's
@@ -1185,7 +1336,7 @@ final class SplitMacTests: XCTestCase {
         XCTAssertEqual(try ink("name-c"), [255, 255, 255, 255])
 
         // A control in the detail replaces its book with another: the route moved where no row's
-        // press or link took it, so no row is selected, and the pane begins where it did.
+        // press or link took it, so no row is selected (LLP 1127 D3), and the pane begins where it did.
         try press("next-c")
         let swapped = try node("route-book-a")
         XCTAssertTrue(swapped.superview === columns.detailPane)

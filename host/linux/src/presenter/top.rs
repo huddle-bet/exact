@@ -1,4 +1,4 @@
-//! The top layer: on a host whose shell makes windows, a
+//! The top layer (LLP 1115.001 D10): on a host whose shell makes windows, a
 //! confirmation and a menu are separate windows of the platform's, with
 //! their content painted here. On Android an alert-shaped `alertdialog` is
 //! Material 3's basic dialog in a `Dialog` window and a menu popover is
@@ -10,7 +10,7 @@
 //! and MenuFlyout over the window (`top/overlay.rs`). Every other `dialog`
 //! and popover on Windows, and every one on the Linux desktop, is the
 //! author's subtree, laid out by the kernel and painted in the window
-//! (`alert.rs`); Android refuses those for now.
+//! (`alert.rs`, LLP 1115.004 D10.7); Android refuses those for now.
 //!
 //! **How a surface is painted.** Not by the kernel's layout of the authored
 //! rows, which no native host shows either. The shape rule (`top/shape.rs`)
@@ -35,7 +35,7 @@
 //! cancel closes it and runs nothing; Back and Escape are a close request,
 //! which fires a modal dialog's `cancel` first (HTML) and closes it unless
 //! that was prevented; a tap outside closes a menu, and does nothing to an
-//! alert, which has no outside, unless its author wrote
+//! alert, which has no outside (LLP 1115.000 D13.4), unless its author wrote
 //! `closedby="any"`: then it dismisses it, as it does a Material dialog left
 //! to itself. System Back closes it before any route is asked
 //! ([`Presenter::system_back`]).
@@ -232,7 +232,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// A shell makes this presenter's top layer as windows from now on,
-    /// drawn through `painter`. A host with no such
+    /// drawn through `painter` (LLP 1115.001 D10). A host with no such
     /// shell keeps what it did: no top layer.
     pub fn serve_windows(&mut self, painter: Box<dyn SurfacePainter>) {
         self.top.painter = Some(painter);
@@ -401,10 +401,10 @@ impl<D: DataSource> Presenter<D> {
         modal: bool,
         now_ms: f64,
     ) -> bool {
-        // Its session's roles: the surface's look resolves them.
+        // Its session's roles (LLP 1121 stage 5): the surface's look resolves them.
         let _roles = self.host.runner().bind_roles();
         // A popover its author placed by `left` or `top` opens at that point,
-        // as a context menu opens at the pointer.
+        // as a context menu opens at the pointer (LLP 1021 D2).
         let point = point.or_else(|| {
             let node = self.host.kernel().node_by_key(target?)?;
             let style = node.computed_style(exact_kernel::StyleMask::INHERITED);
@@ -429,7 +429,7 @@ impl<D: DataSource> Presenter<D> {
             (None, _) => Some("no live node has that id"),
             (Some((_, _, parent)), _) if !shows(parent) => Some("it is on a route that does not show"),
             (_, Some(Plan::Menu(_))) if modal => Some("it is a menu, which its invoker opens"),
-            (_, None) => Some("this host presents an alert-shaped alertdialog (text, one cancel, at most three buttons) and a menu popover (button rows); authored dialogs and popovers are presented on desktop hosts, but not yet in Android's windows"),
+            (_, None) => Some("this host presents an alert-shaped alertdialog (text, one cancel, at most three buttons) and a menu popover (button rows); authored dialogs and popovers are presented on desktop hosts, but not yet in Android's windows (LLP 1115.001 D10)"),
             _ => None,
         };
         let (Some((id, key, _)), Some(plan), None) = (pop, plan, refusal) else {
@@ -488,7 +488,7 @@ impl<D: DataSource> Presenter<D> {
         }
         self.place_surface();
         // Alerts need an initial action even when a pointer or a response
-        // opens them. TV surfaces also start at their first row.
+        // opens them. TV surfaces also start at their first row (LLP 1115.001.003 D3).
         let desktop_alert = self.top.overlay.enabled
             && self
                 .top
@@ -581,7 +581,7 @@ impl<D: DataSource> Presenter<D> {
     /// `press` runs (an alert's cancel has none), then the menu it opens,
     /// where it opens one, takes the first one's place.
     /// A point of the open surface's own space in the page's, where its
-    /// row's `MouseEvent` has `clientX`/`clientY`.
+    /// row's `MouseEvent` has `clientX`/`clientY` (LLP 1021 D2).
     /// Its frame is in the window's pixels, the rest in points.
     fn surface_client(&self, (x, y): (f32, f32)) -> Option<(f32, f32)> {
         let open = self.top.open.as_ref()?;
@@ -667,8 +667,9 @@ impl<D: DataSource> Presenter<D> {
             event::ENTER | event::SPACE => {
                 self.surface_key("Enter", now_ms);
             }
-            event::TAB | event::DOWN | event::RIGHT => self.surface_step(false),
-            event::TAB_BACK | event::UP | event::LEFT => self.surface_step(true),
+            event::TAB | event::DOWN => self.surface_step(false),
+            event::TAB_BACK | event::UP => self.surface_step(true),
+            event::LEFT | event::RIGHT => self.surface_horizontal(what == event::LEFT, now_ms),
             _ => {}
         }
     }
@@ -700,9 +701,6 @@ impl<D: DataSource> Presenter<D> {
         }
     }
 
-    /// A key while a surface is open goes to it and to nothing of the page:
-    /// Escape dismisses it, Tab and the arrows move its own focus, Enter
-    /// and Space choose the focused row. Whether a surface took the key.
     /// Whether a surface is open to take the keys ([`Self::surface_key`]).
     pub(crate) fn surface_takes_keys(&self) -> bool {
         self.alert_takes_back() || self.top.open.is_some()
@@ -724,6 +722,10 @@ impl<D: DataSource> Presenter<D> {
         ))
     }
 
+    /// A key while a surface is open goes to it and to nothing of the page.
+    /// Tab and Up/Down move its focus; Right opens a menu row's submenu;
+    /// Left/Right move between an alert's buttons. Enter and Space choose
+    /// the focused row, and Escape dismisses the surface.
     pub(super) fn surface_key(&mut self, name: &str, now_ms: f64) -> bool {
         if !matches!(
             name,
@@ -749,8 +751,9 @@ impl<D: DataSource> Presenter<D> {
                 self.dismiss_surface(now_ms);
             }
             "Tab" => self.surface_step(self.modifiers().shift),
-            "ArrowDown" | "ArrowRight" => self.surface_step(false),
-            "ArrowUp" | "ArrowLeft" => self.surface_step(true),
+            "ArrowDown" => self.surface_step(false),
+            "ArrowUp" => self.surface_step(true),
+            "ArrowLeft" | "ArrowRight" => self.surface_horizontal(name == "ArrowLeft", now_ms),
             "Home" | "End" if self.top.overlay.enabled => self.surface_edge(name == "End"),
             "Enter" | " " => {
                 if let Some(index) = self.top.open.as_ref().and_then(|open| open.focused) {
@@ -760,6 +763,35 @@ impl<D: DataSource> Presenter<D> {
             _ => {}
         }
         true
+    }
+
+    /// A submenu replaces its parent, so Left has no parent to return to.
+    fn surface_horizontal(&mut self, backward: bool, now_ms: f64) {
+        let Some(open) = self.top.open.as_ref() else {
+            return;
+        };
+        if open.kind == SurfaceKind::Alert {
+            self.surface_step(backward);
+        } else if !backward {
+            let index = open.focused.filter(|index| {
+                open.plan
+                    .rows()
+                    .nth(*index)
+                    .is_some_and(|row| row.enabled && row.opens.is_some())
+            });
+            if let Some(index) = index {
+                let serial = open.serial;
+                self.choose(index, now_ms, None);
+                if self
+                    .top
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.serial != serial && open.focused.is_none())
+                {
+                    self.surface_step(false);
+                }
+            }
+        }
     }
 
     /// An authored focus command selects the row in its shell window,
@@ -1132,7 +1164,7 @@ impl<D: DataSource> Presenter<D> {
         }
     }
 
-    /// `showModal(id)` from an action: the confirmation whose
+    /// `showModal(id)` from an action (LLP 1115 D6): the confirmation whose
     /// `id` that is, with no invoker (`source`: the node whose input ran
     /// the action, where the focus returns).
     pub(super) fn show_modal(&mut self, args: &[exact_plan::Value], source: Option<ViewId>) {

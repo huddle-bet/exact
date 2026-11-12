@@ -1,5 +1,64 @@
 use super::*;
 
+#[test]
+fn a_module_store_obeys_the_hosts_scope_in_answers_and_parses() {
+    struct Scoped;
+    impl DataSource for Scoped {
+        fn grants(&self) -> &str {
+            "secret.keep token"
+        }
+        fn query(&mut self, _: &str, _: &[Value]) -> Result<Value, DataError> {
+            unreachable!()
+        }
+        fn answer(&mut self, store: &mut Store, _: &str, _: &[Value]) -> Result<Answer, DataError> {
+            let set = store.set("token", "private");
+            let seen = store.get("token").unwrap_or("empty").to_string();
+            let forget = store.forget("token");
+            Ok(Answer::Now(Value::record(vec![
+                Value::Bool(set.is_err()),
+                Value::str(&seen),
+                Value::Bool(forget.is_err()),
+                Value::str(store.get("token").unwrap_or("empty")),
+            ])))
+        }
+        fn parse(
+            &mut self,
+            store: &mut Store,
+            source: &str,
+            args: &[Value],
+            _: Outcome,
+        ) -> Result<Answer, DataError> {
+            self.answer(store, source, args)
+        }
+    }
+    let mut module = Session::new(Scoped);
+    for granted in [false, true, false] {
+        let mut store = Store::new(
+            if granted {
+                "secret.keep token"
+            } else {
+                "secret.keep other"
+            },
+            [],
+        );
+        for outcome in [None, Some(Outcome::Storage(vec![]))] {
+            module
+                .dispatch(&call_request(&store, "scope", &[], outcome.as_ref()).unwrap())
+                .unwrap();
+            assert_eq!(
+                call_reply(module.output(), &mut store).unwrap(),
+                Answer::Now(Value::record(vec![
+                    Value::Bool(!granted),
+                    Value::str(if granted { "private" } else { "empty" }),
+                    Value::Bool(!granted),
+                    Value::str("empty"),
+                ]))
+            );
+            assert_eq!(store.take_writes().len(), if granted { 2 } else { 0 });
+        }
+    }
+}
+
 struct Fixture(u32);
 impl DataSource for Fixture {
     fn app_id(&self) -> &str {
@@ -180,7 +239,7 @@ fn network_request_preserves_absent_empty_and_restricted_grants() {
     }
 }
 
-/// A long poll's terms cross the seam (tag 10); bad ones
+/// A long poll's terms cross the seam (tag 10, LLP 1016.000 D8); bad ones
 /// are refused.
 #[test]
 fn a_long_poll_round_trips_and_bad_terms_are_refused() {
@@ -227,6 +286,7 @@ fn a_long_poll_round_trips_and_bad_terms_are_refused() {
     w.string("https://example.com/changes");
     pairs(&mut w, &[]);
     bytes(&mut w, &[]);
+    w.u32(0); // no WebSocket protocols
     w.string("since");
     w.string("a.b.c");
     w.u8(0);
@@ -426,7 +486,7 @@ fn explicit_independent_http_survives_the_module_codec() {
     end(&reader).unwrap();
 }
 
-/// A file body has no encoding at the seam: refused,
+/// A file body (LLP 1108 D6 R2) has no encoding at the seam: refused,
 /// never sent as an empty body.
 #[test]
 fn a_body_from_a_file_is_refused_at_the_module_seam() {
@@ -456,7 +516,7 @@ fn a_body_to_a_file_is_refused_at_the_module_seam() {
     ));
 }
 
-/// A held mark has no encoding at the seam: refused, never
+/// A held mark (LLP 1016.000 D9) has no encoding at the seam: refused, never
 /// silently turned into a request a clock waits on.
 #[test]
 fn a_held_request_is_refused_at_the_module_seam() {
@@ -556,7 +616,7 @@ fn a_draw_crosses_the_seam_and_its_recorder_lives_for_its_generation() {
 /// Exercise the browser's actual encoder against a native Rust session,
 /// including finite strings containing the source descriptor separator.
 #[test]
-#[ignore = "launches Bun for the JS-to-Rust data seam; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: launches Bun for the JS-to-Rust data seam"]
 fn web_wire_enum_strings_cross_calls_and_nested_overlay_replies() {
     fn nested() -> Value {
         Value::record(vec![
@@ -603,7 +663,7 @@ w.u8(6); w.u32(2); api.encode(w, 'a|b', 's'); api.encode(w, value, '{s?s[s}');
 if (process.argv[2] === 'true') {
   api.encode(w, value, '{s?s[s}'); w.u32(1); w.u64(7); w.str('save'); w.str('save');
   w.u8(6); w.u32(1); api.encode(w, 'a|b', 's'); w.u8(1); api.encode(w, value, '{s?s[s}'); w.u8(1);
-} else w.u32(0);
+} else { w.u32(0); w.u32(0); }
 process.stdout.write(w.done());
 "#;
         let out = std::process::Command::new("bun")
@@ -637,7 +697,7 @@ process.stdout.write(w.done());
     }
 }
 
-/// A presence secret across the module seam: the per-call
+/// A presence secret across the module seam (LLP 1133.010 D5): the per-call
 /// snapshot carries its occupancy and never its bytes, an answer that reads
 /// it with `get` fails as it would in process, and a locked write goes back
 /// to the host's store, which keeps nothing of it either.
@@ -711,5 +771,90 @@ fn a_locked_name_crosses_the_seam_as_occupancy_alone() {
         writes[0].value.as_deref(),
         Some(&b"secret-2"[..]),
         "for the host's backend"
+    );
+}
+
+#[test]
+fn cache_modes_cross_the_rust_module_seam() {
+    assert_eq!(ABI, 8);
+    let mut old = header(0).into_vec();
+    old[..4].copy_from_slice(&7u32.to_le_bytes());
+    assert!(matches!(reader(&old), Err(e) if e == "logic ABI version differs"));
+    for word in [
+        "unspecified",
+        "default",
+        "no-store",
+        "reload",
+        "no-cache",
+        "force-cache",
+        "only-if-cached",
+    ] {
+        let mode = CacheMode::parse((word != "unspecified").then_some(word)).unwrap();
+        for mut request in [
+            Request::get("https://example.test"),
+            Request::get("https://example.test").independent_http(4096),
+            Request {
+                stream: true,
+                ..Request::get("https://example.test").independent_http(4096)
+            },
+            Request {
+                stream: true,
+                ..Request::get("https://example.test")
+                    .independent_http(4096)
+                    .long_poll("cursor", "next")
+            },
+        ] {
+            request.cache = mode;
+            let mut encoded = Writer::default();
+            encode_result(&mut encoded, Ok(Answer::Later(request.clone())));
+            let bytes = encoded.into_vec();
+            assert_eq!(
+                bytes[0],
+                if mode == CacheMode::Unspecified {
+                    if request.long_poll.is_some() {
+                        10
+                    } else if request.stream {
+                        9
+                    } else if request.http == HttpScheduling::Ordered {
+                        1
+                    } else {
+                        6
+                    }
+                } else {
+                    12
+                }
+            );
+            let mut reader = Reader::new(&bytes);
+            assert_eq!(
+                read_result(&mut reader).unwrap(),
+                Ok(Answer::Later(request))
+            );
+            end(&reader).unwrap();
+        }
+    }
+}
+
+#[test]
+fn socket_protocols_and_selection_cross_the_module_seam() {
+    let request = Request::get("wss://example.test")
+        .protocols(["chat.v2", "chat.v1"])
+        .unwrap();
+    let answer = Answer::stream(request);
+    let mut encoded = Writer::default();
+    encode_result(&mut encoded, Ok(answer.clone()));
+    assert_eq!(
+        read_result(&mut Reader::new(&encoded.into_vec())).unwrap(),
+        Ok(answer)
+    );
+    let message = Outcome::Message(exact_runner::Message {
+        event: "open".into(),
+        protocol: "chat.v1".into(),
+        ..Default::default()
+    });
+    let mut encoded = Writer::default();
+    encode_outcome(&mut encoded, &message);
+    assert_eq!(
+        read_outcome(&mut Reader::new(&encoded.into_vec())).unwrap(),
+        message
     );
 }

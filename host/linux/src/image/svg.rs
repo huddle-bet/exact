@@ -1,9 +1,9 @@
-//! An SVG file as an image on Linux: sniffed by its bytes,
-//! its natural size the root tag's, planned at the box's own pixels
+//! An SVG file as an image on Linux (LLP 1011.001 D4): sniffed by its bytes,
+//! its natural size the root tag's (D1), planned at the box's own pixels
 //! rather than under the natural size, parsed and resolved by
 //! `exact-svg-file` on the decode worker, and painted as an island is
 //! (`Painter::svg_picture`): on the worker when the picture has no text,
-//! on the paint thread, where the session's fonts are, when it has.
+//! on the paint thread, where the host shapes text, when it has (D3).
 use super::png_decode::{DecodePlan, Header};
 use crate::text::Shared;
 use exact_kernel::svg::Scene;
@@ -88,8 +88,8 @@ pub(super) fn inspect(
     })))
 }
 
-/// The pixels a picture is drawn at for a box of `desired` device pixels:
-/// under `fill` the box's own two axes; under the other fits the
+/// The pixels a picture is drawn at for a box of `desired` device pixels
+/// (D1): under `fill` the box's own two axes; under the other fits the
 /// natural ratio at the size `object-fit` places it, `none` at the natural
 /// size in device pixels; a box not laid out yet at the natural size.
 /// Each side at most [`MAX_SIDE`]; the budget halves it as a raster's plan.
@@ -157,10 +157,11 @@ pub(super) fn resize_changes(
 }
 
 /// A picture parsed and resolved on the worker, waiting for the paint
-/// thread to draw it (its text takes the session's fonts).
+/// thread to draw it with its own font stacks (D3).
 pub(super) struct Pending {
     pub permit: DecodePermit,
     pub scene: Scene,
+    pub fonts: Vec<Vec<(bool, String)>>,
     pub css: (f32, f32),
     pub scale: f32,
     pub natural: (u32, u32),
@@ -172,7 +173,7 @@ pub(super) enum Decoded {
     /// Painted, on the worker.
     Pixels(Pixmap),
     /// Resolved; the paint thread paints it.
-    Later(Scene),
+    Later(Scene, Vec<Vec<(bool, String)>>),
 }
 
 /// Parse `bytes` and resolve the scene at the CSS size the plan's pixels
@@ -187,7 +188,8 @@ pub(super) fn decode(
     // No link's query, a CDN's signature, is logged: the source is named cut
     // at its query (a `data:` one by its media type alone), and the parser's
     // diagnostics, which quote what the file holds (links and all), are
-    // counted, not quoted (a bundled file's are the compiler's to name).
+    // counted, not quoted (a bundled file's are the compiler's to name, LLP
+    // 1011.001 D5).
     let data_name;
     let name = match name.strip_prefix("data:") {
         Some(rest) => {
@@ -222,7 +224,7 @@ pub(super) fn decode(
         return Err(Refusal::DecodeFailed);
     }
     if loaded.document.text {
-        return Ok(Decoded::Later(scene));
+        return Ok(Decoded::Later(scene, loaded.document.fonts));
     }
     WORKER_TEXT
         .with(|engine| paint(engine.clone(), &scene, css, scale, plan.pixels))
@@ -260,12 +262,13 @@ pub(super) fn paint(
 }
 
 /// Finish a pending picture on the paint thread: paint it with the
-/// session's text engine and complete its permit as the worker completes a
+/// image's font stacks and complete its permit as the worker completes a
 /// raster's.
 pub(super) fn finish(text: &Shared, pending: Pending) {
     let Pending {
         permit,
         scene,
+        fonts,
         css,
         scale,
         natural,
@@ -278,7 +281,12 @@ pub(super) fn finish(text: &Shared, pending: Pending) {
     let pixels = permit.key().pixels;
     // This charge precedes the painter's allocation of the picture.
     let charge = permit.allocation_charge();
-    match paint(text.clone(), &scene, css, scale, pixels) {
+    let text = if fonts.is_empty() {
+        text.clone()
+    } else {
+        crate::text::TextEngine::for_svg(&fonts)
+    };
+    match paint(text, &scene, css, scale, pixels) {
         Ok(drawn) => {
             let bitmap = Arc::new(super::Bitmap::from_source(
                 drawn.into(),

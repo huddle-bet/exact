@@ -1,10 +1,11 @@
-// The design tool's own local origin: 127.0.0.1:7740, the one
+// The design tool's own local origin (LLP 1122 T1): 127.0.0.1:7740, the one
 // its grants name, or another port for tests and gate runs (`EXACT_TOOL_PORT`),
 // for which the tool is built with that origin.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /** The design tool's own local port: 7740, or `EXACT_TOOL_PORT` (a test's
  * own, so no run holds a person's), which must be a port from 1024 to 65535:

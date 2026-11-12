@@ -7,10 +7,47 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { open, jsonLines, MalformedOperation, main, webFrame } from './agent.mjs';
-import { chromium, launchFacts, noteDefaultStore } from './agent-launch.mjs';
-import { need } from './coverage.mjs';
+import { chromium, launchFacts, noteDefaultStore, suiteBrowser, withEpoch } from './agent-launch.mjs';
+import { browserMissing, reloadPlaywrightPage } from './agent-playwright.mjs';
+import { need, notApplicable } from './coverage.mjs';
 import { typeCommand } from './agent-keys.mjs';
 import { render, stateOp } from './agent-inspect.mjs';
+
+for (const engine of ['chromium', 'firefox', 'webkit']) {
+  need(engine, await browserMissing(engine))(`a Playwright reload keeps the current entry and its Back and Forward entries (${engine})`, async () => {
+    let loads = 0;
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response(
+      `<!doctype html><body data-load="${++loads}">History</body>`,
+      { headers: { 'content-type': 'text/html' } },
+    ) });
+    const browser = await suiteBrowser(engine), page = await browser.newPage();
+    const historySnapshot = () => page.evaluate(() => ({ length: history.length,
+      ...(globalThis.navigation ? { keys: navigation.entries().map(e => e.key) } : {}),
+    }));
+    try {
+      await page.goto(server.url.href);
+      await page.evaluate(() => {
+        history.replaceState({ id: 'home' }, '', '/');
+        history.pushState({ id: 'one' }, '', '/item/one#moves');
+        history.pushState({ id: 'two' }, '', '/item/two');
+      });
+      const entries = await historySnapshot();
+      await page.goBack();
+      const load = await page.locator('body').getAttribute('data-load');
+      await reloadPlaywrightPage(page, withEpoch(page.url(), 60000));
+      assert.notEqual(await page.locator('body').getAttribute('data-load'), load);
+      assert.equal(new URL(page.url()).searchParams.get('epoch'), '60000');
+      assert.equal(new URL(page.url()).hash, '#moves');
+      assert.deepEqual(await historySnapshot(), entries);
+      assert.deepEqual(await page.evaluate(() => history.state), { id: 'one' });
+      await page.goForward();
+      assert.equal(new URL(page.url()).pathname, '/item/two');
+      await page.goBack();
+      await page.goBack();
+      assert.equal(new URL(page.url()).pathname, '/');
+    } finally { await browser.close(); await server.stop(true); }
+  }, 30000);
+}
 
 test('a web frame fallback settles its evaluate request when two RAFs do not complete', async () => {
   for (const completed of [0, 1, 2]) {
@@ -121,7 +158,7 @@ test('malformed input is labelled before delivery; a state refusal is not', asyn
   carrier.ask = async () => ({ error: 'timer refused the advance' });
   await assert.rejects(() => s.clock('+100'), e => e.message.includes('timer refused') && e.malformed === undefined);
   await assert.rejects(() => main(['web', 'resize banana'], { open: async () => ({ close() {} }) }), e => e.malformed === true);
-  // A deep link is `type` on the navigation root: the refusal names that form.
+  // A deep link is `type` on the navigation root (euxy FRICTION 11): the refusal names that form.
   await assert.rejects(() => main(['web', 'open euxy://p/1'], { open: async () => ({ close() {} }) }), e => e.malformed === true && e.message.includes('`type <root> euxy://p/1`'));
   // A drive's flag inside the step was read as a form ("screenshot: unknown form 3"): the refusal names where it goes.
   await assert.rejects(() => main(['web', 'screenshot x.png --scale 3 window'], { open: async () => ({ close() {} }) }),
@@ -130,6 +167,20 @@ test('malformed input is labelled before delivery; a state refusal is not', asyn
   // `state thread --json` printed the capped summary again, the flag unread; `--full` is the step's own.
   await assert.rejects(() => main(['web', 'state thread --json'], { open: async () => ({ close() {} }) }),
     e => e.malformed === true && e.message.endsWith('state: --json is a flag of the drive, not of the step: write it before the steps, as `web --json "state thread"`'));
+});
+
+test('a move the carrier refuses partway keeps the contact where its delivered samples left it', async () => {
+  const carrier = { host: 'web', browser: 'chrome', launchFacts: launchFacts({}), reset() {}, async ask() { return {}; },
+    async input() { return reply; } };
+  let reply = { error: 'surface refused pointer', at: [10, 30] };
+  const s = await open({ reuse: carrier });
+  s.landed = async r => r;
+  s.contact = { x: 10, y: 50 };
+  assert.equal((await s.pointer('move', { dx: 0, dy: -40, ms: 200 })).error, 'surface refused pointer');
+  assert.deepEqual(s.contact, { x: 10, y: 30 });
+  reply = { error: 'surface refused pointer' };
+  assert.equal((await s.pointer('move', { dx: 0, dy: -40 })).error, 'surface refused pointer');
+  assert.deepEqual(s.contact, { x: 10, y: 30 });
 });
 
 test('accepted pointer, wheel, media and zero-time forms still reach the carrier', async () => {
@@ -153,7 +204,7 @@ test('accepted pointer, wheel, media and zero-time forms still reach the carrier
     await s.tap('a', media);
     assert.deepEqual(calls.at(-1), [1, 'mediasession', media]);
   }
-  // Exact's picture-in-picture window is the Mac's: the web carrier is given no input.
+  // Exact's picture-in-picture window is the Mac's: the web carrier is given no input (LLP 1042 §9.1).
   const before = calls.length, pip = await s.tap('a', { pictureInPicture: 'close' });
   assert.equal(pip.delivery, 'unsupported');
   assert.ok(!calls.slice(before).some(Array.isArray));
@@ -186,7 +237,7 @@ test('Android relative clocks start where the reader hands its live clock to the
   assert.deepEqual(calls, [{ op: 'tags' }, { op: 'clock', to: 63.5 }]);
 });
 
-// A hold is the clock's (a charge that runs while held must move): the carrier is told it is virtual, no
+// A hold is the clock's (euxy FRICTION §2: a dice charge did nothing while held): the carrier is told it is virtual, no
 // wall time passes, and the app's clock moves by it; under --timing platform it stays real time.
 test('a held contact\'s hold moves the app\'s clock by its length', async () => {
   for (const timing of ['agent', 'platform']) {
@@ -291,7 +342,7 @@ test('stdio preserves malformed replies and leaves state refusals unlabelled', a
   readable.destroy(); writable.destroy();
 });
 
-// A suspended app answers nothing, so its pushed "background" fails what waits at once, and later ops
+// LLP 1143 D1: a suspended app answers nothing, so its pushed "background" fails what waits at once, and later ops
 // until it is back; the reply owed to the failed op is dropped when it comes, never taken as the next op's.
 test('an app that leaves the foreground fails the pending op and later ones until it is back', async () => {
   const readable = new PassThrough(), writable = new PassThrough(), host = [];
@@ -319,14 +370,14 @@ test('the driver grammar names an unquoted mediasession action beside pinch', ()
   assert.ok(usage.stderr.includes(form), usage.stderr);
 }, 60_000);
 
-test('rendered tree keeps focus; an accessible name is tree --ax\'s', async () => {
+test('rendered tree keeps focus; an accessible name is tree --ax\'s (LLP 1080.002)', async () => {
   const { render } = await import('./agent.mjs');
   const line = render('tree', {nodes:[{id:1, depth:0, type:'View', props:{testId:'play'}, focused:true}]});
   assert.match(line, /\[focused\]/);
   assert.doesNotMatch(line, /name=/);
 });
 
-// A route the host does not show reads `[hidden]` to its last node, so a stack's lower screens are
+// LLP 1153 D8: a route the host does not show reads `[hidden]` to its last node, so a stack's lower screens are
 // not taken for shown beside its top; a screen a sheet covers is shown beneath it and reads `[inactive]`.
 test('rendered tree marks a hidden route hidden and a covered one inactive', async () => {
   const { render } = await import('./agent.mjs');
@@ -348,6 +399,8 @@ test('a native hangup names how the app ended, its crash reports, and only its l
   assert.match(hangup({ what: 'clock did not answer', pid: process.pid }), /^clock did not answer \(pid \d+ still running\)$/);
   assert.match(hangup({ what: 'the app hung up', pid: 999999 }), /\(pid 999999 gone\)$/);
   assert.match(hangup({ what: 'the app exited', exit: { code: 3, signal: null } }), /\(exit code 3\)$/);
+  // simctl's 0 for an app that crashed is not said as a clean exit (LLP 1156.001 D4).
+  assert.match(hangup({ what: 'the app ended', exit: { code: 0, signal: null } }), /^the app ended \(it ended without a close being asked for; simctl reports exit 0, which a crash also gives\)$/);
 });
 
 
@@ -431,7 +484,7 @@ test('compare: the two pictures side by side at half size, each region outlined 
 
 test('compare: an edge\'s anti-aliasing is no colour of the picture it is in', async () => {
   // The reference's box has a soft left edge (three grey columns), the screen's a hard one 7 pt further left: the
-  // reference's differing cells are white and that edge's greys, which are no ink of its own ("#bbb").
+  // reference's differing cells are white and that edge's greys, which are no ink of its own (euxy port: "#bbb").
   const soft = [[24, 60, 1, 40, [200, 200, 200]], [25, 60, 1, 40, [140, 140, 140]], [26, 60, 1, 40, [80, 80, 80]], [27, 60, 40, 40, [0, 0, 0]]];
   const { result } = await compared(soft, [[20, 60, 47, 40, [0, 0, 0]]]);
   const { reference, screen } = result.regions[0].colours;
@@ -556,7 +609,7 @@ test('compare: the CLI form and the reference are checked before any comparison'
   assert.match(helpText('agent'), /\(a select, date or checkbox: its value\)/);
 });
 
-// A library an earlier plain drive stored, where compare drives start empty.
+// The euxy port's "BPM +5 per tap": a library an earlier plain drive stored, where compare drives start empty.
 test('the first drive from an app directory that keeps the store `default` says so, once per directory and device', () => {
   const root = mkdtempSync(resolve(tmpdir(), 'exact-store-note-')), said = [], error = console.error;
   console.error = (line) => said.push(line);
@@ -574,7 +627,7 @@ test('a native named store is kept unless the drive resets it, under its lock; a
   try {
     for (const [host, flags, fresh, locked] of [['ios', [], false, true], ['ios', ['--reset-storage'], true, true], ['android', ['--reset-storage'], true, true],
       ['macos', [], false, true], ['mac', [], false, true], ['linux', ['--reset-storage'], true, true], ['web', [], true, false], ['web', ['--keep-storage'], false, false],
-      // A drive that compares starts empty everywhere unless kept (dice rolls an earlier drive stored).
+      // A drive that compares starts empty everywhere unless kept (euxy port: dice rolls an earlier drive stored).
       ['ios', ['screenshot a.png compare ref.png'], true, true], ['ios', ['--keep-storage', 'screenshot a.png compare ref.png'], false, true]]) {
       let env = 'unopened', lock = null;
       const fakeOpen = async (o) => { env = o.env; return { state: async () => ({}), close: async () => {} }; };
@@ -593,13 +646,16 @@ test('a native named store is kept unless the drive resets it, under its lock; a
     let env = null, lock = null;
     const injected = { open: async (o) => { env = o.env; return { state: async () => ({}), close: async () => {} }; }, driveServer: async () => null,
       exclusiveNativeStore: async (key, launch) => { lock = key; return launch(); }, resolveDevice: () => 'a device' };
-    assert.equal(await main(['ios', '--reset-storage', 'state'], injected), 0);
-    assert.deepEqual([lock?.storage, env?.EXACT_AGENT_STORAGE_FRESH], ['default', '1']);
+    for (const host of ['ios', 'macos', 'linux', 'android', 'windows']) {
+      lock = env = null;
+      assert.equal(await main([host, '--reset-storage', 'state'], injected), 0);
+      assert.deepEqual([lock?.storage, env?.EXACT_AGENT_STORAGE_FRESH], ['default', '1'], host);
+    }
     await assert.rejects(main(['web', '--reset-storage', 'state'], injected), /need --storage <name>/);
   } finally { [console.log, console.error] = quiet; }
 });
 
-// A `tap` that misses on a mode an earlier drive persisted would read like a broken view.
+// The euxy port's `tap play` missed on a mode an earlier drive persisted, and the miss read like a broken view.
 test('a miss on a drive that kept its store says so, and how to start empty', async () => {
   const quiet = console.error;
   console.error = () => {};
@@ -767,7 +823,7 @@ test('a screenshot with a system sheet held says it is not drawn, and where the 
   } finally { console.error = quiet; }
 });
 
-// A menu painted in the page by the agent reads as an app bug.
+// The euxy port's pattern menu: painted in the page by the agent, it read as an app bug.
 test('a tap that opens a menu the agent paints says UIKit presents it, under --touch platform, once', async () => {
   const { driveNotes } = await import('./agent-test.mjs');
   const said = [], quiet = console.error;
@@ -831,6 +887,36 @@ test('a native store is one drive\'s at a time: a second is refused until the fi
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+notApplicable(process.platform === 'win32' ? 'POSIX executable permissions' : null)('a native launch failure returns its error and releases the store for another drive', () => {
+  const root = mkdtempSync(resolve(import.meta.dir, '.native-launch-'));
+  try {
+    writeFileSync(resolve(root, 'not-executable'), '#!/bin/sh\necho hi\n', { mode: 0o644 });
+    // A subprocess bounds a regression that hangs during cleanup, even after the ready deadline.
+    const ran = spawnSync(process.execPath, ['--eval', `
+      import assert from 'node:assert/strict';
+      import { resolve } from 'node:path';
+      import { openStdio } from './scripts/agent-stdio.mjs';
+      import { exclusiveNativeStore } from './scripts/agent-launch.mjs';
+      const root = process.argv[1];
+      for (const host of ['linux', 'windows']) {
+        const key = { host, device: 'machine', appId: 'native-launch-test', storage: 'default' };
+        for (const bin of [resolve(root, 'not-executable'), root]) {
+          process.env[host === 'linux' ? 'EXACT_LINUX_BIN' : 'EXACT_WINDOWS_BIN'] = bin;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            await assert.rejects(
+              exclusiveNativeStore(key, () => openStdio({ host, app: 'hello' }), root),
+              /launch failed: EACCES:/,
+            );
+          }
+        }
+      }
+    `, root], { cwd: resolve(import.meta.dir, '..'), encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL',
+      env: { ...process.env, EXACT_APP_DIR: '', EXACT_PROOF_PRODUCTS: '' } });
+    assert.equal(ran.error, undefined, ran.stderr);
+    assert.equal(ran.status, 0, ran.stderr);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 15000);
+
 test('compare on a capture: nodes where the window has them, its safe area not scored, a scaled viewport refused, its notes said', async () => {
   const { compareOp } = await import('./agent-compare.mjs');
   const { encodePng } = await import('./png.mjs');
@@ -851,7 +937,7 @@ test('compare on a capture: nodes where the window has them, its safe area not s
     const r = await compareOp(ios({ viewport: { x: 0, y: 0, w: 60, h: 200 }, window: { x: 678, y: 0, w: 60, h: 200 } }), resolve(dir, 'ref.png'), async () => ({ ...shot }));
     assert.match(r.text, /under card \[10,40 60×30\]/);
     assert.doesNotMatch(r.text, /draws at|painted by the agent/);
-    // A menu the agent painted is said on the score's line, which a reader filtering for `compare` keeps.
+    // A menu the agent painted is said on the score's line, which a reader filtering for `compare` keeps (euxy port).
     const painted = await compareOp(ios({ viewport: { x: 0, y: 0, w: 60, h: 200 }, window: { x: 678, y: 0, w: 60, h: 200 } }), resolve(dir, 'ref.png'), async () => ({ ...shot, paintedNote: 'the agent painted it' }));
     assert.match(painted.text.split('\n')[0], /^compare .* matches \(.*\), with the open menu or popover painted by the agent, not UIKit's \(--touch platform shows UIKit's\); diff /);
     // A floating sheet the platform draws scaled is said, in compare's report and in `layout`'s.

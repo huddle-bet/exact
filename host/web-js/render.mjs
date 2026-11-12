@@ -1,12 +1,12 @@
-// Pages rendered by the JavaScript runtime itself, under Bun (`--render js`):
-// the app's generated module runs against a small DOM
+// Pages rendered by the JavaScript runtime itself, under Bun (`--render js`,
+// LLP 1071): the app's generated module runs against a small DOM
 // (`dom.js`), in a fresh VM context per render, with the app's own data
 // source (TypeScript, or the Rust module's wasm), until nothing is in flight
 // or the deadline passes. Its fetches share an HTTP cache (`http-cache.mjs`). Its document, head and checkpoint are composed
 // over the built shell as the Rust render host composes them
 // (`host/render/src/page.rs` `page_js`), so the page adopts the same way.
 //
-//   bun host/web-js/render.mjs <dist> --build                      pages for render=build routes
+//   bun host/web-js/render.mjs <dist> --build                      pages for render=build routes, robots.txt, sitemap.xml
 //   bun host/web-js/render.mjs <dist> <location>…                  print pages
 //   bun host/web-js/render.mjs <dist> --serve [--port 8830]        a page per request
 import { createHash } from 'node:crypto';
@@ -18,8 +18,79 @@ import { createDocument } from './dom.js';
 import { cachingFetch, FRESH } from './http-cache.mjs';
 import { canonical, matchPattern } from './route-pattern.js';
 import { select, tokens } from './page-style.mjs';
+import { writeCrawlerFiles } from '../web/crawl.mjs';
 
 const DEADLINE = 3000;
+// Promise reactions and async functions run outside the host's callback wrapper. Their promise's realm owns the
+// rejection; an Error's realm also identifies a callback chained from a host promise, such as a response body read.
+const rejectionOwners = new WeakMap();
+const rejectionOwner = value => {
+  while (value && (typeof value === 'object' || typeof value === 'function')) {
+    const owner = rejectionOwners.get(value);
+    if (owner) return owner;
+    value = Object.getPrototypeOf(value);
+  }
+};
+const unhandledRejection = (error, promise) => {
+  const report = rejectionOwner(promise) ?? rejectionOwner(error);
+  if (report) report(error);
+  // Installing a listener disables Bun's default fatal handling. Keep that handling for rejections outside a render
+  // when no other listener handles them. Disposed realms still own theirs, so they cannot affect another request.
+  else if (process.listenerCount('unhandledRejection') === 1) throw error;
+};
+const realmPrototypes = new vm.Script('[Promise.prototype, Error.prototype]');
+// `html` with each script element's text blanked, the same length, so the shell's places (its root, entry and
+// preloads) are found only in its own markup: a script's text, an `--inline` bundle's or a `host.web.head` entry's, may
+// spell any of them. A script element starts where HTML's tokenizer starts one (HTML, 13.2.5 "Tokenization"): a
+// `<script` start tag in markup, not inside a comment, a quoted attribute value, or the text of an element HTML reads
+// as raw text or RCDATA (`style`, `title`, `textarea`, …), which may hold that spelling. Its text runs from the start
+// tag's `>` to the first `</script` followed by whitespace, `/` or `>` ("Script data state" and the end tag states
+// after it): an entry's text holds no `<!--` (scripts/web-head.mjs), so the escaped states that could pass over that end
+// tag are never entered. As page.rs `blanked`.
+const RAW_TEXT = new Set(['style', 'title', 'textarea', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript']);
+const blanked = (html) => {
+  // ASCII case only, so every offset is the shell's.
+  const lower = html.replace(/[A-Z]+/g, (s) => s.toLowerCase()), endsName = (c) => c !== undefined && '\t\n\f\r />'.includes(c);
+  let out = '', kept = 0, at = 0;
+  while ((at = lower.indexOf('<', at)) >= 0) {
+    if (lower.startsWith('<!--', at)) { const end = lower.indexOf('-->', at + 4); at = end < 0 ? lower.length : end + 3; continue; }
+    const name = /^<([a-z][^\t\n\f\r />]*)/.exec(lower.slice(at, at + 32))?.[1];
+    if (!name) { at++; continue; }
+    // The start tag's `>`, past its quoted attribute values.
+    let end = at + 1 + name.length, quote = null;
+    for (; end < lower.length; end++) {
+      const c = lower[end];
+      if (quote) { if (c === quote) quote = null; } else if (c === '"' || c === "'") quote = c; else if (c === '>') break;
+    }
+    at = end + 1;
+    if (name !== 'script' && !RAW_TEXT.has(name)) continue;
+    // Its text, to the first end tag of its name followed by whitespace, `/` or `>`.
+    let close = at;
+    while ((close = lower.indexOf('</' + name, close)) >= 0 && !endsName(lower[close + 2 + name.length])) close += 2 + name.length;
+    if (close < 0) break;
+    if (name === 'script') { out += html.slice(kept, at) + ' '.repeat(close - at); kept = close; }
+    at = close;
+  }
+  return out + html.slice(kept);
+};
+/** The shell's root, found in `seen` (`blanked`), and its entry: the first module script after the root, `./app.js`'s
+ * or the one an `--inline` shell holds the bundle in, where a page puts its checkpoint and its capture script loads
+ * `./app.js` (page.rs `js_entry`); `entry` is -1 where there is none. The root carries what the build wrote on it:
+ * `data-audio-session` (LLP 1096 D7). */
+export function shellPlaces(seen) {
+  const ROOT = /<div id="exact-root"( data-audio-session="[a-z-]+")?><\/div>/.exec(seen);
+  const ENTRY = ROOT && /<script type="module"(?: src="\.\/app\.js")?>\s*<\/script>/.exec(seen.slice(ROOT.index + ROOT[0].length));
+  const entry = ENTRY ? ROOT.index + ROOT[0].length + ENTRY.index : -1;
+  return { ROOT, entry, entryEnd: ENTRY ? entry + ENTRY[0].length : -1 };
+}
+/** Where the build puts the Markdown it compiled: before the shell's entry, whatever a head entry's text spells. */
+export const markdownAt = (shell) => shellPlaces(blanked(shell)).entry;
+// The shell's compiled Markdown (`markdownAt`): its own script element's text, not one a script's text spells.
+const MARKDOWN = '<script type="application/vnd.exact.markdown">';
+const builtMarkdown = (shell, seen) => {
+  const at = seen.indexOf(MARKDOWN);
+  return at < 0 ? '[]' : shell.slice(at + MARKDOWN.length, shell.indexOf('</script>', at + MARKDOWN.length));
+};
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const unesc = s => s.replace(/&(amp|lt|gt|quot);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"' })[e]);
 
@@ -39,7 +110,7 @@ const utcIntl = new vm.Script(`{
   });
 }`);
 
-/** An undeclared route's activation, as the render host
+/** An undeclared route's activation (LLP 1048.007 D1), as the render host
  * infers it (`exact_runner::activation`, whose rules the build wrote in
  * `out.activation`): `interaction` when the render left the runtime nothing
  * to do before the reader acts — nothing in the plan only the runtime
@@ -51,12 +122,12 @@ const utcIntl = new vm.Script(`{
 function infer(out) {
   const { waits: kinds, kept } = out.activation;
   const on = [...out.root.matchAll(/ data-exact-on="([^"]*)"/g)].flatMap(m => m[1].split(' '));
-  const waits = !kept && !out.pending.length && !out.outstanding && !out.continuing && !out.due && !out.zoned && on.every(k => kinds.includes(k));
+  const waits = !kept && !out.pending.length && !out.outstanding && !out.continuing && !out.open.length && !out.due && !out.zoned && on.every(k => kinds.includes(k));
   return waits ? 'interaction' : 'eager';
 }
 
 /** The renderer for one built dist: its server bundle compiled once. */
-/** The answers a waiting page names rather than holds, by their hash: kept for the reader's first
+/** The answers a waiting page names rather than holds (LLP 1048.007 D10), by their hash: kept for the reader's first
  * act, most recently made or asked last, within 512 checkpoints and 64 MB. A checkpoint no longer kept is a 404, and
  * the runtime then builds the page afresh. One store for the process, whichever build made them. */
 const Deferred = new Map();
@@ -104,42 +175,58 @@ export function renderer(dist, { closed = false } = {}) {
   // comes before anything the render decides (the head a server flushes as
   // a request arrives), then the head's fields, the document and its
   // checkpoint.
-  // The root carries what the build wrote on it: `data-audio-session`.
-  const ROOT = /<div id="exact-root"( data-audio-session="[a-z-]+")?><\/div>/.exec(shell), ENTRY = '<script type="module" src="./app.js"></script>';
+  // The root carries what the build wrote on it: `data-audio-session` (LLP 1096 D7). The root, the entry and the
+  // sheet are found in `seen`, outside every script element.
+  const seen = blanked(shell), { ROOT, entry, entryEnd } = shellPlaces(seen);
   const title = shell.indexOf('<title>'), stop = shell.indexOf('>\n', shell.indexOf('<meta name="viewport"', title)) + 2;
-  const root = ROOT?.index ?? -1, entry = shell.indexOf(ENTRY), rootAttrs = ROOT?.[1] ?? '';
+  const root = ROOT?.index ?? -1, rootAttrs = ROOT?.[1] ?? '';
+  // The build's preloads are before its sheet; after it, `host.web.head`'s entries are the app's, left as written.
+  const sheetAt = seen.indexOf('<style>', stop), early = sheetAt < 0 || sheetAt > root ? root : sheetAt;
   const viewportMeta = esc(/<meta name="viewport" content="([^"]*)"/.exec(shell)?.[1] ?? 'width=device-width, initial-scale=1');
-  // The document's language is the shell's, which the build wrote from the manifest's `lang`.
-  const language = /<html[^>]* lang="([^"]*)"/.exec(shell)?.[1] || 'en-US';
+  // A page's `lang` and `dir` are the strings table the render resolved (LLP 1060 D4: `__start`'s `language`); with no
+  // table, the shell's `lang`, which the build wrote from the manifest's (LLP 1115.000 D4.6), and `ltr` (page.rs `lang_attr`).
+  const shellLang = /<html[^>]* lang="([^"]*)"/.exec(shell)?.[1] || 'en-US';
+  const htmlTag = language => language ? `<html lang="${esc(language[0])}" dir="${language[1]}">` : `<html lang="${shellLang}" dir="ltr">`;
+  // A fixed `userInterfaceStyle` (the shell's `<meta name="color-scheme">`, look.mjs) is the system scheme a page renders in.
+  const fixedScheme = /<meta name="color-scheme" content="(light|dark)">/.exec(seen)?.[1];
   // The shell's sheet as rules, when the build analyzed it: a page then carries only those its document can match, after
-  // its render, and the head sent before the render carries none (page-style.mjs).
+  // its render, and the head sent before the render carries none (page-style.mjs, LLP 1048.007 D4).
   const rules = existsSync(resolve(dist, '.gen/page-style.json')) ? JSON.parse(readFileSync(resolve(dist, '.gen/page-style.json'), 'utf8')) : null;
   const sheet = rules ? /<style>[\s\S]*?<\/style>\n?/ : /(?!)/;
   // A rendered page paints without the runtime, which only adopts it, so its preloads are low priority (page.rs `push_low`).
-  const headOf = preload => shell.slice(0, title).replace(/<html[^>]*>/, `<html lang="${language}" dir="ltr">`) + `<script>${capture}</script>\n`
-    + shell.slice(stop, root).replace(sheet, '').replace(/(<link rel="modulepreload" href="[^"]*")>\n/g, preload ? '$1 fetchpriority="low">\n' : '');
-  const preloads = (shell.slice(stop, root).match(/<link rel="modulepreload" href="[^"]*">\n/g) ?? []).map(l => l.replace('>', ' fetchpriority="low">')).join('');
+  const headOf = (preload, language) => shell.slice(0, title).replace(/<html[^>]*>/, () => htmlTag(language)) + `<script>${capture}</script>\n`
+    + shell.slice(stop, early).replace(/(<link rel="modulepreload" href="[^"]*")>\n/g, preload ? '$1 fetchpriority="low">\n' : '')
+    + shell.slice(early, root).replace(sheet, '');
+  const preloads = (shell.slice(stop, early).match(/<link rel="modulepreload" href="[^"]*">\n/g) ?? []).map(l => l.replace('>', ' fetchpriority="low">')).join('');
   // A realm for one render: a document, a context with the server bundle run in it, and its location, which `begin`
   // fills in. Nothing has run in it but the bundle's own loading, so making it ahead takes that off a request's path
-  // and every render still has a realm of its own (as the render host's `make_realm`).
+  // and every render still has a realm of its own (LLP 1048.000 D10, as the render host's `make_realm`).
   const realm = () => {
     const document = createDocument(shell);
     // The bake's page facts (runner/src/page.rs): visible, online, focused, no share sheet or pickers. The
     // base is the shell's `<base href="/">`, against which the runtime checks that a link navigates (rt.js `navigable`).
     Object.assign(document, { visibilityState: 'visible', hasFocus: () => true, baseURI: 'http://render.invalid/' });
-    const location = { pathname: '/', search: '', href: 'http://render.invalid/', origin: '' };
+    const location = { pathname: '/', search: '', href: 'http://render.invalid/', origin: 'http://render.invalid' };
     // What the render read that another render may not read alike: how long its answers stay fresh for any reader
     // (http-cache.mjs `FRESH`), and whether a source drew a random number (its only other reading the clock and
     // `Math.random` refuse, ts-fetch.js) — so how long its page may be given again (`keep`).
     const read = { fresh: Infinity, random: false }, prefers = new Set();
     const noted = response => { read.fresh = Math.min(read.fresh, response?.[FRESH] ?? 0); return response; };
     const drew = f => (...args) => { read.random = true; return f(...args); };
-    const owner = new AbortController(), timers = new Set();
+    const owner = new AbortController(), timers = new Set(), errors = [];
     let disposed = false;
     const dispose = () => { disposed = true; owner.abort(); for (const timer of timers) clearTimeout(timer); timers.clear(); };
+    const failedCallback = error => { if (!disposed) errors.push(`callback: ${error?.message ?? error}`); };
+    const callback = (fn, ...args) => {
+      if (disposed) return;
+      try {
+        const result = fn(...args);
+        if (result?.then) Promise.resolve(result).catch(failedCallback);
+      } catch (error) { failedCallback(error); }
+    };
     const later = (fn, ms, ...args) => {
       if (disposed) return 0;
-      const id = setTimeout(() => { timers.delete(id); if (!disposed) fn(...args); }, ms);
+      const id = setTimeout(() => { timers.delete(id); callback(fn, ...args); }, ms);
       timers.add(id); return id;
     };
     const stopTimer = id => { timers.delete(id); clearTimeout(id); };
@@ -149,9 +236,14 @@ export function renderer(dist, { closed = false } = {}) {
       return fetched(input, { ...init, signal: signal ? AbortSignal.any([owner.signal, signal]) : owner.signal })
         .then(noted, error => { read.fresh = 0; throw error; });
     };
+    // No code from a string, by any route (a function's own `constructor` too): as on Hermes, and as the page under
+    // the render server's CSP, which admits no `'unsafe-eval'`. The module's `Function` and `eval` throw Hermes's
+    // error (ts-fetch.js); what reaches the realm's own throws its EvalError.
     const ctx = vm.createContext({
       document, location,
-      navigator: { onLine: true, language },
+      // The locale a runner has before a host reports the reader's (runner/src/time.rs), as `exactTime` answers in a
+      // render: the page is not the reader's, and its strings read the base (rt.js `locale`).
+      navigator: { onLine: true, language: 'en-US' },
       getComputedStyle: () => ({ fontSize: '16px' }), devicePixelRatio: 1,
       history: { replaceState() {}, pushState() {}, go() {} }, localStorage: { length: 0, key() {}, getItem() { return null; } },
       addEventListener() {}, removeEventListener() {}, requestAnimationFrame: () => 0,
@@ -159,20 +251,23 @@ export function renderer(dist, { closed = false } = {}) {
       // The reader's viewport as its request tells it (`viewportOf`), set by `begin`; else runner/src/viewport.rs's default.
       innerWidth: 390, innerHeight: 844,
       matchMedia: media => ({ media, matches: prefers.has(media.replace(/\s+/g, '')), addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }),
-      setTimeout: later, clearTimeout: stopTimer, queueMicrotask: fn => queueMicrotask(() => { if (!disposed) fn(); }),
+      setTimeout: later, clearTimeout: stopTimer, queueMicrotask: fn => queueMicrotask(() => callback(fn)),
       performance, console, Request, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, AbortSignal,
+      ReadableStream, WritableStream, TransformStream, CountQueuingStrategy, ByteLengthQueuingStrategy, CompressionStream, DecompressionStream,
       fetch: fetchOwned,
       crypto: { subtle: crypto.subtle, getRandomValues: drew(a => crypto.getRandomValues(a)), randomUUID: drew(() => crypto.randomUUID()) },
       WebAssembly, atob, btoa, Event: class {}, CustomEvent: class {}, __exactRender: true, __files: files,
       ...(closed ? { __exactMarkdown: new Map() } : {}),
-      __exactMarkdownBuilt: JSON.parse(/<script type="application\/vnd.exact.markdown">([\s\S]*?)<\/script>/.exec(shell)?.[1] ?? '[]'),
-    });
+      __exactMarkdownBuilt: JSON.parse(builtMarkdown(shell, seen)),
+    }, { codeGeneration: { strings: false } });
     ctx.globalThis = ctx; ctx.self = ctx;
+    if (!process.listeners('unhandledRejection').includes(unhandledRejection)) process.on('unhandledRejection', unhandledRejection);
+    for (const prototype of realmPrototypes.runInContext(ctx)) rejectionOwners.set(prototype, failedCallback);
     utcIntl.runInContext(ctx);
     try { script.runInContext(ctx); } catch (error) { dispose(); throw error; }
     // What loading the bundle read is every render's alike.
     Object.assign(read, { fresh: Infinity, random: false });
-    return { ctx, location, read, prefers, dispose };
+    return { ctx, location, read, prefers, dispose, errors };
   };
   // The next render's realm, made once the last render is done and nothing waits (`render.ahead` false turns it off).
   let ahead = null, making = false;
@@ -190,47 +285,54 @@ export function renderer(dist, { closed = false } = {}) {
     Object.assign(made.location, { pathname: url.pathname, search: url.search, href: url.href });
     Object.assign(made.ctx, { innerWidth: viewport.width, innerHeight: viewport.height });
     made.prefers.clear();
-    for (const [on, query] of [[viewport.dark, '(prefers-color-scheme:dark)'], [viewport.reducedMotion, '(prefers-reduced-motion:reduce)'], [viewport.reducedTransparency, '(prefers-reduced-transparency:reduce)']]) if (on) made.prefers.add(query);
+    for (const [on, query] of [[fixedScheme ? fixedScheme === 'dark' : viewport.dark, '(prefers-color-scheme:dark)'], [viewport.reducedMotion, '(prefers-reduced-motion:reduce)'], [viewport.reducedTransparency, '(prefers-reduced-transparency:reduce)']]) if (on) made.prefers.add(query);
     let info;
     try { info = await ctx.__start(); } catch (error) { made.dispose(); throw error; }
     // The capture script imports the entry by the policy; an interaction
     // page drops the head's modulepreloads, and an undeclared one adds them
     // after its head once its render chose `eager` (page.rs `head_js`).
-    const head = headOf(info.activate !== 'interaction' && info.activate !== 'inferred');
+    const head = headOf(info.activate !== 'interaction' && info.activate !== 'inferred', info.language);
     return { ...info, location, head, dispose: made.dispose, async finish(deadline = DEADLINE) {
       try {
         const out = await ctx.__render(deadline, info.canSetStatus !== false);
+        out.failed = [...(out.failed ?? []), ...made.errors];
         const hero = heroImage(out);
         const activate = info.activate === 'inferred' ? infer(out) : info.activate;
         const late = info.activate === 'inferred' && activate !== 'interaction' ? preloads : '';
         const wake = activate === 'interaction' && out.wake.length ? ` data-wake="${esc(JSON.stringify(out.wake))}"` : '';
         const fields = `<title>${esc(out.title || name)}</title><meta name="viewport" content="${viewportMeta}">${crawled(out, url.pathname + url.search)}`;
         const revalidate = info.activate !== 'never' && (out.outstanding || out.continuing);
-        const checkpoint = `{"location":${JSON.stringify(url.pathname + url.search)},"time":${JSON.stringify(out.time)},"logic":null,"answers":${out.answers},"pending":${JSON.stringify(out.pending)}${revalidate ? ',"revalidate":true' : ''}}`;
+        const checkpoint = `{"location":${JSON.stringify(url.pathname + url.search)},"time":${JSON.stringify(out.time)},"logic":null,"answers":${out.answers},"pending":${JSON.stringify(out.pending)}${out.open.length ? `,"open":${JSON.stringify(out.open)}` : ''}${revalidate ? ',"revalidate":true' : ''}}`;
         const digest = createHash('sha256').update(out.root).digest('hex').slice(0, 16);
         const style = rules ? `<style data-exact-page>${select(rules, tokens(out.root + shell.slice(root)))}</style>\n` : '';
         // A page made per request that waits for the reader names its answers past 1 KB rather than holding them: they
-        // are needed only once the reader acts, and the capture script fetches them with the runtime.
+        // are needed only once the reader acts, and the capture script fetches them with the runtime (LLP 1048.007 D10).
         const deferred = activate === 'interaction' && (info.policy === 'request' || info.policy === 'cached') && checkpoint.length > 1024;
         const src = deferred ? ` data-src="/.exact/checkpoint/${deferAnswers(checkpoint)}.json"` : '';
         const body = late => `${fields}\n${late}${style}${hero}<div id="exact-root"${rootAttrs}>${out.root}</div>${shell.slice(root + ROOT[0].length, entry)}`
-          + `<script type="application/vnd.exact.checkpoint" data-digest="${digest}" data-activate="${activate}"${wake}${src}>${deferred ? '' : checkpoint.replace(/</g, '\\u003c')}</script>${shell.slice(entry + ENTRY.length)}`;
+          + `<script type="application/vnd.exact.checkpoint" data-digest="${digest}" data-activate="${activate}"${wake}${src}>${deferred ? '' : checkpoint.replace(/</g, '\\u003c')}</script>${shell.slice(entryEnd)}`;
         // A complete page marks html and names the preloads in its head; a streamed head has gone already, so the rest
         // marks it before the body and names them after the head's fields, as page.rs does.
-        const whole = late ? headOf(true) : head;
-        const markedHead = out.scrollDocument ? whole.replace('<html ', '<html data-scrolldocument ') : whole;
-        const mark = out.scrollDocument ? '<script>document.documentElement.setAttribute("data-scrolldocument","")</script>\n' : '';
+        const whole = late ? headOf(true, info.language) : head;
+        // The canvas a bound root background gave the html element (canvas.rs).
+        const canvas = ctx.document.documentElement.style.getPropertyValue('--exact-root-background');
+        const htmlAttrs = (out.scrollDocument ? 'data-scrolldocument ' : '') + (canvas ? `style="--exact-root-background:${esc(canvas)}" ` : '');
+        const markedHead = htmlAttrs ? whole.replace('<html ', `<html ${htmlAttrs}`) : whole;
+        const mark = [out.scrollDocument && 'document.documentElement.setAttribute("data-scrolldocument","")',
+          canvas && `document.documentElement.style.setProperty("--exact-root-background",${JSON.stringify(canvas).replace(/</g, '\\u003c')})`].filter(Boolean).join(';');
+        const marked = mark ? `<script>${mark}</script>\n` : '';
         makeAhead();
-        // The HTTP status, as the render host gives it (lib.rs `Rendered::status`): a location the router
+        // The HTTP status, as the render host gives it (lib.rs `Rendered::status`, LLP 1048.000 D11): a location the router
         // sends to its notfound route is 404, or 410 if its head says so; a render at its deadline 503; else the head's own.
-        const settled = !out.pending.length && !out.outstanding;
+        // Settled when no work was left in flight, whatever is still pending (lib.rs `Settled::Complete`).
+        const refused = out.refused, settled = !out.outstanding;
         const status = info.notfound ? (out.status === 410 ? 410 : 404) : !settled ? 503 : out.status ?? 200;
         // A page made only of answers any reader may still be given (one at least), by a render that drew nothing at
         // random and read no clock or reader's device (the plan's `kept`), from TypeScript sources alone, is the page
         // another render would make until the first of those answers goes stale: it may be given again until then, for
-        // at most 60 s.
+        // at most 60 s (LLP 1048.007 D8).
         const keep = status === 200 && settled && !out.failed?.length && out.activation?.kept === false && !out.rust && !read.random && read.fresh > 0 && read.fresh < Infinity ? Math.min(read.fresh, 60000) : 0;
-        return { html: markedHead + body(''), rest: mark + body(late), status, settled, failed: out.failed ?? [], render: out.render, location, policy: info.policy, activate, keep };
+        return { html: markedHead + body(''), rest: marked + body(late), status, settled, failed: out.failed ?? [], refused, render: out.render, location, policy: info.policy, activate, keep, robots: out.robots, origin: out.origin };
       } finally { made.dispose(); }
     } };
   }
@@ -244,11 +346,11 @@ export function renderer(dist, { closed = false } = {}) {
   return render;
 }
 
-/** A rendered page's first image, when it loads with the page (no `for` repeats it), is likely its
+/** A rendered page's first image, when it loads with the page (no `for` repeats it, LLP 1048.007 D5), is likely its
  * largest paint: it is fetched at high priority and preloaded ahead of the document, as web.dev's LCP guidance has a
  * hero image (HTML's `fetchpriority` and `<link rel="preload" as="image">`). A page whose first image is a lazy row's
  * opens with a list, and has none. The first shown: a route the stack covers is `inert` and hidden, and what it holds
- * is not the page's. Writes the priority into `out.root`; returns the preload link (host/render/src/page.rs `hero_image`). */
+ * is not the page's. Writes the priority into `out.root`; returns the preload link (host/web/src/document_before.rs). */
 function heroImage(out) {
   const tags = /<(\/?)([a-zA-Z][\w-]*)([^>]*)>/g, covered = [];
   for (let m; (m = tags.exec(out.root));) {
@@ -270,7 +372,9 @@ function heroImage(out) {
 }
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.css': 'text/css', '.mp4': 'video/mp4', '.plan': 'application/octet-stream' };
+const refusedLine = ([name, api]) => `resource ${name} is pending: a page rendered on the server has no storage (${api}); the reader's page asks it`;
+
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.css': 'text/css', '.mp4': 'video/mp4', '.plan': 'application/octet-stream', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
 
 /** A page per request for one built dist, as the Rust render server sends it (host/render/src/serve.rs, stream.rs):
  * `page(location, header)`, where `header(name)` reads a request header, answers `{ status, headers, body }`, the body
@@ -279,7 +383,7 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'applic
  * for the render; others get the head at once. `render.mjs --serve` and `host/web/serve.mjs` answer with it. */
 // runner/src/viewport.rs's page viewport, and a desktop's that sends no width (host/render/src/viewport.rs `DESKTOP`).
 const PAGE = { width: 390, height: 844 }, DESKTOP = { width: 1280, height: 800 };
-/** The viewport a request is rendered at, as the render host chooses it (viewport.rs `Hints`): its client
+/** The viewport a request is rendered at, as the render host chooses it (LLP 1048.006 D2, viewport.rs `Hints`): its client
  * hints, else the class its user agent names — a desktop browser's 1280×800, a phone's or a client that says nothing the
  * page viewport. */
 export function viewportOf(header) {
@@ -291,7 +395,7 @@ export function viewportOf(header) {
   return { width: size(get('sec-ch-viewport-width') ?? get('viewport-width')) ?? at.width, height: size(get('sec-ch-viewport-height')) ?? at.height,
     dark: get('sec-ch-prefers-color-scheme') === 'dark', reducedMotion: get('sec-ch-prefers-reduced-motion') === 'reduce', reducedTransparency: get('sec-ch-prefers-reduced-transparency') === 'reduce' };
 }
-// What a page laid out by the viewport asks for and varies by.
+// What a page laid out by the viewport asks for and varies by (LLP 1048.006 D3).
 const HINTS = 'Sec-CH-Viewport-Width, Sec-CH-Viewport-Height, Sec-CH-Prefers-Color-Scheme, Sec-CH-Prefers-Reduced-Motion, Sec-CH-Prefers-Reduced-Transparency';
 
 export function pageServer(dist, render = renderer(dist), log = console.log) {
@@ -307,7 +411,7 @@ export function pageServer(dist, render = renderer(dist), log = console.log) {
     return { status, headers, body: brotliCompressSync(html, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }) };
   };
   return async function page(location, header) {
-    // Laid out for the reader's viewport, and kept per viewport.
+    // Laid out for the reader's viewport (LLP 1048.006), and kept per viewport.
     const viewport = viewportOf(header), key = `${location} ${JSON.stringify(viewport)}`;
     const t = performance.now(), hit = cache.get(key);
     const revalidate = /no-cache|no-store|max-age=0/.test(header('cache-control') ?? '');
@@ -320,6 +424,7 @@ export function pageServer(dist, render = renderer(dist), log = console.log) {
       if (ms > 0) { if (cache.size >= 64) cache.delete(cache.keys().next().value); cache.set(key, { html: page.html, status: page.status, until: Date.now() + ms, cacheControl: page.policy === 'cached' ? 'public, max-age=0, s-maxage=60' : 'no-store' }); }
       log(`render ${page.location} ${page.status} ${(performance.now() - t).toFixed(1)}ms bytes=${page.html.length}${page.flushed ? ' flushed' : ''}`);
       for (const failure of page.failed) log(`  ${page.location}: resource ${failure}`);
+      for (const refused of page.refused) log(`  ${page.location}: ${refusedLine(refused)}`);
     };
     // A browser's navigation gets the head now and the rest after the
     // render (host/render/src/stream.rs): a 200, `private, no-cache`; the
@@ -371,7 +476,7 @@ if (import.meta.main) {
         return new Response(Bun.file(file), { headers: { 'content-type': type, 'cache-control': 'no-cache' } });
       }
       // A route drawn in the browser (`render=client`) gets the shell and one rendered at build its page, as
-      // `serve` gives them; the rest are rendered here.
+      // `serve` gives them (LLP 1153.001 D1); the rest are rendered here.
       const answers = deferredPath(url.pathname);
       if (answers) { const checkpoint = deferredAnswers(answers); return new Response(checkpoint ?? 'These answers are no longer kept; the page builds itself afresh.\n', { status: checkpoint ? 200 : 404, headers: checkpoint ? { 'content-type': 'application/json', 'cache-control': 'private, max-age=3600, immutable' } : { 'content-type': 'text/plain', 'cache-control': 'no-store' } }); }
       const at = matchPattern(routes, canonical(url.pathname)), built = resolve(file, 'index.html');
@@ -383,15 +488,21 @@ if (import.meta.main) {
     } });
     console.log(`serving ${dist} with pages rendered by the JavaScript runtime on ${port}`);
   } else if (args.includes('--build')) {
-    const pages = JSON.parse(readFileSync(resolve(dist, '.gen/pages.json'), 'utf8'));
+    const pages = JSON.parse(readFileSync(resolve(dist, '.gen/pages.json'), 'utf8')), docs = [];
+    const routes = JSON.parse(readFileSync(resolve(dist, 'routes.json'), 'utf8')).routes;
+    let origin = null;
     for (const p of pages) {
       const page = await render(p.location);
+      docs.push({ location: canonical(p.location), notfound: p.notfound, status: page.status, robots: page.robots });
+      origin ??= page.origin;
       const file = p.notfound ? '404.html' : `${p.location.replace(/^\/|\/$/g, '')}/index.html`.replace(/^\//, '');
       mkdirSync(dirname(resolve(dist, file)), { recursive: true });
       writeFileSync(resolve(dist, file), page.html);
       console.log(`${p.location} → ${file} (${page.html.length} B${page.settled ? '' : ', at the deadline'})`);
       for (const failure of page.failed) console.log(`  ${p.location}: resource ${failure}`);
+      for (const refused of page.refused) console.log(`  ${p.location}: ${refusedLine(refused)}`);
     }
+    writeCrawlerFiles(dist, docs, origin, routes);
   } else for (const location of args.slice(1)) {
     const page = await render(location);
     for (const failure of page.failed) console.error(`${location}: resource ${failure}`);

@@ -1,4 +1,7 @@
-//! The compatibility id: the cohort a bundle is safe for.
+//! The compatibility id: the cohort a bundle is safe for (LLP 1030 D3a).
+//!
+//! @ref LLP 1030 D3a (the id and what enters it) / D2 (policy is not
+//! identity) / D4 (the two axes, `L` and `E`); LLP 1030.000 stage 3
 //!
 //! A bundle may depend on things an installed binary cannot replace — the
 //! kernel schema, the plan format, the ABI numbers, the executors linked,
@@ -10,7 +13,7 @@
 //! plan, so an update stream is named by it and a static origin serves each
 //! cohort its own manifest with no negotiation.
 //!
-//! What must not move it: `[deploy]` — schedules, channels, the
+//! What must not move it (D3a, D2): `[deploy]` — schedules, channels, the
 //! release policy — and a host change a bundle cannot observe. The inputs
 //! ride along as JSON so two ids that differ can be explained field by
 //! field (`dev.mjs`, `exact deploy`), and a field that has no value yet is
@@ -25,33 +28,32 @@ const ABI_HEADER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../host/apple/include/exact.h"
 ));
-/// The GPU module's C ABI: unnumbered in the module today.
+/// The GPU module's C ABI (LLP 1009 D2): unnumbered in the module today.
 pub const GPU_MODULE_ABI: u32 = 1;
-/// The separately linked Rust data-source request/outcome wire ABI. 4: a
-/// long poll's result tag 10 (the plan can't say which Rust sources poll, so
-/// every Rust app's id moves once, and an older binary is never offered a
-/// module that may send one).
-pub(crate) const RUST_ABI: u32 = 4;
+/// The separately linked Rust data-source wire ABI: admitted secret names
+/// before the store snapshot (LLP 1048.000 D9), two-way sockets (LLP 1016.003),
+/// cache-mode tag 12 (LLP 1162 D4), and stream protocol names (LLP 1016.000).
+pub(crate) const RUST_ABI: u32 = 8;
 /// The data-module runtime a TypeScript bundle may rely on in the binary's
 /// own prelude (`js/src/prelude.js`, compiled into the host): moved when the
 /// prelude learns something a bundle cannot do without and an older prelude
-/// would silently ignore. 1: `fetch`'s `exactBodyFrom`,
+/// would silently ignore. 1: `fetch`'s `exactBodyFrom` (LLP 1108 D6 R2),
 /// which an older prelude would send as an empty body. 2: `fetch`'s
 /// `redirect`, which an older prelude would ignore and follow. 3: `fetch`'s
-/// `exactLongPoll`, which an older prelude would ignore and
-/// open as an event stream. 4: `fetch`'s `exactBodyTo`,
+/// `exactLongPoll` (LLP 1016.000 D8), which an older prelude would ignore and
+/// open as an event stream. 4: `fetch`'s `exactBodyTo` (LLP 1108 D6 R2),
 /// which an older prelude would ignore, reading the body into memory and
 /// writing no file. 5: an aborted `fetch`'s request cancelled on the wire and
 /// its answer resumed at the abort (docs/reference.md), which an older
 /// prelude would leave running, its reply (a 429 included) dropped; and,
 /// sharing it (no binary had shipped 5), an aborted kept write's rejection in
-/// a module turn, which an older prelude would run in the
+/// a module turn (LLP 1146 D2), which an older prelude would run in the
 /// aborting turn, where a refused commit drops its continuation's writes; and,
-/// sharing it as well, `fetch`'s `exactUploadProgress`,
+/// sharing it as well, `fetch`'s `exactUploadProgress` (LLP 1016.000 D10),
 /// which an older prelude would ignore, giving the mapper no progress and the
 /// reply as a byte stream's messages. 6: `storage.fs`'s `lstat`, `readlink`,
 /// `access`, `chmod`, `symlink`, `digest` and `flock`, and `stat`'s `mode`
-/// and `isSymbolicLink`, which an older prelude lacks: a
+/// and `isSymbolicLink` (LLP 1133.007 D6a), which an older prelude lacks: a
 /// call throws a plain `TypeError` rather than `NotSupportedError`, and the
 /// fields read `undefined`. The operations work on `app:/` paths under an
 /// existing `fs` grant, so the grant ceiling does not keep them from an
@@ -60,17 +62,38 @@ pub(crate) const RUST_ABI: u32 = 4;
 /// constructor, `Response.json`, `Response.redirect`), a reply's `clone()`,
 /// `statusText` and `bodyUsed`, and a body read once, which an older prelude
 /// would make with no status and no body, refuse, or answer `undefined`.
-pub(crate) const TYPESCRIPT_RUNTIME: u32 = 7;
+/// 8: `Response` consumes a `ReadableStream` body and `fetch` refuses one,
+/// where older preludes stringify the stream.
+/// 9: `fetch`'s `exactIdleTimeout` (LLP 1016.000 D11), which an older
+/// prelude would ignore, leaving a quiet socket open.
+/// 10: `storage.sqlite`'s `transaction(commands, { foreignKeys: "check" })`,
+/// whose options an older prelude drops, running a migration's rebuild with
+/// enforcement on: the drop deletes a cascading child's rows and the batch
+/// commits. The options can come from data (a migration read from JSON) and
+/// the method through an alias, so no text in the bundle shows the call: a
+/// module whose grants admit `sqlite.open` needs 10 ([`typescript_runtime_of`]).
+/// 11: Fetch's `cache` (LLP 1162 D4), which an older prelude ignores.
+/// 12: `exactProtocols`, which an older prelude would ignore (LLP 1016.000).
+pub(crate) const TYPESCRIPT_RUNTIME: u32 = 12;
 
 /// What each runtime past the first added that a bundle names to use (see
 /// [`TYPESCRIPT_RUNTIME`]): a `fetch` option an older prelude would ignore,
 /// or, for 5's abort changes, what makes an abort signal. `mode` and
 /// `access` are left out of 6's: they would match far more than D6a. 7's are
 /// the `Response` itself and what it newly has, however a bundle reaches them
-/// (`globalThis.Response`, a `clone` taken apart and called through `.call`);
-/// `structuredClone` names none of them.
-const RUNTIME_OPTIONS: [(u32, &str); 18] = [
-    (7, "Response"),
+/// (`globalThis.Response`, a `clone` taken apart and called through `.call`).
+/// `Response` now needs 8, as do constructors whose readable side can become
+/// a request body. `structuredClone` names none of them. 10 is read from the
+/// grants, not the bundle.
+const RUNTIME_OPTIONS: [(u32, &str); 25] = [
+    (12, "exactProtocols"),
+    (11, "cache"),
+    (9, "exactIdleTimeout"),
+    (8, "Response"),
+    (8, "ReadableStream"),
+    (8, "TransformStream"),
+    (8, "CompressionStream"),
+    (8, "DecompressionStream"),
     (7, "clone"),
     (7, "statusText"),
     (7, "bodyUsed"),
@@ -93,14 +116,26 @@ const RUNTIME_OPTIONS: [(u32, &str); 18] = [
 /// The lowest runtime a TypeScript `bundle` needs: the newest whose option
 /// it names anywhere (a property name survives bundling), else none. A push
 /// records it, so a module that uses nothing newer still goes to a binary
-/// whose prelude is older. A name in a string or a
+/// whose prelude is older (LLP 1016.000 D10). A name in a string or a
 /// comment counts too: such a module asks for more than it needs, never less.
-pub fn typescript_runtime_of(bundle: &[u8]) -> u32 {
+/// A module whose `grants` admit `sqlite.open` needs 10: only such a module
+/// can open a database (the host refuses any other), and none of its code
+/// can show whether a transaction's options will ask to check foreign keys.
+/// A line's capability is its first word, as `exact-grants` parses it.
+pub fn typescript_runtime_of(bundle: &[u8], grants: &str) -> u32 {
     let text = String::from_utf8_lossy(bundle);
-    RUNTIME_OPTIONS
+    let named = RUNTIME_OPTIONS
         .iter()
         .find(|(_, option)| text.contains(option))
-        .map_or(0, |(runtime, _)| *runtime)
+        .map_or(0, |(runtime, _)| *runtime);
+    let sqlite = grants.lines().map(str::trim).any(|line| {
+        !line.starts_with('#') && line.split_whitespace().next() == Some("sqlite.open")
+    });
+    if sqlite {
+        named.max(10)
+    } else {
+        named
+    }
 }
 /// The domain separator over the canonical inputs.
 const DOMAIN: &str = "exact2 compatibility id v1\n";
@@ -112,13 +147,13 @@ pub struct Compat {
     pub id: String,
     /// The inputs, one named field each, `null` where a thing does not exist yet.
     pub inputs: serde_json::Value,
-    /// The channel this build bakes in and its origin —
+    /// The channel this build bakes in and its origin (LLP 1030.000 D4) —
     /// beside the id, not in it: where the binary's update store checks.
     pub channel: String,
     /// The channel's origin URL, if the manifest names one.
     pub origin: Option<String>,
     /// When a staged bundle applies (`deploy.activate`): `next-launch` or
-    /// `app-decides` — policy the binary's store follows.
+    /// `app-decides` — policy the binary's store follows (LLP 1030.000 D4).
     pub activate: String,
     /// The exact target the binary-producing Cargo bake received.
     pub target: String,
@@ -126,14 +161,14 @@ pub struct Compat {
     /// `trust`: the build's resolved trust, which every host's production
     /// policy reads. Beside the id, not in it: an updater-free (`L = 0`)
     /// cohort has no trust epoch, so `inputs.trust` is null there and a
-    /// production and a development build share the id.
+    /// production and a development build share the id (LLP 1030 D4).
     pub embedded: serde_json::Value,
-    /// What the app can reach and each host's spelling of it: beside the id,
-    /// not in it; `null` when the grants are unknown.
+    /// What the app can reach and each host's spelling of it (LLP 1069.008
+    /// D7): beside the id, not in it; `null` when the grants are unknown.
     pub reach: serde_json::Value,
-    /// The binary's painter choice, outside the compatibility hash.
+    /// The binary's painter choice, outside the compatibility hash (LLP 1030 D3a).
     pub painter: Option<&'static str>,
-    /// The manifest declares the game engine; outside the compatibility hash.
+    /// The manifest declares the game engine; outside the compatibility hash (LLP 1149 D12).
     pub game: bool,
 }
 
@@ -251,7 +286,7 @@ pub fn stored_module<'a>(
 }
 
 /// As [`compatibility_id_sources_with_entries`], for a module client (its
-/// logic compiled into the binary) whose binary has an update store.
+/// logic compiled into the binary, LLP 1027) whose binary has an update store.
 /// Bundles carry plan and assets, never code, so a bundle is safe only on a
 /// binary whose module is the one the plan was baked against: `module` (the
 /// compiled module's sha256) enters the id as `typescriptModule`, and any
@@ -283,7 +318,7 @@ pub fn compatibility_id_pinned(
         Err(_) => return Err("EXACT_UPDATE_TRUST is not UTF-8".into()),
     };
     crate::reach::parsed(app_dir, grants, rust_grants, trust == "production")?;
-    // A colour this platform can't show is refused here.
+    // @ref LLP 1100 D1 — a colour this platform can't show is refused here.
     // The app's plan, compiled once here: its colours checked, and (stage
     // 14 C2) its icons' fill rules read below.
     let plan = crate::colors::compiled(app_dir)?;
@@ -308,8 +343,9 @@ pub fn compatibility_id_pinned(
     }
     crate::reach::derive(app_dir, platform, plan.as_ref(), &mut compat)?;
     // The plans that ship, each resolved once (the receipt writes the entry
-    // plans): an even-odd icon in any moves the id (icon_rules.rs), and one
-    // that binds `atomFaces` names its record's fields (atom_faces.rs).
+    // plans): an even-odd icon in any moves the id (stage 14 C2,
+    // icon_rules.rs), and one that binds `atomFaces` names its record's
+    // fields (atom_faces.rs).
     let mut owned = None;
     let entries = crate::icon_rules::entries(app_dir, entries, &mut owned)?;
     let out = std::env::var_os("OUT_DIR").map(std::path::PathBuf::from);
@@ -321,8 +357,9 @@ pub fn compatibility_id_pinned(
         faces(&mut compat, plan, platform, target);
     }
     if let Some(out) = std::env::var_os("OUT_DIR") {
-        // What an Apple archive links is part of its cohort, named before anything binds the id.
-        if matches!(platform, "ios" | "macos") {
+        // A native artifact's composition is part of its cohort (LLP
+        // 1047.001 D2), named before anything binds the id.
+        if platform != "web" {
             crate::link::name_into(&mut compat, manifest, Path::new(&out))?;
         }
         crate::receipt::emit(
@@ -338,9 +375,10 @@ pub fn compatibility_id_pinned(
     Ok(compat)
 }
 
-/// The faced tools this platform's binary compiles a door for: each one's
-/// signature and face join the id, so a plan that changes one is a binary
-/// change. tvOS (an `ios` bake for a tvOS target) and the web compile none.
+/// The faced tools this platform's binary compiles a door for (LLP 1133.023
+/// D8): each one's signature and face join the id, so a plan that changes
+/// one is a binary change. tvOS (an `ios` bake for a tvOS target) and the
+/// web compile none.
 fn faces(compat: &mut Compat, plan: &exact_plan::Plan, platform: &str, target: &str) {
     let door = match platform {
         _ if target.contains("tvos") => return,
@@ -470,7 +508,7 @@ fn compatibility_with_trust(
         .and_then(Value::as_str);
     // An executor runs a replacement of the module the manifest names; an
     // app that names none has nothing to replace, so it links none
-    // (as `web_rust_mode` already does on the web). The
+    // (LLP 1047.001 D7, as `web_rust_mode` already does on the web). The
     // policy is still validated.
     let rust_mode = match manifest.rust_mode(platform, trust == "development")? {
         _ if rust_module.is_none() => "off",
@@ -537,7 +575,7 @@ fn compatibility_with_trust(
         "kernelSchema": format!("{:016x}", exact_kernel::SCHEMA_DIGEST),
         "formatVersion": exact_plan::FORMAT_VERSION,
         "formatDigest": format!("{:016x}", exact_plan::FORMAT_DIGEST),
-        // An OTA plan with a changed fixed command
+        // @ref LLP 1114.001 D1 — an OTA plan with a changed fixed command
         // shape must not run in a binary that reads its old arguments.
         "commands": commands_digest(),
         "abi": { "c": abi_version()?, "gpuModule": GPU_MODULE_ABI, "storeCodec": if binary_only { Value::Null } else { json!(exact_update::STORE_CODEC) } },
@@ -546,27 +584,27 @@ fn compatibility_with_trust(
         "rustAbi": if rust_mode == "off" { Value::Null } else { json!(RUST_ABI) },
         "rustTarget": rust_target,
         "rustModule": rust_module,
-        // Where each language's module runs: a host
+        // Where each language's module runs (LLP 1027.002 §6): a host
         // without the executor refuses the build; a change is a new cohort.
         "typescriptPlacement": manifest.placement("typescript", platform)?,
         "rustPlacement": manifest.placement("rust", platform)?,
         // A binary that replaces its Rust module binds the module's ABI,
         // target and grants above, never the source it was first built
-        // from: an edit there is an update, not a new cohort.
+        // from: an edit there is an update, not a new cohort (LLP 1029.000 §7).
         "dataCrate": if rust_mode == "off" { data_crate(app_dir)? } else { Value::Null },
-        // Each shader's reflected interface digest — entry
+        // Each shader's reflected interface digest (LLP 1030 D8) — entry
         // points, bindings, layouts, inputs, outputs, overrides, never the
         // text — so a colour edit does not move the id and a binding edit
-        // does. Shaders are assets; the surface's Rust
+        // does. Shaders are assets (1030.000 stage 1); the surface's Rust
         // binds this interface.
         "gpuSurfaces": gpu_surfaces(app_dir, manifest)?,
-        // The roster and the table's ABI: a new tag
-        // is a binary change, never a bundle.
+        // @ref LLP 1024 D3/D4 — the roster and the table's ABI: a new tag
+        // is a binary change, never a bundle (LLP 1047 D8).
         "nativeModules": match contract::native::roster(manifest)? {
             tags if tags.is_empty() => Value::Null,
             tags => json!({ "appleAbi": 3, "webAbi": 1, "tags": tags }),
         },
-        // The hatch words this platform's
+        // @ref LLP 1075.003.000.001 §4.3 — the hatch words this platform's
         // module is built to handle, from app.json: the cohort's capability.
         "hatches": match contract::native::hatches_on(manifest, platform)? {
             words if words.is_empty() => Value::Null,
@@ -577,10 +615,10 @@ fn compatibility_with_trust(
             "backgroundModes": list("backgroundModes"),
             "urlSchemes": list("urlSchemes"),
             "associatedDomains": host.get("associatedDomains").and_then(|v| v.as_bool()).map_or(Value::Null, Value::Bool),
-            // The Apple audio session, baked into the binary.
+            // @ref LLP 1096 D8 — the Apple audio session, baked into the binary.
             "audioSession": manifest.json.get("audio_session").cloned().unwrap_or(Value::Null),
         },
-        // The verification keys the binary carries, by id: a
+        // The verification keys the binary carries (LLP 1026 D11), by id: a
         // rotation is a new cohort (1030 D3a).
         "keys": keys,
         "trust": if binary_only { Value::Null } else { json!(trust) },
@@ -600,7 +638,7 @@ fn compatibility_with_trust(
             }
         }
     }
-    // The icon's menu each native binary carries: iOS's
+    // The icon's menu each native binary carries (LLP 1133.023 D3): iOS's
     // Info.plist, Android's `shortcuts.xml`, the Mac's Dock menu, Windows'
     // jump list and Linux's desktop entry read it from the build.
     if platform != "web" {
@@ -623,7 +661,7 @@ fn compatibility_with_trust(
             "kind":a.kind, "title":a.title, "description":a.description, "push":a.push, "frequent":a.frequent
         })).collect::<Vec<_>>());
     }
-    // Which GPU artifact owns which surface: the manifest's
+    // Which GPU artifact owns which surface (LLP 1009 D6): the manifest's
     // modules, bound into the cohort — a routing change is a new binary. An
     // app with one artifact carries no key, so its id and bytes are as before.
     if let Some(modules) = manifest
@@ -671,7 +709,7 @@ fn abi_version() -> Result<u32, String> {
         .ok_or_else(|| "exact.h declares no EXACT_ABI_VERSION".to_string())
 }
 
-/// The executors the app's composition links: the native
+/// The executors the app's composition links (LLP 1029 D2): the native
 /// crate always; an `app.ts` uses the browser on web, Hermes on native;
 /// wasmtime iff the native host crate names `Swappable`.
 fn executors(app_dir: &Path, platform: &str) -> Vec<String> {
@@ -699,28 +737,29 @@ fn executors(app_dir: &Path, platform: &str) -> Vec<String> {
     out
 }
 
-/// The data crate's source-input digest: its tree, the
-/// workspace lockfile, the toolchain — never its compiled output, which a
-/// `wasm32` build can keep while the native build moved. A `data/` without
-/// a `Cargo.toml` is no crate: TypeScript modules there are the bundle's,
-/// and an edit to them is an update, not a new cohort.
+/// The data crate's source-input digest (LLP 1030 D3a): its tree, the trees
+/// of the path crates it is built from, the workspace lockfile, the
+/// toolchain — never its compiled output, which a `wasm32` build can keep
+/// while the native build moved. A `data/` without a `Cargo.toml` is no
+/// crate: TypeScript modules there are the bundle's, and an edit to them is
+/// an update, not a new cohort.
 fn data_crate(app_dir: &Path) -> Result<serde_json::Value, String> {
     let dir = app_dir.join("data");
     if !dir.join("Cargo.toml").is_file() {
         return Ok(serde_json::Value::Null);
     }
-    let mut files = Vec::new();
-    walk(&dir, &dir, &mut files)?;
-    files.sort();
-    let mut h = Sha256::new();
-    for rel in &files {
-        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{}: {e}", rel.display()))?;
-        h.update(rel.to_string_lossy().as_bytes());
-        h.update([0]);
-        h.update((bytes.len() as u64).to_le_bytes());
-        h.update(&bytes);
+    let (tree, files) = tree_digest(&dir)?;
+    let watch = std::env::var_os("OUT_DIR").is_some();
+    if watch {
+        println!("cargo:rerun-if-changed={}", dir.display());
     }
-    let tree = hex(&h.finalize());
+    let mut crates = serde_json::Map::new();
+    for (name, path) in path_crates(&dir)? {
+        if watch {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        crates.insert(name, serde_json::Value::String(tree_digest(&path)?.0));
+    }
     let lockfile = lockfile(app_dir).map(|p| {
         std::fs::read(&p)
             .map(|b| hex(&Sha256::digest(&b)))
@@ -731,9 +770,132 @@ fn data_crate(app_dir: &Path) -> Result<serde_json::Value, String> {
         None => serde_json::Value::Null,
     };
     let toolchain = toolchain().map_or(serde_json::Value::Null, serde_json::Value::String);
-    Ok(
-        serde_json::json!({ "tree": tree, "files": files.len(), "lockfile": lockfile, "toolchain": toolchain }),
-    )
+    let mut identity = serde_json::json!({ "tree": tree, "files": files, "lockfile": lockfile, "toolchain": toolchain });
+    // Only a crate with path dependencies carries the key, so the ids of the
+    // others are as they were.
+    if !crates.is_empty() {
+        identity["crates"] = serde_json::Value::Object(crates);
+    }
+    Ok(identity)
+}
+
+/// The digest of every file under `dir` and how many there are.
+fn tree_digest(dir: &Path) -> Result<(String, usize), String> {
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort();
+    let mut h = Sha256::new();
+    for rel in &files {
+        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{}: {e}", rel.display()))?;
+        h.update(rel.to_string_lossy().as_bytes());
+        h.update([0]);
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(&bytes);
+    }
+    Ok((hex(&h.finalize()), files.len()))
+}
+
+/// The path crates the data crate at `dir` is built from, by package name
+/// and directory: the closure of its normal and build path dependencies as
+/// `cargo metadata` declares them, less exact2's own crates (everything in
+/// this checkout outside `apps/`), whose changes the id's other inputs name.
+/// Registry and git dependencies are pinned by the lockfile. `--no-deps`
+/// lists only workspace members; a closure that leaves the workspace asks
+/// Cargo again with the full graph.
+fn path_crates(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let exact = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .map_err(|e| format!("exact2 checkout: {e}"))?;
+    let own = |path: &Path| path.starts_with(&exact) && !path.starts_with(exact.join("apps"));
+    let start = dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    for members_only in [true, false] {
+        let packages = metadata(dir, members_only)?;
+        let mut found = std::collections::BTreeMap::new();
+        let mut queue = vec![start.clone()];
+        let mut complete = true;
+        while let Some(at) = queue.pop() {
+            let Some((_, deps)) = packages.get(&at) else {
+                complete = false;
+                break;
+            };
+            for dep in deps {
+                if dep == &start || own(dep) || found.contains_key(dep) {
+                    continue;
+                }
+                let name = packages
+                    .get(dep)
+                    .map_or_else(String::new, |(n, _)| n.clone());
+                found.insert(dep.clone(), name);
+                queue.push(dep.clone());
+            }
+        }
+        if complete {
+            let mut out: Vec<(String, PathBuf)> = found.into_iter().map(|(p, n)| (n, p)).collect();
+            out.sort();
+            return Ok(out);
+        }
+    }
+    Err(format!(
+        "cargo metadata does not list the path dependencies of {}",
+        dir.display()
+    ))
+}
+
+/// `cargo metadata`'s packages, by canonical directory: each one's name and
+/// the directories of its normal and build path dependencies.
+type Packages = std::collections::HashMap<PathBuf, (String, Vec<PathBuf>)>;
+
+fn metadata(dir: &Path, members_only: bool) -> Result<Packages, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = std::process::Command::new(cargo);
+    command
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--offline",
+            "--manifest-path",
+        ])
+        .arg(dir.join("Cargo.toml"));
+    if members_only {
+        command.arg("--no-deps");
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata for {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut packages = Packages::new();
+    for package in meta["packages"].as_array().into_iter().flatten() {
+        let Some(manifest) = package["manifest_path"].as_str() else {
+            continue;
+        };
+        let Some(at) = Path::new(manifest).parent() else {
+            continue;
+        };
+        let deps = package["dependencies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| d["kind"].as_str() != Some("dev"))
+            .filter_map(|d| d["path"].as_str())
+            .map(|p| canonical(Path::new(p)))
+            .collect();
+        let name = package["name"].as_str().unwrap_or_default().to_string();
+        packages.insert(canonical(at), (name, deps));
+    }
+    Ok(packages)
 }
 
 /// The toolchain's version line (`$RUSTC --version`), asked once per process and per
@@ -794,6 +956,7 @@ fn lockfile(app_dir: &Path) -> Option<PathBuf> {
 /// `null` when the app has no shaders.
 fn gpu_surfaces(app_dir: &Path, manifest: &Manifest) -> Result<serde_json::Value, String> {
     // The bake, hosts and dev server share the declared-root inventory.
+    // @ref llp/1046.006.000-render-hooks.rfc.md#d5-shaders-that-live-with-the-game
     let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/app.mjs");
     let cargo = std::env::var_os("OUT_DIR").is_some();
     if cargo {

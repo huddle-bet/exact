@@ -91,9 +91,10 @@ impl DataSource for Module {
         &mut self,
         store: &Store,
         in_flight: InFlight<'_>,
+        fetch: Option<u64>,
     ) -> Option<(u64, Request)> {
         let _ = store;
-        self.timer_first(&in_flight)
+        self.timer_first(&in_flight, fetch)
     }
 
     fn module_landed(
@@ -114,6 +115,12 @@ impl DataSource for Module {
         &mut self,
         secrets: Arc<dyn exact_runner::SharedSecrets>,
     ) -> Result<(), DataError> {
+        // A validation pass is loaded before its host boots and is offered the
+        // session's secrets like any candidate; it has no capabilities, and
+        // the door refuses its secret ops.
+        if self.host.validating {
+            return Ok(());
+        }
         if self.is_loaded() {
             return Err(DataError::Unavailable(
                 "configure secrets before loading the module".into(),
@@ -151,7 +158,6 @@ impl DataSource for Module {
     }
 
     fn dispatch(&mut self, token: u64, store: &Store) -> Dispatch {
-        let _ = store;
         if let Some(dispatch) = self.host.secrets.dispatch(token) {
             return dispatch;
         }
@@ -163,7 +169,8 @@ impl DataSource for Module {
             .iter()
             .any(|(_, p)| p.call == token && p.ticket == WAITING)
         {
-            return self.wake(token).unwrap_or_else(|| {
+            self.refresh_waiting();
+            return self.wake(token, store.clock_ms()).unwrap_or_else(|| {
                 self.waiters.push(token);
                 Dispatch::Held
             });
@@ -178,19 +185,8 @@ impl DataSource for Module {
     }
 
     fn release(&mut self, store: &Store) -> Vec<(u64, Dispatch)> {
-        let _ = store;
-        // Waiting answers whose wait may be over are asked again.
-        let mut released = self.host.secrets.release();
-        for token in std::mem::take(&mut self.waiters) {
-            match self.wake(token) {
-                Some(work) => released.push((token, work)),
-                None if self.parked.iter().any(|(_, p)| p.call == token) => {
-                    self.waiters.push(token)
-                }
-                None => {}
-            }
-        }
-        released
+        self.refresh_waiting();
+        self.release_ready(store.clock_ms())
     }
 
     fn continuation(&mut self, token: u64) -> Option<Box<dyn FnOnce() -> Outcome + Send>> {
@@ -203,7 +199,7 @@ impl DataSource for Module {
             return Some(Box::new(Dispatch::again_outcome));
         }
         // An owner thread runs one turn to its end, so another answer's
-        // work cannot land while this one waits for it.
+        // work cannot land while this one waits for it (LLP 1027.002).
         if self
             .parked
             .iter()
@@ -278,10 +274,10 @@ impl DataSource for Module {
     /// pass, or an ask a later pass of the same settlement replaced — is dropped here
     /// too. Left parked, a call shares its key with the call still in
     /// flight, and `resume`, which finds a call by key, could give it that
-    /// call's storage step (a mutation refreshing a folder's preview
-    /// mid-walk, behind a composer, whose `forgotten` cannot name a
-    /// dispatched call's token). A targeted continuation no
-    /// longer replaces a call parked on its key: the runner
+    /// call's storage step (files diary F18: a mutation refreshing a
+    /// folder's preview mid-walk, behind a composer, whose `forgotten`
+    /// cannot name a dispatched call's token). A targeted continuation no
+    /// longer replaces a call parked on its key (LLP 1097 D4.5): the runner
     /// drops the new one here.
     fn discard(&mut self, token: u64) {
         self.host.secrets.cancel_wait(token);
@@ -289,20 +285,21 @@ impl DataSource for Module {
             return;
         };
         let (_, parked) = self.parked.remove(at);
+        self.parked.retain(|(_, p)| p.call != parked.call);
         self.waiters.retain(|waiter| *waiter != token);
         self.forget_calls(vec![parked.call]);
     }
 
     /// Calls whose requests the runner let go are dropped, here and in the
-    /// prelude with the fetches they wait on.
+    /// prelude with the fetches they wait on (LLP 1016 D5).
     /// A re-ask with equal arguments (a `refresh`) shares its key with the
     /// call it replaced; only the continuation token tells them apart, so a
-    /// call whose token is not the one in flight goes too (otherwise a read
-    /// replaced by its own refresh keeps its turn open forever, and the
-    /// refresh never runs). Storage the forgotten call already issued still
+    /// call whose token is not the one in flight goes too (minesweeper F10:
+    /// a read replaced by its own refresh kept its turn open forever, and the
+    /// refresh never ran). Storage the forgotten call already issued still
     /// runs; its Store writes do not land on a live answer's store (a let-go
     /// runs with no store). A call that had not issued storage is not
-    /// replayed: no answer waits on another to begin.
+    /// replayed: LLP 1097 deletes that deferral.
     fn forgotten(&mut self, store: &Store, in_flight: &[InFlight<'_>]) {
         let _ = store;
         self.forget_in_flight(in_flight);
@@ -319,7 +316,7 @@ impl DataSource for Module {
         Some(self.native_slot.clone())
     }
 
-    /// Not before the host loads it: the runner boots
+    /// Not before the host loads it (LLP 1027 D4): the runner boots
     /// store-reading resources from their kept answers meanwhile.
     fn ready(&self) -> bool {
         self.is_loaded()
@@ -329,7 +326,7 @@ impl DataSource for Module {
         self.canvas_surfaces.clone()
     }
 
-    /// Canvas 2D: the module's `draw` through the TypeScript
+    /// Canvas 2D (LLP 1056 D1): the module's `draw` through the TypeScript
     /// recorder, synchronously in this turn (native `main` placement).
     fn draw(
         &mut self,
@@ -358,7 +355,7 @@ impl DataSource for Module {
         }
     }
 
-    /// The seam's signatures, from the plan's `sources` table.
+    /// The seam's signatures, from the plan's `sources` table (LLP 1027 D2).
     fn bind(&mut self, plan: &Plan) {
         if self.keeps_plan {
             self.plan = Some(plan.clone());
@@ -393,7 +390,7 @@ impl DataSource for Module {
     /// The bake's path and the in-process path: no store, and an answer that
     /// awaits a fetch cannot be given now. One that awaits its own timers is
     /// given: each fires at once, on a clock that moves to it, as `clock
-    /// settle` would.
+    /// settle` would (LLP 1027.000 D1).
     fn query(&mut self, source: &str, args: &[Value]) -> Result<Value, DataError> {
         let mut answer = self.begin(None, None, source, args)?;
         for _ in 0..TIMERS_AT_BAKE {
@@ -430,7 +427,7 @@ impl DataSource for Module {
         source: &str,
         args: &[Value],
     ) -> Result<Answer, DataError> {
-        // A handler a module calls back: `tools[name]`,
+        // A handler a module calls back (LLP 1133.016 D9): `tools[name]`,
         // its arguments and its value JSON text (the prelude's `tool`).
         if source.starts_with(TOOL) && !self.sigs.contains_key(source) {
             let (params, result) = (vec![Shape::String], Shape::String);
@@ -471,7 +468,7 @@ impl DataSource for Module {
         // uncaught `code: 'bake'`) is the device's to answer: that is
         // `DeferredAtBake` (aab190948), and the runner shows its placeholder.
         // At bake, an error the source raises itself stays fatal, even after a
-        // refusal it caught.
+        // refusal it caught (kanban2 #5).
         let answer = self.begin(Some(store), Some(target), source, args);
         self.refresh_background();
         answer
@@ -486,6 +483,28 @@ impl DataSource for Module {
         outcome: Outcome,
     ) -> Result<Answer, DataError> {
         let answer = self.resume(Some(store), Some(target), source, args, outcome);
+        self.refresh_background();
+        answer
+    }
+
+    fn more_for(&mut self, target: Target) -> Vec<Request> {
+        self.parked
+            .iter_mut()
+            .filter(|(key, _)| key.0 == Some(target))
+            .filter_map(|(_, p)| p.more.take())
+            .collect()
+    }
+
+    fn parse_fetch_for(
+        &mut self,
+        target: Target,
+        fetch: Option<u64>,
+        store: &mut Store,
+        source: &str,
+        args: &[Value],
+        outcome: Outcome,
+    ) -> Result<Option<Answer>, DataError> {
+        let answer = self.resume_fetch(Some(store), Some(target), fetch, source, args, outcome);
         self.refresh_background();
         answer
     }

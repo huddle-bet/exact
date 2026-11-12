@@ -1,8 +1,8 @@
-// Canvas 2D surfaces on the JS runtime: the
+// Canvas 2D surfaces on the JS runtime (LLP 1056; LLP 1071 §7): the
 // runner's half of the protocol (runner/src/runner/canvas2d.rs) over the
 // web host's own replayer. Fetched two frames after the first 2D canvas
 // mounts (rt.js `c2`), as the wasm host fetches its glue; an app without one
-// never loads it.
+// never loads it (LLP 1047).
 //
 // `canvas2d-glue.js` is the wasm host's file, unchanged: it watches each
 // canvas's content box with a ResizeObserver and replays stamped lists into
@@ -58,6 +58,15 @@ export function engine(rt) {
   const x = globalThis.exact;
   const records = new Map(); // view id -> record
   let module = null; // the module's draws, once it is ready
+  let undrawn = null; // why nothing will draw, once the module is known to draw nothing
+  // Said once a surface, as the module turns out to draw nothing or, usually later, as its canvas mounts.
+  const undrawnSaid = new Set();
+  const sayUndrawn = () => {
+    const names = [...new Set([...records.values()].map(r => r.c.name))].filter(n => !undrawnSaid.has(n));
+    if (!undrawn || !names.length) return;
+    for (const n of names) undrawnSaid.add(n);
+    say(`canvas2d: nothing draws ${names.join(', ')}: ${undrawn}`);
+  };
   const say = line => journal.push(`t=${clock.now} ${line}`);
   const memory = { buffer: new ArrayBuffer(8) };
   let colorCanvas;
@@ -116,16 +125,16 @@ export function engine(rt) {
   wasm.exact_canvas_geometry = (id, width, height, scale) => {
     const r = records.get(id);
     if (!r) return 0;
-    // An explicit bitmap size (`bitmap-width`/`bitmap-height`; an unset
-    // one is the web's 300 or 150) is its own coordinate
+    // An explicit bitmap size (`bitmap-width`/`bitmap-height`, LLP 1056 D6
+    // r3; an unset one is the web's 300 or 150) is its own coordinate
     // space, stretched to the box: the runner's `Backing::of`.
     const { bitmapWidth: bw, bitmapHeight: bh, colorSpace, colorType } = r.c.e.dataset;
     const b = bw != null || bh != null ? { w: +(bw ?? 300), h: +(bh ?? 150), width: +(bw ?? 300), height: +(bh ?? 150), scale: 1, stretch: true }
       : { w: Math.max(0, Math.round(width * scale)), h: Math.max(0, Math.round(height * scale)), width, height, scale, stretch: false };
-    // Its getContext settings: the runner's `canvas_settings`.
+    // Its getContext settings (LLP 1100 D12a): the runner's `canvas_settings`.
     b.p3 = colorSpace === 'display-p3'; b.float16 = colorType === 'float16';
     if (r.backing && r.backing.w === b.w && r.backing.h === b.h && r.backing.stretch === b.stretch && (b.stretch || r.backing.scale === b.scale)) { r.backing = b; return 0; }
-    // A new size generation: a fresh bitmap and recorder.
+    // A new size generation: a fresh bitmap and recorder (D4).
     if (r.backing) { r.generation++; r.causes |= SIZE; }
     r.backing = b;
     glue.op({ id, lifetime: r.lifetime, generation: r.generation, seq: 0, fresh: true, w: b.w, h: b.h, scale: b.scale, stretch: b.stretch, p3: b.p3, float16: b.float16, lists: [] });
@@ -134,9 +143,9 @@ export function engine(rt) {
     return 0;
   };
   // A presented frame: the clock moves to the page's time (its timers fire),
-  // and canvases that asked draw once at it.
+  // and canvases that asked draw once at it (D5).
   wasm.exact_advance = () => { rt.advance(rt.wall(), true); frame(); return 0; };
-  // An image handle loaded or failed: the payload the glue
+  // An image handle loaded or failed (LLP 1056 D9): the payload the glue
   // wrote in (src, size, ok, the lifetimes that asked); those canvases draw
   // again, cause "image". Each pending image is counted in flight.
   let written = '';
@@ -164,7 +173,7 @@ export function engine(rt) {
     } };
   };
   wasm.exact_canvas_fonts = () => { for (const r of records.values()) if (r.text) r.causes |= FONT; drawAll(); return 0; };
-  // A canvas whose colour or direction changes draws again, cause "style": after a commit, in a microtask,
+  // A canvas whose colour or direction changes draws again, cause "style" (LLP 1056 D4): after a commit, in a microtask,
   // once its host commands (`setScheme`) and the modes it resolves have applied; and on the window's scheme, the root's
   // own style (a development page's held scheme), an app's mode tuple (`data-x-modes`) and a colour transition's end.
   const restyle = () => {
@@ -189,14 +198,21 @@ export function engine(rt) {
   x.canvas2dState = () => [...records].map(([view, r]) => ({ view, surface: r.c.name, context: '2d', artifact: 'data', lifetime: r.lifetime, generation: r.generation,
     pending: !r.draws || !!r.causes, animating: !!r.frames, draws: r.draws ?? 0,
     width: r.backing?.w ?? null, height: r.backing?.h ?? null, scale: r.backing?.scale ?? null, stretch: !!r.backing?.stretch,
-    colorSpace: r.backing ? (r.backing.p3 ? 'display-p3' : 'srgb') : null, colorType: r.backing ? (r.backing.float16 ? 'float16' : 'unorm8') : null, error: r.error ?? null, refused: null }));
+    colorSpace: r.backing ? (r.backing.p3 ? 'display-p3' : 'srgb') : null, colorType: r.backing ? (r.backing.float16 ? 'float16' : 'unorm8') : null, error: r.error ?? undrawn, refused: null }));
   if (clock.agent && x.advance) { const advance = x.advance; x.advance = (to, wall, stop) => { const r = advance(to, wall, stop); frame(); return r; }; }
   const glue = x.canvas2dGlue({ views: rt.views, now: () => clock.now });
   host();
   // The module arrives after first pixel (rust-data.js); until then causes wait.
   const ready = () => {
-    module = client(data.logic);
-    if (!module) say('canvas2d: the Rust module draws no Canvas 2D surface (exact_logic_abi::export_draw!)');
+    // No `data.logic`: the Rust module did not load (the entry says why in the journal).
+    module = data.logic && client(data.logic);
+    if (!module) {
+      // Each canvas here names a surface no GPU module registers (the build's routing), so nothing draws it: said, and
+      // its state's error, rather than a canvas pending blank.
+      undrawn = data.logic ? 'no GPU module registers this surface, and the Rust module draws no Canvas 2D surface (exact_logic_abi::export_draw!)'
+        : 'the Rust module that draws this surface did not load';
+      sayUndrawn();
+    }
     drawAll();
   };
   // A TypeScript draw is in the page already; it starts once the page's
@@ -223,12 +239,14 @@ export function engine(rt) {
         // The glue's ResizeObserver names a canvas by its `data-view`, as the wasm host's elements carry it.
         c.e.dataset.view = id;
         glue.op({ id, watch: true });
+        sayUndrawn();
       }
       drawAll();
     },
     gone(c) {
       for (const [id, r] of records) if (r.c === c) {
         records.delete(id);
+        glue.op({ id, forget: true });
         module?.retire(r.lifetime);
         if (r.waiting) inflight.n--;
       }
@@ -236,7 +254,7 @@ export function engine(rt) {
   };
 }
 
-// Whether a list draws text: a font that loads redraws it.
+// Whether a list draws text: a font that loads redraws it (D8).
 function hasText(l) {
   const v = new DataView(l.buffer, l.byteOffset, l.byteLength);
   for (let at = 8; at + 8 <= l.byteLength;) {

@@ -1,6 +1,229 @@
-//! A press inside an `svg` goes to the element under it,
+//! LLP 1055.000 D17: a press inside an `svg` goes to the element under it,
 //! by `pointer-events`, and bubbles as a box's press does.
 use exact_linux::{presenter::PainterChoice, Presenter};
+
+#[test]
+fn an_inline_svg_reports_its_cost_limit_once_per_node_lifetime() {
+    let app = r##"component App
+  state shown = true
+  state limited = false
+  action toggle
+    limited = !limited
+  action replace
+    shown = !shown
+  view
+    column background-color="#ffffff"
+      if shown
+        svg testId="chart" width=100 height=40
+          path d=(limited ? "M0 10H100000" : "M0 10H100") stroke="#ff0000" stroke-width=4 stroke-dasharray="0.25"
+      button testId="toggle" press=toggle
+        text "Toggle limit"
+      button testId="replace" press=replace
+        text "Replace node"
+"##;
+    let plan = contract::compile(app).unwrap().encode();
+    let (mut p, error) = Presenter::boot_with(
+        &plan,
+        (),
+        (200., 200.),
+        1.,
+        std::path::PathBuf::new(),
+        PainterChoice::Cpu,
+    )
+    .unwrap();
+    assert!(error.is_none(), "{error:?}");
+    let id = |p: &Presenter<()>, name: &str| {
+        let k = p.host().kernel();
+        k.node_by_key(k.find_by_test_id(name)[0]).unwrap().id
+    };
+    let warnings = |p: &Presenter<()>| {
+        let logs: serde_json::Value =
+            serde_json::from_str(&p.host().agent(r#"{"op":"logs","since":0}"#)).unwrap();
+        logs["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|line| line.as_str()?.split_once(' ').map(|(_, message)| message))
+            .filter(|line| line.starts_with("svg #"))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert!(p.frame().pixel(1, 10).unwrap().green() < 255);
+    assert!(warnings(&p).is_empty());
+    let chart = id(&p, "chart");
+    let toggle = id(&p, "toggle");
+    let replace = id(&p, "replace");
+    p.tap(toggle).unwrap();
+    assert_eq!(p.frame().pixel(1, 10).unwrap().green(), 255);
+    let expected = format!(
+        "svg #{chart}: {}; drawing nothing",
+        exact_kernel::svg::scene::Limit::Dashes
+    );
+    assert_eq!(warnings(&p).as_slice(), std::slice::from_ref(&expected));
+    for size in [210., 220.] {
+        assert!(p.resize(size, size).is_none());
+        p.frame();
+    }
+    p.tap(toggle).unwrap();
+    assert!(p.frame().pixel(1, 10).unwrap().green() < 255);
+    p.tap(toggle).unwrap();
+    p.frame();
+    assert_eq!(warnings(&p).as_slice(), std::slice::from_ref(&expected));
+    let old_key = p.host().kernel().find_by_test_id("chart")[0];
+    assert!(p.reload(&plan, ()).unwrap().is_none());
+    assert_eq!(p.host().kernel().find_by_test_id("chart")[0], old_key);
+    assert_eq!(p.frame().pixel(1, 10).unwrap().green(), 255);
+    assert_eq!(warnings(&p).as_slice(), std::slice::from_ref(&expected));
+    assert!(p.resize(230., 230.).is_none());
+    p.frame();
+    assert_eq!(warnings(&p), [expected]);
+    p.tap(replace).unwrap();
+    p.frame();
+    p.tap(replace).unwrap();
+    p.frame();
+    assert_ne!(p.host().kernel().find_by_test_id("chart")[0], old_key);
+    let chart = id(&p, "chart");
+    assert_eq!(warnings(&p).len(), 2);
+    assert!(warnings(&p)[1].starts_with(&format!("svg #{chart}: ")));
+}
+
+#[test]
+fn svg_overflow_clips_to_its_content_box() {
+    for overflow in [
+        "",
+        "overflow=\"hidden\"",
+        "overflow=\"clip\"",
+        "overflow=\"visible\"",
+    ] {
+        let plan = contract::compile(&format!(
+            r##"component App
+  view
+    box width=400 height=400 background-color="#ffffff"
+      svg width=100 height=100 padding=20 viewBox="0 0 100 100" {overflow}
+        rect x=-50 y=-50 width=200 height=200 fill="#ff0000"
+"##,
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let (mut presenter, error) = Presenter::boot_with(
+            &plan.encode(),
+            (),
+            (400., 400.),
+            1.,
+            std::path::PathBuf::new(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        let frame = presenter.frame();
+        let clips = overflow != "overflow=\"visible\"";
+        for (x, y, red) in [
+            (10, 10, !clips),
+            (25, 25, true),
+            (130, 130, !clips),
+            (180, 180, false),
+        ] {
+            let c = frame.pixel(x, y).unwrap().demultiply();
+            let expected = if red {
+                (255, 0, 0, 255)
+            } else {
+                (255, 255, 255, 255)
+            };
+            assert_eq!(
+                (c.red(), c.green(), c.blue(), c.alpha()),
+                expected,
+                "({x}, {y}), {overflow}"
+            );
+        }
+    }
+}
+
+#[test]
+fn svg_content_clip_uses_inner_radii_and_leaves_its_border_visible() {
+    for radius in [10, 50] {
+        let plan = contract::compile(&format!(
+            r##"component App
+  view
+    box width=400 height=400 background-color="#ffffff"
+      svg width=100 height=100 padding="10px 20px 30px 40px" border-width="2px 4px 6px 8px" border-style="solid" border-color="#0000ff" border-radius={radius} viewBox="0 0 100 100"
+        rect x=-50 y=-50 width=200 height=200 fill="#ff0000"
+"##,
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let (mut presenter, error) = Presenter::boot_with(
+            &plan.encode(),
+            (),
+            (400., 400.),
+            1.,
+            std::path::PathBuf::new(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        let frame = presenter.frame();
+        let red = (255, 0, 0);
+        let white = (255, 255, 255);
+        let blue = (0, 0, 255);
+        for (x, y, expected) in [
+            (45, 60, white),
+            (150, 70, white),
+            (80, 8, white),
+            (80, 120, white),
+            (4, 70, blue),
+            (170, 70, blue),
+            (86, 1, blue),
+            (86, 145, blue),
+            (49, 60, red),
+            (138, 30, red),
+            (146, 13, if radius == 50 { white } else { red }),
+            (146, 110, if radius == 50 { white } else { red }),
+        ] {
+            let c = frame.pixel(x, y).unwrap().demultiply();
+            assert_eq!(
+                (c.red(), c.green(), c.blue()),
+                expected,
+                "({x}, {y}), radius={radius}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_clip_use_paints_at_its_targets_transformed_position() {
+    let plan = contract::compile(
+        r##"component App
+  view
+    svg width=100 height=100 viewBox="0 0 100 100"
+      defs
+        rect id="shape" width=10 height=10 transform="translate(50 0)"
+      clipPath id="clip"
+        use href="#shape"
+      rect width=100 height=100 fill="#ff0000" clip-path="url(#clip)"
+"##,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (mut presenter, error) = Presenter::boot_with(
+        &plan.encode(),
+        (),
+        (100., 100.),
+        1.,
+        std::env::temp_dir(),
+        PainterChoice::Cpu,
+    )
+    .unwrap();
+    assert!(error.is_none(), "{error:?}");
+    let frame = presenter.frame();
+    let red = |x, y| {
+        let c = frame.pixel(x, y).unwrap().demultiply();
+        (c.red(), c.green(), c.blue(), c.alpha()) == (255, 0, 0, 255)
+    };
+    assert!(red(55, 5), "the target's translation moves the clip");
+    assert!(!red(5, 5), "the untransformed position is clipped away");
+    let count = (0..100)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .filter(|&(x, y)| red(x, y))
+        .count();
+    assert_eq!(count, 100, "only the 10 by 10 clip paints");
+}
 
 const APP: &str = "component App\n  state picked = \"none\"\n  action pick(which: string)\n    picked = which\n  view\n    column\n      text picked testId=\"picked\"\n      svg testId=\"chart\" width=100 height=100 viewBox=\"0 0 100 100\"\n        rect width=100 height=100 fill=\"#eeeeee\" press=pick(\"back\")\n        g press=pick(\"bars\")\n          rect x=10 y=10 width=20 height=80 fill=\"#2563eb\"\n          rect x=40 y=40 width=20 height=50 fill=\"#2563eb\" pointer-events=\"none\"\n        polyline points=\"70,90 90,10\" fill=\"none\" stroke=\"#000000\" stroke-width=6 press=pick(\"line\")\n";
 
@@ -80,9 +303,9 @@ fn a_zero_length_subpath_paints_its_cap() {
     assert_ne!(red(70), (255, 0, 255), "a butt cap paints nothing");
 }
 
-/// A portable symbol role is its path, stroked as the web
+/// LLP 1084 §4: a portable symbol role is its path, stroked as the web
 /// strokes it, in its `color`; an `sf/` name stays an empty box, unless it is a
-/// role's own Apple name, which draws that role.
+/// role's own Apple name, which draws that role (LLP 1121 D10).
 #[test]
 fn a_symbol_role_is_its_path_and_an_sf_name_is_empty() {
     const SYMBOLS: &str = "component App\n  view\n    row\n      image \"symbol:checkmark\" testId=\"role\" width=48 height=48 object-fit=\"contain\" color=\"#ff0000\"\n      image \"symbol:sf/checkmark.seal\" testId=\"sf\" width=48 height=48 object-fit=\"contain\" color=\"#ff0000\"\n      image \"symbol:sf/checkmark\" testId=\"apple\" width=48 height=48 object-fit=\"contain\" color=\"#ff0000\"\n";
@@ -188,7 +411,7 @@ fn every_symbol_role_draws_its_path() {
     assert!(empty.is_empty(), "roles that draw nothing: {empty:?}");
 }
 
-/// A path's `d` under `transition` morphs
+/// LLP 1055.000 D15 (issue #123): a path's `d` under `transition` morphs
 /// on the agent's clock, as Chrome does: the chevron is flat half way, and
 /// stands the other way when it settles.
 #[test]
@@ -236,7 +459,7 @@ fn a_transitioning_d_morphs_the_path() {
     assert_eq!(ink(&mut p), rest, "settled the other way");
 }
 
-/// An even-odd icon's form (`evenodd:` before its path) fills
+/// Stage 14 C2: an even-odd icon's form (`evenodd:` before its path) fills
 /// its path even-odd, so a ring of two squares wound alike has its hole; the
 /// same path as a nonzero icon is filled through, as before.
 #[test]

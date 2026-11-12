@@ -3,7 +3,7 @@ import CoreText
 import Foundation
 
 /// The card's face above its chart area, drawn by hand on one opaque surface so nothing in it
-/// blends. iOS and macOS share this layout and drawing; each maps its own
+/// blends (LLP 1079.000 §7.2). iOS and macOS share this layout and drawing; each maps its own
 /// touches or clicks to `Layout`'s regions and gives each region an accessibility element.
 enum FrameHealthCardFace {
     enum Status { case live, paused, idle }
@@ -115,6 +115,10 @@ enum FrameHealthCardFace {
 
     /// A 0.4-second spring response with a damping ratio of 0.8 and unit mass
     static let spring = (stiffness: pow(2 * CGFloat.pi / 0.4, 2), damping: 2 * 0.8 * (2 * CGFloat.pi / 0.4))
+
+    /// The area along whose edges the card rests: 8 points inside its window, ignoring safe-area insets (LLP 1079.000
+    /// §7.2). On iOS the overlay also keeps it above the keyboard.
+    static func restingArea(in bounds: CGRect) -> CGRect { bounds.insetBy(dx: 8, dy: 8) }
 
     /// Store fractions of the card's available travel to preserve its position along an edge when the window
     /// or card resizes.

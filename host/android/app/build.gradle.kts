@@ -6,8 +6,8 @@ import groovy.json.JsonSlurper
 
 plugins { id("com.android.application") }
 
-// -Pcompose=1: the app's plan has a date or time control, and its picker is Compose Material 3's
-// (`agent-android.mjs` reads the plan's uses). Without it the framework's dialogs show, and Compose is not linked.
+// -Pcompose=1: the app's plan has a date or time control, and its picker is Compose Material 3's (LLP 1115.001.000
+// D1-D2; `agent-android.mjs` reads the plan's uses). Without it the framework's dialogs show, and Compose is not linked.
 val compose = providers.gradleProperty("compose").orNull == "1"
 if (compose) apply(plugin = "org.jetbrains.kotlin.plugin.compose")
 
@@ -42,62 +42,81 @@ android {
         ndkVersion = file("$path/source.properties").readLines().first { it.startsWith("Pkg.Revision") }.substringAfter("=").trim()
     }
     compileSdk { version = release(37) { minorApiLevel = 2 } }
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         // An Android package name's segments are Java identifiers: a manifest id's `-` becomes `_`.
         applicationId = (identity["id"] as String).replace('-', '_')
         minSdk = minimumApi
         targetSdk = 36
-        versionCode = 1
+        // CI's version inputs are shared with Apple builds (LLP 1030.003 D6).
+        versionCode = providers.environmentVariable("EXACT_BUILD_NUMBER").orElse("1").get().toInt().also {
+            require(it in 1..2100000000) { "EXACT_BUILD_NUMBER must be an integer from 1 to 2100000000" }
+        }
         // -PidSuffix=.dev: a side-by-side build (another package) that leaves the installed one alone.
         (project.findProperty("idSuffix") as String?)?.let { applicationIdSuffix = it }
-        versionName = "1"
+        versionName = providers.environmentVariable("EXACT_VERSION").orElse("0.1.0").get()
         ndk { abiFilters += "arm64-v8a" }
         manifestPlaceholders["appName"] = identity["name"] as String
         manifestPlaceholders["screenOrientation"] = screenOrientation
         manifestPlaceholders["exactDevelopment"] = providers.gradleProperty("exactDevelopment").orNull == "1"
+        // The launcher icon (`android:icon` and `android:roundIcon`) and the TV banner among the resources below, as
+        // agent-android.mjs names them. With no icon the system draws its default one; with no banner the TV launcher
+        // shows the shell's plain one (res/drawable/banner.xml).
+        manifestPlaceholders["appIcon"] = providers.gradleProperty("appIcon").orNull ?: "@null"
+        manifestPlaceholders["appBanner"] = providers.gradleProperty("appBanner").orNull ?: "@drawable/banner"
+    }
+    val upload = providers.environmentVariable("EXACT_KEYSTORE").orNull?.let { path ->
+        signingConfigs.create("upload") {
+            storeFile = file(path)
+            storePassword = providers.environmentVariable("EXACT_KEYSTORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("EXACT_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("EXACT_KEY_PASSWORD").get()
+        }
     }
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (minimumApi < 31) proguardFiles("proguard-legacy.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = upload ?: signingConfigs.getByName("debug")
         }
     }
     // The app's Rust library (as libexactcanvas.so) and its assets (the reader copies `app/` out of the APK once).
     sourceSets["main"].jniLibs.directories.add(out.resolve("rust/jniLibs").path)
     sourceSets["main"].assets.directories.add(out.resolve("rust/assets").path)
+    // The icon and banner agent-android.mjs makes from the manifest's `icons` (LLP 1163 D6).
+    sourceSets["main"].res.directories.add(out.resolve("icons/res").path)
     sourceSets["main"].kotlin.directories.add(if (compose) "src/compose/java" else "src/nocompose/java")
-    // The app's Kotlin hatches and module roster in its `modules/android`; -PmodulesDir lets a
+    // The app's Kotlin hatches and module roster (LLP 1115.001.000 D4) in its `modules/android`; -PmodulesDir lets a
     // component fixture compile the app's actual provider without copying its Kotlin.
     val modulesDir = providers.gradleProperty("modulesDir").orNull?.let { file(it) } ?: appDir.resolve("modules/android")
     modulesDir.takeIf { it.isDirectory }?.let { sourceSets["main"].kotlin.directories.add(it.path) }
-    // The modules' implementations the app binds: their Kotlin, and the roster naming them that
+    // The modules' implementations the app binds (LLP 1133.001 D5): their Kotlin, and the roster naming them that
     // `agent-android.mjs` writes (`-PextensionDirs`).
     providers.gradleProperty("extensionDirs").orNull?.split(',')?.filter { it.isNotEmpty() }?.forEach { sourceSets["main"].kotlin.directories.add(it) }
-    // The runtime permissions the app's grant lines derive (`-Ppermissions`), and the queries and
+    // The runtime permissions the app's grant lines derive (`-Ppermissions`, LLP 1133.002 D6), and the queries and
     // components its packages' manifest fragments declare (`-PmanifestFragment`, checked and written by
-    // scripts/android-manifest.mjs; with the share target's filters on the
-    // app's activity, scripts/share-target.mjs), merged into the shell's manifest from the release source set's: an app that grants no device asks
+    // scripts/android-manifest.mjs, LLP 1133.030 D9, LLP 1133.026 D19 item 3; with the share target's filters on the
+    // app's activity, scripts/share-target.mjs, LLP 1133.024 D5), merged into the shell's manifest from the release source set's: an app that grants no device asks
     // for none, and one that uses no such package runs nothing beyond the shell's activity.
     val fragment = providers.gradleProperty("manifestFragment").orNull?.let { file(it).readText() }?.takeIf { it.isNotBlank() }
-    // The hardware a grant line uses where present (`-PandroidFeatures`), never required.
+    // The hardware a grant line uses where present (`-PandroidFeatures`, LLP 1133.037 D17), never required.
     val lineFeatures = providers.gradleProperty("androidFeatures").orNull?.split(',')?.filter { it.isNotBlank() }.orEmpty()
     (providers.gradleProperty("permissions").orNull?.split(',')?.filter { it.isNotEmpty() } ?: emptyList())
         .takeIf { it.isNotEmpty() || fragment != null || lineFeatures.isNotEmpty() }?.let { names ->
         val permissions = layout.buildDirectory.file("permissions/AndroidManifest.xml").get().asFile
         permissions.parentFile.mkdirs()
         // CAMERA implies the back camera and autofocus as required features, which would filter the app from a
-        // device without them; each is declared not required.
+        // device without them; each is declared not required (LLP 1133.008 D6).
         val features = (if ("android.permission.CAMERA" in names) listOf("camera.any", "camera", "camera.autofocus", "camera.flash") else emptyList()) + lineFeatures
-        // A permission a later API retired names its last level (`<name> maxSdkVersion=32`).
+        // A permission a later API retired names its last level (`<name> maxSdkVersion=32`, LLP 1133.019 D4).
         val permission = { line: String ->
             val (name, last) = line.split(' ').let { it[0] to it.getOrNull(1)?.removePrefix("maxSdkVersion=") }
             "    <uses-permission android:name=\"$name\"${last?.let { " android:maxSdkVersion=\"$it\"" } ?: ""} />\n"
         }
-        // The reader's foreground services the lines declare (`-PforegroundServices`, `{kind: {purpose, types}}`), each
-        // with every type its lines give it: a type the manifest lacks throws at `startForeground`.
-        // The purpose is the notification's title and its channel's name.
+        // The reader's foreground services the lines declare (`-PforegroundServices`, `{kind: {purpose, types}}`, LLP
+        // 1133.033 D2), each with every type its lines give it: a type the manifest lacks throws at `startForeground`.
+        // The purpose is the notification's title and its channel's name (D4).
         val escape = { t: String -> t.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;") }
         @Suppress("UNCHECKED_CAST")
         val services = (providers.gradleProperty("foregroundServices").orNull?.let { JsonSlurper().parseText(it) } as Map<String, Map<String, Any?>>?).orEmpty()
@@ -120,7 +139,7 @@ android {
             manifestChildren(fragment, services.entries.joinToString("") { service(it.key, it.value) }) + "</manifest>\n")
         sourceSets["release"].manifest.srcFile(permissions)
     }
-    // The manifest's `shortcuts` as the launcher activity's static shortcuts, in order: each
+    // The manifest's `shortcuts` as the launcher activity's static shortcuts (LLP 1133.023 D3, D17), in order: each
     // starts the activity with its location as the intent's data, which the reader takes as a link's. Labels and the
     // disabled message are string resources, as `shortcuts.xml` requires; an app with none has an empty list.
     run {
@@ -130,16 +149,55 @@ android {
         val attr = { v: String -> v.replace("&", "&amp;").replace("<", "&lt;").replace("\"", "&quot;") }
         // A string resource's own escapes: a backslash, an apostrophe, and `@` or `?` leading.
         val text = { v: String -> attr(v).replace("\\", "\\\\").replace("'", "\\'").replace(Regex("^([@?])"), "\\\\$1") }
+        // The kernel's symbol vocabulary and Material shapes (LLP 1116.007 D3.1, LLP 1115.001 D14), including every
+        // role for computed dynamic/pinned items. The lookup also keeps static and runtime resolution the same.
+        val schema = JsonSlurper().parse(rootDir.resolve("../../kernel/tables/schema.json")) as Map<*, *>
+        val symbols = (schema["symbols"] as List<*>).map { it as List<*> }
+        val glyphs = (schema["symbolGlyphs"] as List<*>).map { it as List<*> }.filter { it[1] == "material" }
+        val symbolKey = { name: String -> if (name.startsWith("sf/")) name else name.replace('.', '-').replace('_', '-') }
+        val symbolNames = linkedMapOf<String, String>()
+        symbols.forEach { symbolNames[it[0] as String] = it[0] as String }
+        symbols.forEach { row ->
+            val role = row[0] as String
+            val apple = row[1] as String
+            if (apple.isNotEmpty()) {
+                symbolNames.putIfAbsent(symbolKey(apple), role)
+                symbolNames.putIfAbsent("sf/$apple", role)
+            }
+        }
+        (schema["symbolAliases"] as List<*>).forEach {
+            val row = it as List<*>
+            symbolNames[row[0] as String] = row[1] as String
+        }
+        val iconName = { role: String -> "exact_shortcut_symbol_${role.replace('-', '_')}" }
+        res.deleteRecursively()
+        res.resolve("drawable").mkdirs()
+        symbols.forEach { row ->
+            val role = row[0] as String
+            val glyph = glyphs.firstOrNull { it[0] == role }
+            val path = (glyph?.get(2) ?: row[2]) as String
+            val filled = (glyph?.get(3) as Boolean?) ?: role.endsWith("-fill")
+            val paint = if (filled) "android:fillColor=\"#FF000000\" android:fillType=\"evenOdd\"" else
+                "android:fillColor=\"#00000000\" android:strokeColor=\"#FF000000\" android:strokeWidth=\"2\" " +
+                    "android:strokeLineCap=\"round\" android:strokeLineJoin=\"round\""
+            res.resolve("drawable/${iconName(role)}.xml").writeText(
+                "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\" android:width=\"24dp\" android:height=\"24dp\" " +
+                    "android:viewportWidth=\"24\" android:viewportHeight=\"24\">\n" +
+                    path.split(';').joinToString("") { "    <path android:pathData=\"${attr(it)}\" $paint />\n" } + "</vector>\n")
+        }
         val strings = StringBuilder()
         val shortcuts = StringBuilder()
         items.forEachIndexed { i, item ->
             val name = item["name"] as String
+            val symbol = (item["apple"] as Map<*, *>?)?.get("symbol") as String?
+            val icon = symbol?.let { symbolNames[symbolKey(it)] }?.let { "@drawable/${iconName(it)}" }
             val disabled = (item["android"] as Map<*, *>?)?.get("disabledMessage") as String?
             strings.append("    <string name=\"exact_shortcut_${i}_short\">${text((item["short_name"] as String?) ?: name)}</string>\n")
             strings.append("    <string name=\"exact_shortcut_${i}_long\">${text(name)}</string>\n")
             disabled?.let { strings.append("    <string name=\"exact_shortcut_${i}_disabled\">${text(it)}</string>\n") }
             shortcuts.append("    <shortcut android:shortcutId=\"manifest-$i\" android:enabled=\"true\"\n" +
                 "        android:shortcutShortLabel=\"@string/exact_shortcut_${i}_short\" android:shortcutLongLabel=\"@string/exact_shortcut_${i}_long\"" +
+                (icon?.let { "\n        android:icon=\"$it\"" } ?: "") +
                 (disabled?.let { "\n        android:shortcutDisabledMessage=\"@string/exact_shortcut_${i}_disabled\"" } ?: "") + ">\n" +
                 "        <intent android:action=\"android.intent.action.VIEW\" android:targetPackage=\"$pkg\"\n" +
                 "            android:targetClass=\"dev.exact.app.MainActivity\" android:data=\"${attr(item["url"] as String)}\" />\n" +
@@ -149,11 +207,21 @@ android {
         res.resolve("values").mkdirs()
         res.resolve("xml/exact_shortcuts.xml").writeText("<shortcuts xmlns:android=\"http://schemas.android.com/apk/res/android\">\n$shortcuts</shortcuts>\n")
         res.resolve("values/exact_shortcuts.xml").writeText("<resources>\n$strings</resources>\n")
+        res.resolve("xml/exact_shortcut_symbols.xml").writeText("<symbols>\n" + symbolNames.entries.joinToString("") {
+            "    <symbol name=\"${attr(it.key)}\" drawable=\"@drawable/${iconName(it.value)}\" />\n"
+        } + "</symbols>\n")
         sourceSets["main"].res.directories.add(res.path)
     }
-    // The token names `bun exact.mjs tamber gen kotlin` wrote (never committed).
+    // The token names `bun exact.mjs tamber gen kotlin` wrote (LLP 1121 D12; never committed).
     appDir.resolve(".exact/tamber/TamberTokens.kt").takeIf { it.isFile }?.let { sourceSets["main"].kotlin.directories.add(it.parent) }
-    if (compose) buildFeatures { this.compose = true }
+    if (app == "shelf") sourceSets["test"].kotlin.directories.addAll(listOf(
+        "../../../packages/quick-actions/android", "../../../packages/quick-actions/test/android",
+    ))
+    testOptions { unitTests { isIncludeAndroidResources = true } }
+    if (compose) {
+        buildFeatures { this.compose = true }
+        sourceSets["test"].kotlin.directories.add("src/composeTest/java")
+    }
     // An app's GPU module (-PgpuModule=<file>) is opened by path from the extracted library directory and checked
     // against the digest its bake recorded, so it is extracted and left unstripped.
     val gpuModule = providers.gradleProperty("gpuModule").orNull
@@ -165,7 +233,7 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
-// The Maven libraries the bound modules' implementations name (`-Pmaven`), resolved with the
+// The Maven libraries the app and bound implementations name (`-Pmaven`, LLP 1133.008 D8 item 5), resolved with the
 // reader's own AndroidX in this one graph. The graph is locked to the app's lock file (`-PmavenLock`, beside its other
 // locks) and verified against its checksums (`agent-android.mjs` puts the app's verification file in place and passes
 // `--dependency-verification=strict`); `--write-locks` there writes both. An app with none resolves as before.
@@ -180,8 +248,11 @@ if (maven.isNotEmpty()) {
 dependencies {
     maven.forEach { implementation(it) }
     implementation(project(":canvas"))
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
     if (compose) {
         implementation(platform(libs.compose.bom))
         implementation(libs.compose.material3)
+        implementation("androidx.core:core:1.16.0")
     }
 }

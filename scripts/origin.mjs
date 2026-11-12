@@ -1,5 +1,6 @@
-// The origin adapter `exact deploy` publishes through: the static host
-// that serves the web app at its root, content-addressed blobs under `.exact/blobs/<sha256>`, and one directory
+// The origin adapter `exact deploy` publishes through (LLP 1030.000 D3 item
+// 5, D7; LLP 1030 D3a): the static host that serves the web app at its root,
+// content-addressed blobs under `.exact/blobs/<sha256>`, and one directory
 // per stream — `.exact/<channel>/<compatibilityId>/` — holding the signed
 // head `exact.json` and `releases/<release>.json` (the immutable prepared
 // record of each publish). A client resolves the head's relative `url`s to
@@ -24,7 +25,7 @@ import { extname, resolve } from 'node:path';
 import { canonical, matchPattern } from '../host/web-js/route-pattern.js';
 import { filesystem, filesystemLock } from './filesystem.mjs';
 
-/** SHA-256, lowercase hex — the digest every card and blob name carries. */
+/** SHA-256, lowercase hex — the digest every card and blob name carries (LLP 1023 D2). */
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /** A transport or filesystem availability failure. Classifiers turn only
@@ -62,7 +63,7 @@ export function validateChannel(channel) {
   return channel;
 }
 
-/** The stream's directory on the origin, relative to its root. */
+/** The stream's directory on the origin, relative to its root (LLP 1030.000 D7). */
 export const streamPath = ({ channel, compatibilityId }) => `.exact/${channel}/${compatibilityId}`;
 
 /** The blob's path on the origin: content-addressed, immutable. */
@@ -73,7 +74,7 @@ export const blobPath = (digest) => `.exact/blobs/${digest}`;
 export const webRootStream = { channel: 'root', compatibilityId: 'web' };
 export const webRootPath = `${streamPath(webRootStream)}/exact.json`;
 export const webReleasePath = (id) => `.exact/root/web/releases/${id}`;
-// The directory origin, dev and static
+// @ref LLP 1038 D7; LLP 1023 §7 — the directory origin, dev and static
 // server share this document fallback. Try a public file first; absent
 // extensionless paths are locations. Reserved/private paths stay files.
 // Inspect the raw request target before WHATWG URL removes dot segments.
@@ -98,6 +99,19 @@ export function webRequestURL(target) {
 const FILE_EXTENSIONS = new Set(['.html', '.htm', '.css', '.js', '.mjs', '.json', '.wasm', '.plan', '.map', '.txt', '.xml', '.pdf', '.zip',
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.ico', '.mp4', '.webm', '.vtt', '.wav', '.mp3', '.m4a', '.aac', '.ogg', '.oga',
   '.ttf', '.otf', '.woff', '.woff2', '.wgsl', '.hbc', '.model', '.tex']);
+
+/** Whether a request's `Accept` names text/markdown at a quality above zero and no lower than text/html's,
+ * which is that of the most specific range matching it (RFC 9110 §12.5.1): text/html, then text/*, then *\/*. */
+export function prefersMarkdown(accept = '') {
+  const ranges = String(accept ?? '').toLowerCase().split(',').map((range) => {
+    const [type, ...params] = range.split(';').map((part) => part.trim()), q = params.find((param) => param.startsWith('q='));
+    return [type, q ? Number(q.slice(2)) || 0 : 1];
+  });
+  const quality = (...types) => ranges.find(([type]) => type === types.find((t) => ranges.some(([r]) => r === t)))?.[1] ?? 0;
+  const markdown = quality('text/markdown');
+  return markdown > 0 && markdown >= quality('text/html', 'text/*', '*/*');
+}
+
 /** Whether a request's `Accept` takes HTML (RFC 9110: the media type, any
  * case, at a quality above zero), as a browser's navigation does. With
  * `wildcard`, a range taking any type or any text type, or no header at

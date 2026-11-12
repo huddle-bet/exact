@@ -1,4 +1,4 @@
-//! Text fields the shell hosts, against a stand-in for
+//! Text fields the shell hosts (LLP 1115.001 D8), against a stand-in for
 //! Android's reader: a shell on the test's own thread whose field sets a
 //! character half its font's size wide and a line one and a quarter of it
 //! tall. What is held here is the presenter's side of the boundary: a field
@@ -293,6 +293,68 @@ fn the_reader_is_told_each_field_its_box_and_its_keyboard() {
 }
 
 #[test]
+fn a_hosted_fields_face_belongs_to_its_plan() {
+    let (_shell, _hosting) = shell();
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/fonts");
+    let plan = |file: &str| {
+        let source = format!(
+            r#"font "Field"
+  400 = "assets/{file}"
+component App
+  view
+    column width=320 height=200
+      input testId="f" font-family="Field"
+"#
+        );
+        contract::compile_path_source(&assets.join("field-font.contract"), &source)
+            .unwrap()
+            .encode()
+    };
+    let boot_plan = |plan: &[u8]| {
+        let (mut p, error) = Presenter::boot_with(
+            plan,
+            (),
+            (320., 480.),
+            1.,
+            assets.clone(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        settle(&mut p);
+        p
+    };
+    let file = |name: &str| {
+        format!(
+            "{}#0",
+            assets
+                .join("assets")
+                .join(name)
+                .canonicalize()
+                .unwrap()
+                .display()
+        )
+    };
+    let first = plan("DejaVuSans.ttf");
+    let second = plan("DejaVuSans-Bold.ttf");
+    let mut original = boot_plan(&first);
+    assert_eq!(told(&mut original)[0].strings[2], file("DejaVuSans.ttf"));
+    let mut reloaded = boot_plan(&first);
+    assert_eq!(
+        reloaded.reload_module(&second, (), None, false).unwrap(),
+        None
+    );
+    settle(&mut reloaded);
+    assert_eq!(
+        told(&mut reloaded)[0].strings[2],
+        file("DejaVuSans-Bold.ttf")
+    );
+    let mut fresh = boot_plan(&second);
+    assert_eq!(told(&mut fresh)[0].strings[2], file("DejaVuSans-Bold.ttf"));
+    assert_eq!(told(&mut original)[0].strings[2], file("DejaVuSans.ttf"));
+}
+
+#[test]
 fn a_hosted_fields_text_is_the_shells_to_draw() {
     let (_shell, _hosting) = shell();
     let mut p = boot(FORM);
@@ -366,7 +428,7 @@ fn an_edit_is_the_fields_text_and_the_app_answers_it_by_its_number() {
     assert_eq!(log(&p), heard, "the command's `select`, and no `input`");
 }
 
-/// The app hears `input` at every change, the
+/// LLP 1115.000 §5, ruling 6: the app hears `input` at every change, the
 /// composing text included, and a value it writes meanwhile is held, the
 /// last one, until the composition ends.
 #[test]
@@ -499,7 +561,7 @@ fn a_field_keeps_its_identity_while_its_node_lives() {
     assert_eq!((back[0].generation, back[0].seq), (0, 1));
     assert_eq!((back[0].rect, back[0].value.as_str()), (at, "kept"));
     assert_eq!(p.field_selection(first).start, 2, "and its caret");
-    // Its node renewed for another row's item: another field.
+    // Its node renewed for another row's item (LLP 1078): another field.
     p.hosted_renewed(&[first]);
     let renewed = told(&mut p);
     assert_eq!((renewed[0].generation, renewed[0].seq), (1, 0));

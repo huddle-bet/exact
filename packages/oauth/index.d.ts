@@ -1,4 +1,4 @@
-// @exact/oauth's public API, for the type checker and for
+// @exact/oauth's public API (LLP 1146 D5), for the type checker and for
 // reading: `index.ts` implements it, and `test/types.ts`, given to the type
 // checker by a case in `test/oauth.test.ts`, confirms the two agree. The
 // recipe is docs/recipes/oauth.md.
@@ -39,7 +39,7 @@ export interface OAuthConfig {
   scopes: string[];
   /** The `secret.keep` name the session is kept under. */
   key: string;
-  /** The origins that receive the access token, such as `https://api.example.com`. */
+  /** The origins `fetch` and `json` may send the access token to, such as `https://api.example.com`. */
   apis: string[];
   /** Only for a provider whose app client types demand one; a secret in an app is not confidential (RFC 8252 §8.5). */
   clientSecret?: string;
@@ -108,11 +108,11 @@ export interface OAuthAuthorization {
 }
 
 export interface OAuthSignIn {
-  /** For an app that signs the person in with its own screens: sends the authorization request as the provider documents, and answers the URL it redirected to. Throw an `OAuthError` to say why it could not. */
+  /** For an app that signs the person in with its own screens (LLP 1146 D8): sends the authorization request as the provider documents, and answers the URL it redirected to. Throw an `OAuthError` to say why it could not. */
   authorize?: (request: OAuthAuthorization) => Promise<string>;
 }
 
-/** A failed authorized request. A resource source that throws it keeps its last answer. */
+/** A failed authorized request. A resource source that throws it keeps its last answer (LLP 1016 D4). */
 export declare class OAuthError extends Error {
   code: string;
   status: number;
@@ -144,6 +144,19 @@ export interface OAuthProvider {
   json(store: OAuthStore, url: string, init?: RequestInit): Promise<unknown>;
   /** The kept ID token's claims; `null` while signed out or with none. */
   claims(store: OAuthStore): Record<string, unknown> | null;
+  /** The kept ID token itself, for a service set up to accept this issuer's as the person's proof (Convex's `setAuth`);
+   *  `null` while signed out or with none. It is read at once, so a source can hand it on in its own turn. It is the
+   *  person's credential: keep it in data code, and never answer it to Contract, where an answer is kept and shown. */
+  idToken(store: OAuthStore): string | null;
+  /** The access token the store holds now, or `null` while signed out. Synchronous: no refresh and no clock.
+   *  For a socket's first message after open or an SDK; send it only to the API it was issued for, never in a URL.
+   *  Unlike `fetch`, this cannot check the destination against `apis`. Keep this credential in data code;
+   *  never answer it to Contract, where an answer is kept and shown. When the service reports expiry, await
+   *  `refresh(store)` and ask again on success; do not hold a copy across a refresh or sign-out. */
+  accessToken(store: OAuthStore): string | null;
+  /** Refreshes the session now, for a service that said the access or ID token had expired: data code reads no clock to see
+   *  it. A provider need not issue an ID token on a refresh (OIDC Core §12.2): the kept one then stands. */
+  refresh(store: OAuthStore): Promise<OAuthResult>;
 }
 
 /** A provider: one per issuer and client, made once at module level. */

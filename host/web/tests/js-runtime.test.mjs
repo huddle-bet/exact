@@ -1,10 +1,10 @@
 // The JS target over a baked plan (host/web-js/rt.js `res`): a build-time
 // answer is the first frame. A source not ready yet (a Rust module loads after
 // first paint) leaves it shown, not pending, and asks it at `ready`, as a native
-// runner asks at data_ready; a settled answer (an `else` row's, a dev
-// reload's) is not asked again. A key handler's preventDefault and
+// runner asks at data_ready (review B3); a settled answer (an `else` row's, a dev
+// reload's) is not asked again (review B4). A key handler's preventDefault and
 // stopPropagation act on its event even when a view transition defers the tree
-// update. rt.js runs beside stand-ins for the modules it imports,
+// update (review C3). rt.js runs beside stand-ins for the modules it imports,
 // with the real shape.js.
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
 import { suiteBrowser } from '../../../scripts/agent-launch.mjs';
@@ -12,13 +12,14 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { standIns } from './stand-ins.mjs';
+import { fileURLToPath } from 'node:url';
 
 // The runtime in a `web-js` directory, as built: modules.js imports the web host's `../web/address-space.js`, stood in.
 const root = mkdtempSync(resolve(tmpdir(), 'exact-js-baked-')), dir = resolve(root, 'web-js');
 mkdirSync(dir);
 mkdirSync(resolve(root, 'web'));
 writeFileSync(resolve(root, 'web/address-space.js'), 'export const setSpaceState = () => {};');
-const webJs = name => resolve(new URL(`../../web-js/${name}`, import.meta.url).pathname);
+const webJs = name => resolve(fileURLToPath(new URL(`../../web-js/${name}`, import.meta.url)));
 
 // The collection protocol and index run unchanged; only DOM row construction
 // and publication are stand-ins, as the runtime's imported hosts are below.
@@ -175,7 +176,7 @@ test('collection normal fast path retains noise, revives zeros and discards old-
     expect([c.index.leading, c.index.trailing]).toEqual([30, 70]);
   }
 });
-const REAL = ['rt.js', 'uploads.js', 'held.js', 'font-family.js', 'observers.js', 'grid.js', 'overlay.js', 'roster.js', 'router.js', 'route-pattern.js', 'schedule.js', 'budget.js', 'shape.js', 'modules.js', 'samples.js', 'spans.js', 'update.js', 'arrival.js', 'devices.js', 'wakes.js', 'reach.js', 'members.js', 'resource-inspection.js', 'sheets.js'];
+const REAL = ['rt.js', 'presence-bindings.js', 'rows.js', 'uploads.js', 'held.js', 'font-family.js', 'observers.js', 'grid.js', 'overlay.js', 'roster.js', 'router.js', 'route-pattern.js', 'schedule.js', 'budget.js', 'shape.js', 'modules.js', 'samples.js', 'spans.js', 'update.js', 'arrival.js', 'devices.js', 'wakes.js', 'reach.js', 'members.js', 'resource-inspection.js', 'sheets.js'];
 for (const f of REAL) copyFileSync(webJs(f), resolve(dir, f));
 for (const [file, source] of standIns(REAL)) writeFileSync(resolve(dir, file), source);
 // A view transition that holds every tree update (shared.js's commit returns before its callback).
@@ -234,7 +235,7 @@ stub('late.mjs', `export const appId = 'test'; export const answer = () => 'x';
 stub('topped.mjs', `export const appId = 'test'; export const answer = () => 'x';
   export let overlay = (source, args, answer) => answer.concat(['overlaid']);
   export function setOverlay(on) { overlay = on ? (source, args, answer) => answer.concat(['overlaid']) : undefined; }`);
-const tsData = readFileSync(webJs('ts-data.js'), 'utf8').replace("'__APP_TS__'", JSON.stringify(resolve(dir, 'app.mjs'))).replace('__AUTH_IMPORT__', '').replace('__AUTH_INSTALL__', '');
+const tsData = readFileSync(webJs('ts-data.js'), 'utf8').replace("'__APP_TS__'", JSON.stringify(resolve(dir, 'app.mjs'))).replace('__AUTH_IMPORT__', '').replace('__AUTH_INSTALL__', '').replace("'__FETCH_MODULE__'", "'./ts-fetch.js'");
 writeFileSync(resolve(dir, 'ts-data.js'), tsData);
 for (const name of ['late', 'topped']) writeFileSync(resolve(dir, `ts-data-${name}.js`), tsData.replace(JSON.stringify(resolve(dir, 'app.mjs')), JSON.stringify(resolve(dir, `${name}.mjs`))));
 
@@ -274,7 +275,7 @@ test('a stand-in whose ask is refused at ready fails its resource', async () => 
   } finally { if (page === undefined) delete globalThis.document; else globalThis.document = page; }
 });
 
-// `failure(x).reason`: a thrown error's string `reason` (the
+// `failure(x).reason` (LLP 1109 D3, amended by the author's ruling of 2026-10-12): a thrown error's string `reason` (the
 // snapback4 driver's refusal code), synchronous or after a request. A domain reason is also the failure code.
 test('a failure keeps the reason its error named', async () => {
   const page = globalThis.document;
@@ -331,7 +332,7 @@ test('a stand-in whose answer at ready makes a gate key no key fails in the next
   } finally { clock.agent = false; if (page === undefined) delete globalThis.document; else globalThis.document = page; }
 });
 
-// An answer that keeps coming: each message settles the
+// An answer that keeps coming (LLP 1016.000): each message settles the
 // resource and keeps its ticket; it is pending, and in flight for `clock
 // settle`, only until its first message; new arguments let the ticket go, and
 // the stream closes once that commit stands; its end lets the ticket go.
@@ -398,7 +399,7 @@ test('sin, cos, sum, range and flat compute as the runner does, and the lists st
   expect(() => budget.x_flat([[1], [2]], 65533, 7)).toThrow('IterationLimit');
 });
 
-// `sortBy`: the runner's stable merge sort on precomputed keys, taking no step of its own; against a
+// `sortBy` (LLP 1116.016 §5): the runner's stable merge sort on precomputed keys, taking no step of its own; against a
 // stable `toSorted` on the decorated key with NaN read as 0, at every length to 40 and both directions.
 test('sortBy orders by key, stably both ways, as a reference stable sort does', async () => {
   const { x_sortBy } = await import(resolve(dir, 'budget.js'));
@@ -556,7 +557,7 @@ test('a refused commit that fails an owed read leaves nothing owed when it is re
   } finally { clock.agent = false; }
 });
 
-// A refused commit puts a resource's failure back with the rest. New arguments clear a failure before the
+// A refused commit puts a resource's failure back with the rest (LLP 1005 §6). New arguments clear a failure before the
 // source is asked, and a source that refuses those arguments refuses the commit: the state is as it was, so the resource
 // is failed for the arguments it had, as the runner's `failed_args` is with its checkpoint. The refused commit's settle
 // asks nothing, and `failed(x)` follows what was put back (conformance's `failed`, `tap ask-bad`).
@@ -723,7 +724,7 @@ test('a send answered at once lets go of the one in flight it replaces', async (
   expect(slot()).toBe(2);
 });
 
-// A queue with no `then`: off the agent, the commit its reply lands in makes the waiting send due,
+// A queue with no `then` (LLP 1092 D3, D6): off the agent, the commit its reply lands in makes the waiting send due,
 // and the wall clock's `drive()` asks it with nothing else to wake it; the send waited with its own arguments.
 test('a queue with no then asks its waiting send by drive() alone, off the agent', async () => {
   const { mut, M, act, sig, data, queues, clock } = await import(resolve(dir, 'rt.js'));
@@ -743,7 +744,7 @@ test('a queue with no then asks its waiting send by drive() alone, off the agent
   expect([slot(), m.p(), m.next]).toEqual(['Q', false, Infinity]);
 });
 
-// On the JS target, the gate step runs inside the commit's undo `try`, after settlement, so a key that is
+// LLP 1092 D8 on the JS target: the gate step runs inside the commit's undo `try`, after settlement, so a key that is
 // no key refuses the commit (`TaskKey`), its writes and the timers both as they were; a changed key re-arms from now.
 test('a gate step that refuses rolls back the commit and its timers', async () => {
   const { sig, act, W, gated, clock, journal } = await import(resolve(dir, 'rt.js'));
@@ -821,7 +822,7 @@ test('capture stop ends Exact key handlers but leaves Enter submission and the b
   } finally { globalThis.addEventListener = saved; }
 });
 
-// The roster's string entries are JavaScript's, made well formed, and `replaceAll` is bounded by the
+// LLP 1088 D2: the roster's string entries are JavaScript's, made well formed, and `replaceAll` is bounded by the
 // runner's MAX_STRING as it builds (a quadratic `$\`` stops there), throwing the runner's trap at the call's pc (budget.js).
 test('slice, replaceAll, toLowerCase and toUpperCase are the web methods, well formed and bounded', async () => {
   const { x_slice: slice, x_replaceAll: replaceAll, x_toLowerCase: toLowerCase, x_toUpperCase: toUpperCase } = await import(resolve(dir, 'budget.js'));
@@ -842,7 +843,7 @@ test('slice, replaceAll, toLowerCase and toUpperCase are the web methods, well f
   expect(replaceAll('😀😀', '', '', 9, 8)).toBe('😀😀');
 });
 
-// The cases of runner/src/stdlib.rs's `number_and_date_reads_are_javascript_s`, roster.js's
+// LLP 1102 §3.1–§3.4: the cases of runner/src/stdlib.rs's `number_and_date_reads_are_javascript_s`, roster.js's
 // against the oracle the runner names: `Number` for a numeral the grammar admits, `Math.round` and `Math.ceil`.
 test('parseNumber, round, ceil and calendarDiff are the runner\'s', async () => {
   const { x_parseNumber, x_round, x_ceil, x_calendarDiff } = await import(resolve(dir, 'roster.js'));
@@ -869,7 +870,7 @@ test('parseNumber, round, ceil and calendarDiff are the runner\'s', async () => 
   }
 });
 
-// Format.js's `toFixed` is JavaScript's but "" for a non-finite number, and its
+// LLP 1102 §3.2 (decided (c)): format.js's `toFixed` is JavaScript's but "" for a non-finite number (D7), and its
 // `formatDecimal` is runner/src/format.rs's exact count (runner/tests/it/format.rs has the same rows).
 test('toFixed and formatDecimal are the runner\'s', async () => {
   const { x_toFixed, x_formatDecimal } = await import(webJs('format.js'));
@@ -881,7 +882,7 @@ test('toFixed and formatDecimal are the runner\'s', async () => {
   expect(x_formatDecimal(-Number.MAX_VALUE, 2)).toBe('-1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041447231687381771809192998812504040261841248583.68');
 });
 
-// format.js's `decimal`, `currency` and `percent` are Intl.NumberFormat("en-US")'s, swept against Bun's own
+// LLP 1116 D8: format.js's `decimal`, `currency` and `percent` are Intl.NumberFormat("en-US")'s, swept against Bun's own
 // Intl: halves at each style's cut, magnitudes from 1e-12 to 1e28, random doubles, every code the roster lists
 // (runner/tests/it/format.rs pins the runner's to rows from the same Intl). Non-finite is "", as every format's is.
 test('decimal, currency and percent numbers are Intl\'s', async () => {
@@ -910,7 +911,7 @@ test('decimal, currency and percent numbers are Intl\'s', async () => {
     .toEqual(Array(9).fill(''));
 });
 
-// format.js's `formatDay` against Bun's own Intl at a fixed-offset `timeZone`: the medium and short
+// LLP 1116.020 D8: format.js's `formatDay` against Bun's own Intl at a fixed-offset `timeZone`: the medium and short
 // dates, the short time and the long weekday are Intl's; the day count is the offset's calendar days.
 test('formatDay\'s dates, times and weekdays are Intl\'s', async () => {
   const { x_formatDay } = await import(webJs('format.js'));
@@ -943,7 +944,7 @@ test('formatDay\'s dates, times and weekdays are Intl\'s', async () => {
     .toEqual(['Yesterday', 'Yesterday at 11:59 PM', 'Yesterday', 'Tomorrow', 'Today', '12/24/26', 'Tuesday', '', '']);
 });
 
-// `concat`, and `slice` and `includes` over a list, are the web's array methods (`includes` by
+// LLP 1088 §9.1: `concat`, and `slice` and `includes` over a list, are the web's array methods (`includes` by
 // SameValueZero), on the caller's budget: each takes its `$s`, traps where the runner's `list_call` does — before it
 // builds — and leaves its own steps in `ST` (one an item kept, or scanned up to the match); text takes none.
 test('concat, slice and includes over a list are the web methods, on the caller\'s list steps', async () => {
@@ -986,11 +987,11 @@ test('requestFullscreen without media refuses as media.js does', async () => {
   expect(journal.at(-1).replace(/^t=\S+ /, '')).toBe('requestFullscreen: refused: no video with id "player"');
 });
 
-// `@exact/notifications`' web implementation: it asks permission once and posts through the
+// `@exact/notifications`' web implementation (LLP 1133.004): it asks permission once and posts through the
 // Notification API, now or at `showTrigger` while the page is open; a tag's `closeNotification` takes away a shown or
 // a waiting one; the click is bound through the host's `activation`.
 test('@exact/notifications on the web: posts by the Notification API, closes, holds a showTrigger, binds the click', async () => {
-  const { implementation } = await import(new URL('../../../packages/notifications/web/index.js', import.meta.url).pathname);
+  const { implementation } = await import(fileURLToPath(new URL('../../../packages/notifications/web/index.js', import.meta.url)));
   const posted = [], closed = [], bound = [], said = [];
   globalThis.Notification = class { static permission = 'default'; static requestPermission() { Notification.permission = 'granted'; return Promise.resolve('granted'); }
     constructor(title, options) { this.title = title; this.options = options; posted.push(this); } addEventListener() {} close() { closed.push(this.title); } };
@@ -1014,7 +1015,7 @@ test('a module\'s activation: only a trusted event raises, and a navigate opens 
   const { clock, navigateTo, journal } = await import(resolve(dir, 'rt.js'));
   const { modules } = await import(resolve(dir, 'modules.js'));
   const corpus = JSON.parse(readFileSync(new URL('../../../route/tests/corpus.json', import.meta.url), 'utf8'));
-  // A canonical case through a URL keeps its fragment, which its canonical form drops.
+  // A canonical case through a URL keeps its fragment (LLP 1153 D5), which its canonical form drops.
   const cases = [...corpus.location_of, ...corpus.canonical.map(({ input, expected }) => ({
     input: 'https://x' + (input.startsWith('/') ? input : '/' + input), expected, fragment: true,
   }))];
@@ -1042,7 +1043,7 @@ test('a module\'s activation: only a trusted event raises, and a navigate opens 
   } finally { if (previousFocus === undefined) delete globalThis.focus; else globalThis.focus = previousFocus; navigateTo(null); }
 });
 
-// The declaration's `checks` hold a send under the agent, as the runner's do.
+// LLP 1133.030 D2: the declaration's `checks` hold a send under the agent, as the runner's do.
 test('a declared check refuses a send on the JS target, and leaves its state', async () => {
   const { clock, journal } = await import(resolve(dir, 'rt.js'));
   const { modules } = await import(resolve(dir, 'modules.js'));
@@ -1061,7 +1062,17 @@ test('a declared check refuses a send on the JS target, and leaves its state', a
   clock.agent = false;
 });
 
-// A module event's origin on the JS target.
+// LLP 1133.021 §12: a send with nothing preferred answers its declared default, as the runner's `decide`.
+test('a send with nothing preferred answers its declared default, a copy each time', async () => {
+  const { modules } = await import(resolve(dir, 'modules.js'));
+  modules({ read: ['dflt.read', true, { default: { token: null, status: 0 } }, 'u', 'never', null, false], find: ['dflt.find', true, { default: [] }, 'u', 'never', null, false],
+    bare: ['dflt.bare', true, {}, 'u', 'never', null, false] }, {});
+  const call = send => globalThis.exact.extensions.call({ extension: 'dflt', send, args: {} });
+  (await call('read')).status = 1;
+  expect([await call('read'), await call('find'), await call('bare')]).toEqual([{ token: null, status: 0 }, [], { error: 'NotSupportedError' }]);
+});
+
+// LLP 1133.004 D6, LLP 1133.002 D12: a module event's origin on the JS target.
 test('a command keeps the origin of the commit that queued it, whenever its tail runs', async () => {
   const { commit, C, Hosts, Origin } = await import(resolve(dir, 'rt.js'));
   let got = null;
@@ -1101,18 +1112,18 @@ test('an emitted event\'s requests make data code the device\'s until they land;
   expect(journal.some(l => l.endsWith('act.moved: a pointermove is no person\'s activation; nothing is bound'))).toBe(true);
 });
 
-// A string past MAX_STRING comes only from a data source, which the
+// LLP 1090: a string past MAX_STRING comes only from a data source, which the
 // JS target's Rust seam caps at 16 MiB a message, so conformance cannot carry
 // one (host/web-js/conformance/budget.contract); the runtime's checks are run
 // here, against the runner's texts (runner/src/runner/commit.rs, stdlib.rs).
-// The JS target's storage: one queue for the module's
+// The JS target's storage (LLP 1097 D3, D8, D9): one queue for the module's
 // operations, so a read issued after an unawaited write sees it, though the
 // store would answer the read first; at most 256 wait behind the one in
 // flight, the next refused `full` and journaled; each counts in flight until
 // it lands, and a failure is journaled. ts-data.js over a scripted store.
 // Whether a module has an overlay is decided at install (ts-data.js `data.overlay`), as the native and wasm
 // executors decide it at load (js/tests/it/overlay.rs): a top-level overlay overlays, and one set or deleted after
-// install is not followed until the module is installed again.
+// install is not followed until the module is installed again (LLP 1054).
 test('an overlay is decided at install: a top-level one overlays, one set or deleted after is not followed', async () => {
   const { data } = await import(resolve(dir, 'rt.js'));
   const { sourceTypes } = await import(resolve(dir, 'names.js'));
@@ -1170,7 +1181,7 @@ test('storage keeps the order issued, a bound, a count, and a journal', async ()
   expect(journal.some(l => l.endsWith('storage failed: atomicWriteFile app:/data/absent/x: ENOENT filesystem: No such file'))).toBe(true);
 }, 30_000); // hang bound
 
-// `fs.compressImage` on the JS target: its options are
+// `fs.compressImage` on the JS target (LLP 1069.002 A1.1): its options are
 // checked and copied before it is queued; a bad one is a TypeError that
 // never enters the queue.
 test('compressImage copies its options and refuses bad ones before the queue', async () => {
@@ -1187,7 +1198,7 @@ test('compressImage copies its options and refuses bad ones before the queue', a
   const badType = ask('compress-bad-type');
   expect(data.background().queued + data.background().inFlight).toBe(0);
   expect(await badType.promise).toBe('TypeError undefined storage.fs.compressImage(): type must be "image/jpeg" or "image/png"');
-  // The edit and a transform's options, copied as checked.
+  // LLP 1133.019 D14, D15: the edit and a transform's options, copied as checked.
   expect(JSON.parse(await ask('compress-edit').promise)).toMatchObject({ rotate: 90, width: 8 });
   expect(JSON.parse(await ask('transform').promise)).toEqual({ path: 'app:/tmp/edit.jpg',
     options: { rotate: 90, crop: { x: 0, y: 0, width: 4, height: 4 }, metadata: 'no-location' } });
@@ -1207,7 +1218,7 @@ test('a string past MAX_STRING joins to itself alone and is counted in UTF-8 byt
   // 2^25 units of "é" are exactly 2^26 bytes; one more is past.
   expect(cc('é'.repeat(2 ** 24), 'é'.repeat(2 ** 24), 7).length).toBe(2 ** 25);
   expect(() => cc('é'.repeat(2 ** 24), 'é'.repeat(2 ** 24 + 1), 7)).toThrow('Trap(StringTooLong { pc: 7 })');
-  // A remembered part counted as 3 bytes a unit is recounted exactly:
+  // A remembered part counted as 3 bytes a unit is recounted exactly (D3):
   // 10 MB three times is 30 MB, seven times 70 MB.
   const xs = K(Array.from({ length: 10000 }, () => 'a'.repeat(1000)), 1);
   expect(K([xs, xs, xs], 2)).toHaveLength(3);
@@ -1295,7 +1306,7 @@ test('translation expansion stops when its output exceeds the byte budget', asyn
 
 test('an argument or a write past MAX_STRING is refused by name, and a trapping argument is a trap, poisoned or not', async () => {
   const { act, sig, W, effect, journal } = await import(resolve(dir, 'rt.js'));
-  const { Trap, tg } = await import(resolve(dir, 'budget.js'));
+  const { Trap, tg, x_encodeRouteSegment } = await import(resolve(dir, 'budget.js'));
   const last = () => journal.at(-1).replace(/^t=\S+ /, '');
   const t = sig('', 's', 't');
   const put = act(v => W(t, v), ['s'], 0, ['v']);
@@ -1312,24 +1323,31 @@ test('an argument or a write past MAX_STRING is refused by name, and a trapping 
   expect(t()).toBe('');
   put.t(() => { throw new Trap('IterationLimit', 17); })();
   expect(last()).toBe('refused action: Trap(IterationLimit { pc: 17 })');
-  // A prop or style binding's trap unsets its row and the commit goes on, with one journal line however
+  // A prop or style binding's trap unsets its row and the commit goes on (LLP 1017.003 D3), with one journal line however
   // many writes read it (here two, as a painted flag and its row), until it evaluates to a value again.
-  const m = sig(0, 'm');
-  const el = {}, text = () => { if (m() > 0) throw new Trap('IterationLimit', 5); return 'x'; };
-  const lines = () => journal.filter(l => l.endsWith('site 4: text trapped Trap(IterationLimit { pc: 5 }); unset')).length;
-  let shown = 'x', painted = 'x';
-  effect(() => { shown = tg(el, 4, 'text', text)(); });
-  effect(() => { painted = tg(el, 4, 'text', text)(); });
-  const set = v => { act(() => W(m, v))(); globalThis.heldTail?.(); };
-  set(1);
-  expect(lines()).toBe(1);
-  expect([shown, painted]).toEqual([null, null]);
-  set(2);
-  expect(lines()).toBe(1);
-  set(0);
-  expect([shown, painted]).toEqual(['x', 'x']);
-  set(1);
-  expect(lines()).toBe(2);
+  const bindings = [
+    ['text', v => { if (v > 0) throw new Trap('IterationLimit', 5); return 'x'; }, 'IterationLimit'],
+    ...['', '.', '..'].map(invalid => ['href', v => `/chat/${x_encodeRouteSegment(v > 0 ? invalid : 'a/b', 5)}`, 'PathParameter']),
+  ];
+  for (const [row, binding, trap] of bindings) {
+    const m = sig(0, 'm'), start = journal.length;
+    const el = {}, text = () => binding(m());
+    const lines = () => journal.slice(start).filter(l => l.endsWith(`site 4: ${row} trapped Trap(${trap} { pc: 5 }); unset`)).length;
+    let shown, painted;
+    effect(() => { shown = tg(el, 4, row, text)(); });
+    effect(() => { painted = tg(el, 4, row, text)(); });
+    const set = v => { act(() => W(m, v))(); globalThis.heldTail?.(); };
+    set(1);
+    expect(lines()).toBe(1);
+    expect([shown, painted]).toEqual([null, null]);
+    set(2);
+    expect(m()).toBe(2);
+    expect(lines()).toBe(1);
+    set(0);
+    expect([shown, painted]).toEqual(row === 'href' ? ['/chat/a%2Fb', '/chat/a%2Fb'] : ['x', 'x']);
+    set(1);
+    expect(lines()).toBe(2);
+  }
   // Any other trap while the tree updates (a subject's, a key's) poisons, as the runner's InstanceError; an argument still traps first.
   const n = sig(0, 'n');
   effect(() => { if (n() > 0) throw new Trap('IterationLimit', 9); });

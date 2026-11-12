@@ -1,11 +1,11 @@
 //! Every fact a boot takes first lives here, including root size and display scale.
-//! The display preferences, told to the
-//! running host and kept for the next boot's first frame; the date
-//! and where the viewer is, told to the running host, and
+//! The display preferences (LLP 1061 D4; LLP 1069.000 D1), told to the
+//! running host and kept for the next boot's first frame; the date (LLP
+//! 1027.000.000) and where the viewer is, told to the running host, and
 //! before each boot for its first settle (`set_launch_time`, `set_launch_place`);
-//! and the host's live clock while it owns time (the timers RFC), told to the
+//! and the host's live clock while it owns time (the timers RFC, D1), told to the
 //! running host and kept for every boot (`set_live_clock`); and whether the
-//! running plan reads the page's `onLine`.
+//! running plan reads the page's `onLine` (LLP 1069.000 D2).
 
 use super::{not_booted, Bridge};
 use exact_runner::DataSource;
@@ -64,14 +64,14 @@ impl<D: DataSource> Bridge<D> {
             .map_or(1, |h| u32::from(h.runner().reads_page_field("onLine")))
     }
 
-    /// The running session's role overrides, bound
+    /// The running session's role overrides (LLP 1121 stage 5), bound
     /// around each call to it (`registry::with_entry`).
     pub fn roles(&self) -> Option<std::rc::Rc<exact_kernel::style::roles::Roles>> {
         self.host.as_ref().map(|h| h.runner().roles().clone())
     }
 
-    /// App modes, `axis=value` pins comma-separated in the input buffer,
-    /// set in one commit; after a `?`, only checked.
+    /// App modes, `axis=value` pins comma-separated in the input buffer
+    /// (LLP 1121 D5), set in one commit; after a `?`, only checked.
     pub fn set_mode(&mut self, len: usize) -> u32 {
         let text = std::str::from_utf8(&self.input[..len.min(self.input.len())]).unwrap_or("");
         // `?` first: only ask whether they would be taken.
@@ -99,7 +99,7 @@ impl<D: DataSource> Bridge<D> {
     }
 
     /// A live design batch or snapshot frame from the dev stream in the
-    /// input buffer, applied in place; returns the batch.
+    /// input buffer (LLP 1121 stage 4), applied in place; returns the batch.
     pub fn design_rows(&mut self, len: usize) -> u32 {
         let text = std::str::from_utf8(&self.input[..len.min(self.input.len())])
             .unwrap_or("")
@@ -111,7 +111,7 @@ impl<D: DataSource> Bridge<D> {
         self.emit(out)
     }
 
-    /// The binding core's answer to the request in
+    /// The binding core's answer (LLP 1121 D12, stage 5) to the request in
     /// the input buffer ([`Host::tamber_json`]), UTF-8 in the output buffer.
     /// Not a batch: nothing changes.
     pub fn tamber(&mut self, len: usize) -> u32 {
@@ -149,9 +149,10 @@ impl<D: DataSource> Bridge<D> {
         self.output.len() as u32
     }
 
-    /// The user's display preferences changed or became known: bit 0
-    /// reduced motion, bit 1 reduced transparency, bit 2 contrast more, bit
-    /// 3 contrast less, bit 4 a dark system.
+    /// The user's display preferences changed or became known (LLP 1061
+    /// D4; LLP 1069.000 D1): bit 0 reduced motion, bit 1 reduced
+    /// transparency, bit 2 contrast more, bit 3 contrast less, bit 4 a dark
+    /// system.
     pub fn set_preferences(&mut self, bits: u32) -> u32 {
         let preferences = exact_runner::Preferences::from_bits(bits);
         self.preferences = preferences;
@@ -162,7 +163,7 @@ impl<D: DataSource> Bridge<D> {
         self.emit(out)
     }
 
-    /// The date changed, told to the running host.
+    /// The date changed (LLP 1027.000.000), told to the running host.
     pub fn set_time(&mut self, epoch_at_zero: f64, utc_offset: f64) -> u32 {
         let out = self
             .host
@@ -259,9 +260,18 @@ impl<D: DataSource> Bridge<D> {
     /// The extensions the app's module composes, a name a line; `agent
     /// <name>` for one bound under the agent.
     pub fn bind_extensions(&mut self, len: usize) {
-        let text = std::str::from_utf8(&self.input[..len.min(self.input.len())])
-            .unwrap_or("")
-            .to_owned();
+        let text = std::str::from_utf8(&self.input[..len.min(self.input.len())]).unwrap_or("");
+        self.bound = Some(text.to_owned());
+        self.rebind();
+    }
+
+    /// The extensions last bound, into the live runner: also a replacement's
+    /// (`commit_plan`), since the app's module, made once a session, does not
+    /// bind them again.
+    pub(super) fn rebind(&mut self) {
+        let Some(text) = self.bound.as_deref() else {
+            return;
+        };
         let (agent, real): (Vec<&str>, Vec<&str>) = (text.lines())
             .filter(|l| !l.is_empty())
             .partition(|l| l.starts_with("agent "));
@@ -275,7 +285,7 @@ impl<D: DataSource> Bridge<D> {
     }
 
     /// A package picture's admission (`exact_picture`), on this target.
-    pub fn picture(&mut self, len: usize) -> u32 {
+    pub fn picture(&mut self, len: usize, count: bool) -> u32 {
         let source = std::str::from_utf8(&self.input[..len.min(self.input.len())])
             .unwrap_or("")
             .to_owned();
@@ -285,7 +295,13 @@ impl<D: DataSource> Bridge<D> {
             "ios"
         };
         let out = (self.host.as_mut())
-            .and_then(|h| h.runner_mut().admit_picture(&source, target))
+            .and_then(|h| {
+                if count {
+                    h.runner_mut().admit_picture(&source, target)
+                } else {
+                    h.runner_mut().check_picture(&source, target)
+                }
+            })
             .map(|v| v.to_string())
             .unwrap_or_default();
         self.emit(out)
@@ -304,7 +320,7 @@ impl<D: DataSource> Bridge<D> {
     }
 
     /// A module event the platform reported, in the input buffer
-    /// (`Host::module_event`).
+    /// (`Host::module_event`, LLP 1133.004 D6).
     pub fn module_event(&mut self, len: usize) -> u32 {
         let text = std::str::from_utf8(&self.input[..len.min(self.input.len())])
             .unwrap_or("")
@@ -328,9 +344,12 @@ pub(super) fn sampler(wall: LiveClockFn) -> Box<dyn FnMut() -> f64> {
 #[cfg(test)]
 #[path = "live_clock_tests.rs"]
 mod live_clock_tests;
+#[cfg(test)]
+#[path = "rebind_tests.rs"]
+mod rebind_tests;
 
 impl<D: DataSource> Bridge<D> {
-    /// The root font size in points: a relayout.
+    /// The root font size in points (LLP 1069.000 D3): a relayout.
     pub fn set_root_font_size(&mut self, px: f64) -> u32 {
         if self.host.is_none() {
             if !px.is_finite() || !(px as f32).is_finite() || px <= 0.0 {
@@ -345,7 +364,7 @@ impl<D: DataSource> Bridge<D> {
         self.emit(out)
     }
 
-    /// The display's scale: a relayout where a row is a
+    /// The display's scale (LLP 1115.000 D10.3): a relayout where a row is a
     /// hairline.
     pub fn set_display_scale(&mut self, scale: f64) -> u32 {
         if self.host.is_none() {

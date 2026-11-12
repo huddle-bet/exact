@@ -1,5 +1,5 @@
 <!--
-`contract vocab <name>` answers each concept below with its whole idiom:
+`contract vocab <name>` answers each concept below with its whole idiom (LLP 1116.004 D5.1):
 what a builder looked up a recipe or the grammar for, answered in one lookup. A section is
 `## <name>: <what it does>`, then `names: …`, the other names it answers to, then the answer:
 a sentence or two, the minimal complete code, and the recipe for depth. A name that is also a
@@ -61,7 +61,9 @@ names: spinner, skeleton, baked, bake, first-frame
 A resource's `else` is its value until the first answer: `else empty()` is its shape's zero
 (`false`, `""`, `0`, `[]`), so a `loaded: bool` the source always answers `true` tells the
 first frame from an empty answer. `pending(r)` is true while a request is out, `failed(r)`
-once one failed with no answer. `progress` with no `value` is the system spinner.
+once one failed with no answer, and `current(r)` once what it shows answers its current
+arguments: "loading" is `not current(r)`, so a refresh (`pending`, still current) keeps the
+rows. `progress` with no `value` is the system spinner.
 
 ```contract
 shape Feed
@@ -142,7 +144,7 @@ component App
 
 - Each option is one short `text` (or a symbol `image` with an `aria-label`); leave its
   look unsaid. A radio that paints itself (its own `background-color`, `border` or
-  `border-radius`) makes the group your drawn control on every host, keys
+  `border-radius`, LLP 1104 D2) makes the group your drawn control on every host, keys
   and all; `appearance="none"` on the `radiogroup` says so whatever the radios write. Six or more options, or long labels: a `select` (`contract vocab select`). A setting on or off: `input
   type="checkbox" switch`.
 - An item checked off (a to-do, a shopping list) is a plain `input type="checkbox"`: on iOS
@@ -514,6 +516,10 @@ component App
 - On a row of a grouped list's `section`, or of a `list` whose rows go down the page;
   anywhere else it does nothing (warning `lower-delete-row`). A `list` with sections is a
   grouped list only with `appearance="auto"` (warning `lower-list-section`).
+- `swipeleft=action` and `swiperight=action` are not swipe actions: the node follows the
+  finger and the one action runs when it lifts past 64 points, with no button revealed
+  (a message's swipe to reply; `contract vocab swipeleft`). A row that shows Delete is
+  `delete=`.
 - Other actions than Delete (Pin, Flag, a leading action, several) are the long form: a
   horizontal snap `scroll` laid out as a row (`display="flex"`), naming its content
   (`swipeContent`) and its actions (`swipeTrailing`, `swipeLeading`: buttons' `id`s, inside
@@ -587,7 +593,8 @@ names: send, mutate, post, put, patch, request
 `mutation name as shape T` is the reply slot, an option (`none` until the reply lands);
 `send name = source(args)` in an action asks the data module's source. `pending(name)` is true
 while it is in flight; `refreshes res` asks a resource again when the reply lands, `then act`
-runs an action (no parameters) after it, `queue` keeps sends in order.
+runs an action (no parameters) after it. A send forgets the one in flight; `queue` keeps sends
+in order, one at a time; `parallel` asks each at once and lands every reply (no `then`).
 
 ```contract
 shape Reply
@@ -603,18 +610,19 @@ component App
       text `Add (${items.length})`
 ```
 
-- One send of a mutation per path (`analyze-send-twice`): a second write needs its own mutation or
-  `queue`. Read the reply with `match added { case some(r) => r.ok, case none => false }`.
+- One send of a mutation per path (`analyze-send-twice`): a second write needs its own mutation,
+  `queue` or `parallel`. Read the reply with `match added { case some(r) => r.ok, case none => false }`.
 
 More: docs/recipes/after-a-write.md
 
 ## resource: a read from the data module
-names: source, sources, fetch, load, useEffect, useQuery, query
+names: source, sources, fetch, load, useEffect, useQuery, query, transient, no-store, volatile, ephemeral
 
 `resource name = source(args) as shape T else empty()` asks the source in `app.ts` and shows its
 answer as `name`; the arguments are state, so a change asks again. Until the first answer it is
-`else empty()`, the shape's zero (`[]`, `""`, `0`, `false`). `pending(name)` is true while a
-request is in flight, `failed(name)` when it had no answer. Only the root declares one.
+`else empty()`, the shape's zero. `pending(name)`: a request out; `failed(name)`: no answer;
+`current(name)`: it shows its arguments' answer. `when cond` asks nothing while `cond` is
+false. Only the root declares one.
 
 ```contract
 component App
@@ -630,6 +638,7 @@ component App
 
 - The source answers exactly the shape (an extra field fails it), and a failed fetch is data, not
   an exception. A child takes what it shows as props; `refresh name` in an action asks again.
+- `transient` after the shape: the answer is never kept on the device for the next launch.
 
 More: docs/recipes/fetch-loading-error.md
 
@@ -878,6 +887,8 @@ names: background-image, mask-image, repeating-linear-gradient
 `background-image` takes `none` or up to four layers of `linear-gradient()`,
 `radial-gradient()`, `conic-gradient()` and `repeating-linear-gradient()`.
 `mask-image` takes one gradient. Each takes at most 64 colour stops.
+A radial gradient is sized by an extent keyword or by radii: one px length
+for a circle, two px or % lengths for an ellipse (`radial-gradient(120% 90% at 8% 0%, …)`).
 Linear/radial stops take percentages, px lengths, or unitless zero, with two
 positions allowed per colour. Omitted and mixed-unit stops are fixed up as
 CSS specifies once the box size is known. Conic stops take percentages or angles.
@@ -897,7 +908,7 @@ along the gradient line. `background-attachment` takes `scroll` or `fixed`;
 hatch on separate rows does not establish one pattern across the list.
 
 ## menu: a pull-down menu of actions, and a long-press one
-names: menus, popover, dropdown, pulldown, pull-down, popupmenu, menu at the click, popup at point, contextPopover, UIMenu, context menu, context-menu, contextMenu, UIContextMenuInteraction, menuitemradio, menuitemcheckbox, checkmark
+names: menus, popover, dropdown, pulldown, pull-down, popupmenu, menu at the click, popup at point, contextPopover, UIMenu, context menu, context-menu, contextMenu, UIContextMenuInteraction, menuitemradio, menuitemcheckbox, checkmark, menuOrder, preferredMenuElementOrder, menu order, reversed menu
 
 A menu is HTML's: a `column popover="auto" role="menu"` of `button`s, opened by a button's
 `popovertarget` (on iOS a `UIMenu`; in a `header`, the bar item's pull-down). A long-press
@@ -937,10 +948,13 @@ component App
 - A row's second `text`, under the first (a block `button`, or `flex-direction="column"`), is
   its grey subtitle: `text "Name"` then `text "A to Z"`. Side by side they stay one title.
 - An `hr` between rows starts a section; `destructive=true` paints a row red.
+- iOS puts the first row nearest the finger, so a menu opening upward from near the bottom
+  of the screen shows its rows last first. `menuOrder="fixed"` on the trigger keeps them as
+  written; `"priority"` always puts the first row nearest the finger.
 - At the click, as Electron's `Menu.popup({x, y})`: the button's `press` action takes
   `e: MouseEvent`, keeps `e.clientX`, `e.clientY` (both 0 from a key; then leave the insets
   `auto`), and calls `showPopover("menu", source="button")`; the popover writes them as `left`
-  and `top` with `margin=0` and no `position-area`. iOS keeps the menu on its invoker.
+  and `top` with `margin=0` and no `position-area`. iOS keeps the menu on its invoker (LLP 1021 D2).
 
 A test opens one with `tap "sort"`, a long-press one with `tap "row-1" contextmenu`, then
 taps the item. A row whose `popovertarget` names another menu is its submenu.
@@ -1038,9 +1052,10 @@ On a button, `-exact-menu` is a literal `about` (directly under About), `app`,
 `file`, `edit`, `view`, `go`, `window`, `help` or `none` (no item; the chord
 stays a shortcut). `dock` beside one of them, or alone, also files the button
 in the app's Dock menu (`-exact-menu="file dock"`). `status` alone presents the
-button as the app's status item: a menu bar item on macOS, a notification-area
-icon on Windows; it takes the button's place, its `popovertarget` menu is the
-item's menu, and with another id it fails `lower-menu-status`.
+button as the app's status item, a menu bar item on macOS (Windows'
+notification-area icon is not built); it takes the button's place, its
+`popovertarget` menu is the item's menu, and with another id it fails
+`lower-menu-status` (LLP 1133.025).
 It adds an item even without a chord and overrides
 `aria-keyshortcuts` chord filing. The item's label is the button's accessible
 label or text; `disabled` disables it. An item in the app menu or Help is the
@@ -1059,7 +1074,7 @@ The whitespace-separated list must be literal; unknown ids and nested use fail
 with `lower-menu-remove`, naming the set. Empty removes nothing; duplicates
 are harmless. The view’s root is a node, not a conditional. Root replacement and
 window switching restore the appropriate menu. App buttons and other standard
-items remain. Other hosts ignore removal.
+items remain. Other hosts ignore removal (LLP 1021 §5.3).
 A root `-exact-menu-keys="close-window=none"` keeps File ▸ Close Window with no
 chord, so ⌘W reaches the page; declare `-exact-menu-remove="close-all"` with it,
 or AppKit's Close All ⌥⌘W shows as a row of its own. `close-window=Meta+Shift+W`
@@ -1067,7 +1082,8 @@ gives it ⇧⌘W. `close-window` is the one id; the chord is one `aria-keyshortc
 chord with `Meta` that is not the host's or the system's own (⌘Q, ⌘W, ⌘H, ⌘M,
 ⌘-comma and the like). Another id, an id named twice, a chord without `Meta`, a
 standard chord and nested use fail with `lower-menu-keys`. An app command with
-the chord still takes it; without the declaration Close Window has ⌘W.
+the chord still takes it; without the declaration Close Window has ⌘W (LLP 1021
+§5.3.3).
 
 ```contract
 component App
@@ -1109,7 +1125,7 @@ component App
   a child (a `text`, an `image`).
 
 ## glass: Liquid Glass, a material or a blur behind a box
-names: Liquid Glass, liquid-glass, liquidGlass, material, materials, vibrancy, blur, frosted, UIVisualEffectView, UIGlassEffect, BlurView, GlassView, expo-blur, expo-glass-effect
+names: Liquid Glass, liquid-glass, liquidGlass, material, materials, vibrancy, blur, frosted, UIVisualEffectView, UIGlassEffect, BlurView, GlassView, expo-blur, expo-glass-effect, tintColor, glass tint, tinted glass, isInteractive
 
 Bars, tab bars, sheets and menus are the platform's, glass included: leave them unsaid. A
 surface of your own takes `backgroundMaterial`: `"glass"` or `"glass-clear"` is
@@ -1135,6 +1151,9 @@ component App
   `backgroundMaterial`, which wins when both are written.
 - A navigation bar's buttons share one glass capsule on iOS 26; `buttonStyle="glass"` on
   each gives it a capsule of its own (`contract vocab bar-buttons`).
+- `-exact-glass-tint="rgba(10,12,16,0.55)"` tints the glass itself (`UIGlassEffect.tintColor`);
+  a `background-color` is painted behind it. Glass reacts to a finger on a box with a `press`;
+  `glassInteractive=false` keeps it still, `true` makes it react without one.
 
 ## bar-buttons: the navigation bar's buttons, grouped or each in its own capsule
 names: bar button, bar-button, barbuttons, UIBarButtonItem, sharesBackground, headerRight, headerLeft, toolbarItem, ToolbarItem, ToolbarItemGroup
@@ -1197,15 +1216,24 @@ component App
       text `${n}`
 ```
 
-## status-bar: the colour of the iPhone's status bar
-names: status bar, statusbar, setStatusBarStyle, UIStatusBarStyle, preferredStatusBarStyle, expo-status-bar
+## status-bar: the phone's status bar icons, and hiding them on iOS
+names: status bar, statusbar, setStatusBarStyle, UIStatusBarStyle, preferredStatusBarStyle, expo-status-bar, system-bars-hidden, statusBarHidden, prefersStatusBarHidden, prefersHomeIndicatorAutoHidden, autoHideHomeIndicator, immersive
 
 `status-bar-style="light-content"` (light text, for a dark surface), `"dark-content"` or
-`"auto"` on any node, bound to state if it changes, sets an iPhone's status bar; of what the
-bar sits over, the declaration painted on top wins. `status-bar-animation="fade"` fades a
-change. Other hosts ignore both.
+`"auto"` on any node, bound to state if it changes, sets the status bar on iOS and Android;
+of what the bar sits over, the declaration painted on top wins. `auto` follows the winner's
+scheme; no valid declaration follows the page's scheme. Android's navigation bar icons
+follow the page's scheme independently (LLP 1105 D7). Android's modal routes are covering
+pages, with no native sheet detent or transition completion; see host/android/README.md,
+Edge to edge. `status-bar-animation="fade"` fades a change on iOS alone. Other hosts ignore
+both properties.
 
-More: docs/contract-for-agents.md (`status-bar-style`)
+On iOS, `system-bars-hidden=true` (or `=toyOpen`) hides the status bar and auto-hides the home
+indicator while that node's screen is under them, resolved the same way: a `fullscreen`
+route's wins over the stack, a `medium` sheet's does not, and a descendant's `false` shows
+them again.
+
+More: docs/contract-for-agents.md (`status-bar-style`, `system-bars-hidden`)
 
 ## toast: a message that shows for a moment
 names: Toast, snackbar, Snackbar, react-native-toast-message, burnt
@@ -1240,7 +1268,8 @@ names: titlebar-area, titlebar-area-x, titlebar-area-y, titlebar-area-width, tit
 Window Controls Overlay's `env(titlebar-area-x|y|width|height)` is the part of the title
 bar the page may draw in, beside the window's controls. On the Mac, under
 `viewport-fit="cover"`, it is AppKit's title bar less the traffic lights: in a 900-point
-window `78 0 822×32`. It is all zero in full screen and while the window has a toolbar (an
+window `78 0 822×32` with a left-to-right title bar, `0 0 822×32` with a right-to-left one.
+It is all zero in full screen and while the window has a toolbar (an
 app with routes has one), and undefined elsewhere: in a browser tab, on iOS, Linux and
 Windows, and on a Mac window that does not cover its title bar. Give each a fallback.
 `"display_override": ["window-controls-overlay"]` in `app.json` gives a Mac window the
@@ -1298,7 +1327,7 @@ component App
 - A picture is iOS's and the Mac's; the web refuses one by name, so offer it where
   `exactPage().canSharePictures` holds. An `app:/` file needs the `fs.read` grant
   (`contract vocab files-and-grants`).
-- More: docs/contract-grammar.md (host commands).
+- More: docs/contract-grammar.md (host commands), LLP 1125 D12.
 
 ## use: an app in several `.contract` files
 names: import, imports, export, exports, require, include, multiple files, several files, split
@@ -1361,7 +1390,7 @@ component TypingRow
     text who
 ```
 
-More: docs/contract-grammar.md (members files); apps/excord/viewer.contract
+More: docs/contract-grammar.md (members files)
 
 ## svg: a vector drawing (an icon, a chart, a QR code)
 names: Svg, vector, react-native-svg, expo-svg, SvgXml, Path, Circle, Rect, drawing

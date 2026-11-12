@@ -1,4 +1,4 @@
-//! Exact geometry painted by Android's `Canvas`: the kernel
+//! Exact geometry painted by Android's `Canvas` (LLP 1076 §3.3): the kernel
 //! lays out, Parley shapes, and the paint walk runs as everywhere else,
 //! but the backend records what it would draw — rounded rects, paths,
 //! clips, layers, pictures and positioned glyph runs — into one flat op
@@ -26,7 +26,7 @@
 //!   face drawn at variation settings fontique chose (`tag` an OpenType axis tag as a big-endian
 //!   `u32`, `value` in the axis's units: `ital` 1 for Roboto's italic, `wght`, `slnt`, `wdth`),
 //!   and `opsz` the size, where the face has the axis (`font-optical-sizing: auto`), then the
-//!   run's `font-variation-settings`, each replacing an axis already named.
+//!   run's `font-variation-settings`, each replacing an axis already named (LLP 1019 D9).
 //!   The reader sets them on its `Font`; `wght`, when absent, is `weight` as for `FONT`. In
 //!   place of `FONT` for such a face, so a reader that predates it stops rather than drawing
 //!   the default instance at the instance's advances. GLYPHS' `skew` stays for an oblique
@@ -49,10 +49,16 @@
 //!   outside the border box `b…` (`canvas/shadow.rs`)
 //! - `43 SHADER len …` — the next RRECT, PATH or STROKE paints with a gradient shader (`canvas/gradient.rs`)
 //! - `44 BLUR sigma` — the next GLYPHS draws through a blur of `sigma`, local units (`canvas/glyphs.rs`)
+//! - `45 CLIP_UNION len n (rule path)×n` — save and clip to the union of independently filled paths
+//! - `46 MASK_LAYER` — save a layer composited through destination-in at its RESTORE
+//! - `47 IMAGE_TINT color` — the next IMAGE or IMAGE_RRECT uses this colour through the image's alpha
+//! - `48 MATRIX3 a b c d e f g h i` — a row-major projective matrix, in device pixels
 //! - `25 DASH phase n d×n` — the next STROKE is dashed: `n` (even) on/off lengths and the
 //!   offset into them, in the stroke's own units (SVG `stroke-dasharray`, `stroke-dashoffset`)
 //!
 //! Geometry is in device pixels; colours are ARGB.
+//!
+//! @ref LLP 1076 §3.3 (Exact plus Android Canvas)
 
 use crate::image::Bitmap;
 use crate::paint::border::{BorderFill, PathOp};
@@ -71,6 +77,7 @@ use std::sync::Arc;
 use tiny_skia::{Pixmap, Transform};
 
 const MATRIX: u32 = 1;
+const MATRIX3: u32 = 48;
 const RRECT: u32 = 2;
 const PATH: u32 = 3;
 const CLIP_RRECT: u32 = 4;
@@ -157,7 +164,7 @@ mod codec;
 mod colors;
 #[cfg(target_os = "android")]
 pub use colors::colors;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 #[path = "canvas/device.rs"]
 mod device;
 #[cfg(target_os = "android")]
@@ -170,6 +177,8 @@ mod gradient;
 #[cfg(target_os = "android")]
 #[path = "canvas/input.rs"]
 mod input;
+#[path = "canvas/plane.rs"]
+mod plane;
 #[cfg(target_os = "android")]
 #[path = "canvas/presence.rs"]
 pub mod presence;
@@ -216,6 +225,9 @@ mod shadow;
 mod slot;
 #[path = "canvas/stream.rs"]
 mod stream;
+#[path = "canvas/undrawn.rs"]
+mod undrawn;
+use undrawn::{path_bounds, undrawn};
 #[cfg(target_os = "android")]
 #[path = "canvas/surface.rs"]
 mod surface;
@@ -237,7 +249,7 @@ thread_local! {
 
 /// Pictures the reader has not fetched yet, by id: one map for the process,
 /// as a reader may fetch them on its own thread while the host runs on
-/// another.
+/// another (LLP 1072 on Android).
 static PENDING: std::sync::Mutex<std::collections::BTreeMap<u32, Picture>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -252,6 +264,7 @@ pub struct Recorder {
     ops: Vec<u32>,
     /// The matrix last written into `ops` (points → device pixels).
     matrix: Option<[f32; 6]>,
+    planes: Vec<[f32; 9]>,
     /// Faces announced to the reader, by (file, index, weight, axes).
     fonts: HashMap<FontKey, u32>,
     /// Files standing in for faces loaded from bytes, by blob id.
@@ -331,6 +344,7 @@ impl Recorder {
             direct: stream::Direct::default(),
             ops: Vec::new(),
             matrix: None,
+            planes: Vec::new(),
             fonts: HashMap::new(),
             face_files: HashMap::new(),
             optical: HashMap::new(),
@@ -367,6 +381,9 @@ impl Recorder {
 
     /// Write the transform for the next op if it differs from the last.
     fn transform(&mut self, ts: Transform) {
+        if self.plane_matrix(ts) {
+            return;
+        }
         let s = self.scale;
         let m = [
             ts.sx * s,
@@ -452,56 +469,6 @@ impl Recorder {
             self.ops.push(u32::from_le_bytes(w));
         }
     }
-
-    /// A picture mapped onto `dst` under `clips`.
-    fn picture(&mut self, picture: &Picture, dst: Rect4, clips: &[Shape], ts: Transform) {
-        let id = self.image_id(picture);
-        if self.image_rrect(id, dst, clips, ts) {
-            return;
-        }
-        self.need(None);
-        self.transform(ts);
-        for c in clips {
-            self.ops.push(CLIP_RRECT);
-            self.rect_radii(c);
-        }
-        self.ops.extend([IMAGE, id]);
-        for v in [dst.0, dst.1, dst.2, dst.3] {
-            self.f(v);
-        }
-        for _ in clips {
-            self.ops.push(RESTORE);
-        }
-    }
-
-    fn image_id(&mut self, image: &Picture) -> u32 {
-        let key = image.key();
-        let now = self.frames;
-        match &mut self.row {
-            Some(row) => row.images.push(key),
-            None => self.again_image(key),
-        }
-        if let Some((id, weak, used)) = self.images.get_mut(&key) {
-            if weak.is(image) {
-                *used = now;
-                return *id;
-            }
-        }
-        let id = self.next_image;
-        self.next_image += 1;
-        self.images.insert(key, (id, image.downgrade(), now));
-        self.ops
-            .extend([IMAGE_DEF, id, image.width(), image.height()]);
-        if let Picture::Bitmap(b) = image {
-            if let Some(file) = b.animation_file() {
-                let path = file.to_string_lossy();
-                self.ops.extend([ANIMATED, id]);
-                self.string(&path);
-            }
-        }
-        pending().insert(id, image.clone());
-        id
-    }
 }
 
 impl Backend for Recorder {
@@ -517,6 +484,7 @@ impl Backend for Recorder {
         self.scale = scale;
         self.ops.clear();
         self.matrix = None;
+        self.planes.clear();
         self.clips.clear();
         self.origin = (0.0, 0.0);
         self.row = None;
@@ -551,7 +519,7 @@ impl Backend for Recorder {
         if s.rect.2 <= 0.0 || s.rect.3 <= 0.0 || color[3] == 0 {
             return;
         }
-        let bounds = clip::map(s.rect, ts);
+        let bounds = self.on_page(s.rect, ts);
         if self.culled(bounds) {
             return;
         }
@@ -566,7 +534,7 @@ impl Backend for Recorder {
     }
 
     fn fill_border(&mut self, part: &BorderFill, ts: Transform) {
-        let bounds = path_bounds(&part.region).and_then(|b| clip::map(b, ts));
+        let bounds = path_bounds(&part.region).and_then(|b| self.on_page(b, ts));
         if self.culled(bounds) {
             return;
         }
@@ -611,12 +579,12 @@ impl Backend for Recorder {
         dst: Rect4,
         clips: &[Shape],
         ts: Transform,
-        _tint: Option<[u8; 4]>,
+        tint: Option<[u8; 4]>,
     ) {
         if dst.2 <= 0.0 || dst.3 <= 0.0 {
             return;
         }
-        self.picture(&Picture::Bitmap(image.clone()), dst, clips, ts);
+        self.picture(&Picture::Bitmap(image.clone()), dst, clips, ts, tint);
     }
 
     fn blurred_shadow(
@@ -637,11 +605,11 @@ impl Backend for Recorder {
         ts: Transform,
     ) {
         // What is beneath is what the reader already drew in this row; it
-        // filters that, clipped to the shape.
+        // filters that, clipped to the shape (LLP 1053.000 D2).
         if filter.is_none() || shape.rect.2 <= 0.0 || shape.rect.3 <= 0.0 {
             return;
         }
-        let bounds = clip::map(shape.rect, ts);
+        let bounds = self.on_page(shape.rect, ts);
         if self.culled(bounds) {
             return;
         }
@@ -679,7 +647,27 @@ impl Backend for Recorder {
         if dst.2 <= 0.0 || dst.3 <= 0.0 || pixels.width() == 0 || pixels.height() == 0 {
             return;
         }
-        self.picture(&Picture::Canvas(pixels.clone()), dst, clips, ts);
+        self.picture(&Picture::Canvas(pixels.clone()), dst, clips, ts, None);
+    }
+
+    /// A picture the paint walk rasterised itself (an SVG filter, a text
+    /// shadow or stroke, `background-clip: text`), placed as a canvas's is.
+    /// The stream has no blend, so a blended island draws over what is below
+    /// it, and says so once (LLP 1159.000 D1).
+    fn supports_island_image(&self) -> bool {
+        true
+    }
+
+    fn island_image(&mut self, pixels: Arc<Pixmap>, dst: Rect4, ts: Transform, mode: u8) {
+        if mode != 0 {
+            undrawn("`mix-blend-mode`");
+        }
+        self.canvas(&pixels, dst, &[], ts);
+    }
+
+    /// A canvas child its surface placed (`paint/placed.rs`), already warped.
+    fn surface_image(&mut self, pixels: Arc<Pixmap>, dst: Rect4) {
+        self.canvas(&pixels, dst, &[], Transform::identity());
     }
 
     fn text(
@@ -711,7 +699,7 @@ impl Backend for Recorder {
             .collect();
         let grow = if s.stroke.is_some() { s.width } else { 0.0 };
         self.need(path_bounds(&ops).and_then(|(x, y, w, h)| {
-            clip::map((x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow), ts)
+            self.on_page((x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow), ts)
         }));
         self.transform(ts);
         if let Some(c) = s.fill.as_ref().and_then(|ink| self.ink(ink)) {
@@ -742,6 +730,22 @@ impl Backend for Recorder {
         self.clip_push(s, ts);
     }
 
+    fn push_css_clip(&mut self, path: &exact_kernel::clip::ClipPath, ts: Transform) -> bool {
+        self.css_clip(path, ts)
+    }
+
+    fn push_svg_clip(&mut self, clip: &exact_kernel::svg::scene::Clip, ts: Transform) -> usize {
+        self.svg_clip(clip, ts)
+    }
+
+    fn push_mask(&mut self, _shape: &Shape, _ts: Transform) {
+        self.push_opacity(1.0);
+    }
+
+    fn pop_mask(&mut self, shape: &Shape, mask: &Result<GradientPaint, [u8; 4]>, ts: Transform) {
+        self.mask_end(shape, mask, ts);
+    }
+
     fn pop_clip(&mut self) {
         self.clip_pop();
     }
@@ -764,7 +768,7 @@ impl Backend for Recorder {
     fn pointer(&mut self, _x: f32, _y: f32) {}
 
     fn rows(&self) -> bool {
-        true
+        self.planes.is_empty()
     }
 
     fn row_begin(&mut self, id: u32, origin: (f32, f32), previous: Option<u32>) {
@@ -846,8 +850,21 @@ impl Backend for Recorder {
     }
 
     fn layer_begin(&mut self, key: u64, ts: Transform, pivot: (f32, f32), base: [f32; 7]) -> bool {
+        // Retained layers animate in page coordinates, outside any projective plane.
+        if !self.planes.is_empty() {
+            return false;
+        }
         self.layer_open(key, ts, pivot, base);
         true
+    }
+
+    fn plane_begin(&mut self, matrix: [f32; 9]) -> bool {
+        self.plane_open(matrix)
+    }
+
+    fn plane_end(&mut self) {
+        self.planes.pop();
+        self.matrix = None;
     }
 
     fn layer_recolored(&mut self) {
@@ -915,29 +932,6 @@ impl Backend for Recorder {
     fn finish(&mut self) -> Result<Pixmap, String> {
         self.finish_stream()
     }
-}
-
-/// The bounds of a path's points (control points included).
-fn path_bounds(ops: &[PathOp]) -> Option<Rect4> {
-    let mut b: Option<(f32, f32, f32, f32)> = None;
-    let mut add = |x: f32, y: f32| {
-        b = Some(match b {
-            None => (x, y, x, y),
-            Some((a, c, d, e)) => (a.min(x), c.min(y), d.max(x), e.max(y)),
-        })
-    };
-    for op in ops {
-        match *op {
-            PathOp::Move(x, y) | PathOp::Line(x, y) => add(x, y),
-            PathOp::Cubic(a, c, d, e, f, g) => {
-                add(a, c);
-                add(d, e);
-                add(f, g);
-            }
-            PathOp::Close => {}
-        }
-    }
-    b.map(|(x0, y0, x1, y1)| (x0, y0, x1 - x0, y1 - y0))
 }
 
 /// The presenter on the Android main thread, painting through [`Recorder`].
@@ -1078,10 +1072,10 @@ impl<D: DataSource + Default> CanvasHost<D> {
         // layout, not in a second commit after it.
         exact_runner::set_bootstrap_extent(size.1.max(size.0) as f64 / scale as f64);
         // A retiring row is rebound to the next item instead of a row built
-        // for it, unless `EXACT_ROW_REUSE=0`.
+        // for it (LLP 1078), unless `EXACT_ROW_REUSE=0`.
         crate::app::row_reuse_from_env(true);
         crate::surfaces::prepare_gpu(compat);
-        // The device's colours, before anything is resolved by a role.
+        // The device's colours, before anything is resolved by a role (D4).
         let palette = colors::palette();
         if let Some(palette) = &palette {
             palette.tell();
@@ -1100,12 +1094,12 @@ impl<D: DataSource + Default> CanvasHost<D> {
         }
         agent::own_time(&mut p, started);
         crate::surfaces::acquire_fd();
-        // What the reader read of the device, before the first frame.
+        // What the reader read of the device, before the first frame (D3.1).
         if let Some(e) = device::configured().and_then(|d| p.set_device(&d)) {
             eprintln!("exact: device: {e}");
         }
-        // The reader takes what the presenter asks of the platform, and
-        // makes the top layer's windows and the bars.
+        // The reader takes what the presenter asks of the platform (D5),
+        // and makes the top layer's windows (D10) and the bars (D11).
         p.serve_requests();
         surface::serve(&mut p);
         if let Some(palette) = &palette {
@@ -1158,7 +1152,7 @@ impl<D: DataSource + Default> CanvasHost<D> {
             responding: false,
             shell: Default::default(),
         };
-        // The page's place in the window, once its root is known.
+        // The page's place in the window, once its root is known (D3.3).
         if let Some(told) = told {
             host.set_window(told);
         }
@@ -1204,6 +1198,9 @@ impl<D: DataSource + Default> CanvasHost<D> {
             p.poll_development(D::default); // the dev loop's, as on the Linux display
             p.run_commands(D::default);
             p.hatch_turn();
+            if let Some(e) = p.follow_local_offset() {
+                eprintln!("exact: {e}");
+            }
         }
         // The presenter's clock: the runner's frame tasks and timers, and
         // the hatches' tickets and `after`s.
@@ -1424,7 +1421,7 @@ impl<D: DataSource + Default> CanvasHost<D> {
 
     /// Its session's roles as this thread's, or (`false`) no longer: a host
     /// handed between threads (`startAsync`'s boot thread to the one that
-    /// runs it) leaves one and takes the other.
+    /// runs it) leaves one and takes the other (LLP 1121 stage 5).
     pub fn roles_here(&mut self, here: bool) {
         let runner = self.p.host_mut().runner_mut();
         if here {

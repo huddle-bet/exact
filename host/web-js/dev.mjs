@@ -1,4 +1,4 @@
-// The dev loop on the JS target: what `host/web/dev.mjs` runs for
+// The dev loop on the JS target (LLP 1071): what `host/web/dev.mjs` runs for
 // an app the JS target takes, so a developer runs the runtime the app ships.
 // An edit — the Contract, the app's TypeScript or Rust data, its assets, or
 // this runtime and compiler — rebuilds the app (`host/web-js/build.mjs
@@ -29,17 +29,19 @@ import { openRemoteCanvas } from '../../scripts/tamber-canvas.mjs';
 import { mapCard, pullMap } from '../../scripts/tamber-inspect.mjs';
 import { serveCommands, serveReport, streamFrame } from '../../scripts/tamber-builds.mjs';
 import { fresh, freshCompiler, webCompiler } from './module.mjs';
+import { hostModuleSources } from './glue.mjs';
 import { INSPECT_EVENTS } from './inspect-dev.js';
 import { galleryLoop } from './dev-gallery.mjs';
 import { inlineWhy as inlineWhyOf } from './dev-inline.mjs';
 import { DEV_STATUS_TYPE, FAILED, PHASE, gist } from '../web/dev-phase.mjs';
+import { fileURLToPath } from 'node:url';
 
 const CHECKPOINT_BYTES = 16 * 1024 * 1024, CHECKPOINTS = 8;
 
-const root = resolve(new URL('../..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 // (What a build in `dist` keeps beside it, `dist.gen` and the rest, is no source: beside.mjs.)
 const skipped = new RegExp(String.raw`(^|\/)(target|dist|${besidePattern()}|node_modules|conformance)(\/|$)|(^|\/)\.|\.md$`);
-/** The files beside app.json a setting is read from (`import.meta.env`): inputs, though dot files. */
+/** The files beside app.json a setting is read from (`import.meta.env`, LLP 1153 D4): inputs, though dot files. */
 const settingsFile = (name) => /^\.env(?:\.local)?$/.test(String(name));
 /** Whether `path` changed from `since` (ms) until now, by the entry's own times (lstat: a link replaced by one to an older
  * file is new, though its target is not): its modification, or its status change, which alone moves when an older file
@@ -49,7 +51,7 @@ const changedSince = (path, since) => { const s = lstatSync(path), now = Date.no
 /** Whether a watcher's event for `path` is an edit since `since`: macOS reports a build's reads of a tree (the assets it
  * copies) as events too, and a path unchanged since then is none. A path that is gone is an edit. */
 const movedSince = (path, since) => { try { return changedSince(path, since); } catch { return true; } };
-/** The inputs that moved while a build ran, as its set-aside line names them: each by its path under
+/** The inputs that moved while a build ran, as its set-aside line names them (stage 15 D1.5): each by its path under
  * the app (a package's as it lies), three at most and how many more; "an input" when none was seen by name. */
 const movedWords = (paths, dir) => {
   const names = [...new Set(paths)].map((p) => (relative(dir, p).startsWith('..') ? p : relative(dir, p)) || '.');
@@ -72,7 +74,7 @@ const stopBuild = (signal = 'SIGTERM') => {
 // absent when consulted is no source gone).
 let lastSources = [];
 
-/** The Contract packages a build read, outside the app and
+/** The Contract packages a build read (LLP 1091 D10), outside the app and
  * its skipped `node_modules`: the dev loop watches them too. */
 function devPackages(stage) {
   try {
@@ -88,7 +90,7 @@ function devDesign(stage) {
 }
 
 /** The SHA-256 of the design file a build in `dir` was compiled from, as
- * its source map records it, or null. */
+ * its source map records it (LLP 1122 D5), or null. */
 function mapDesignSource(app, dir) {
   try {
     const file = realpathSync(designPath(app.dir));
@@ -100,7 +102,7 @@ function mapDesignSource(app, dir) {
  * target/ (as the wasm build stages); resolves to null or the build's
  * errors (what the JS target refused, or a compile error). `keep(design,
  * logic)`, when it says so, keeps the build in `dist` (a value-only design
- * edit: the page takes a batch instead). `superseded()`,
+ * edit, LLP 1121 stage 4: the page takes a batch instead). `superseded()`,
  * when it says so as the build ends (an input moved since it began, or it
  * was stopped for one), or a source it read moved since, leaves `dist` as
  * it was and resolves `{superseded}`: what it read is older than the files.
@@ -119,7 +121,7 @@ function build(app, dist, keep = () => false, compiler = null, superseded = null
     // The JS target's build itself, rendering no pages (every route is the
     // shell), with the completion marker host/web/build.mjs writes.
     const child = building = spawn(process.execPath, [resolve(root, 'host/web-js/build.mjs'), app.name, '--out', stage, '--render', 'none', '--dev'],
-      { cwd: root, env: compiler ? { ...process.env, EXACT_WEB_COMPILER: compiler } : process.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      { cwd: root, env: { ...process.env, EXACT_APP_DIR: app.dir, ...(compiler ? { EXACT_WEB_COMPILER: compiler } : {}) }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let log = '';
     child.stdout.on('data', (d) => { log += d; });
     child.stderr.on('data', (d) => { log += d; });
@@ -149,7 +151,7 @@ function build(app, dist, keep = () => false, compiler = null, superseded = null
       const moved = () => superseded && (superseded() || newer());
       // A failed one too: its errors may be of files since edited.
       if (moved()) return setAside();
-      // The one line a build says when it rewrote the types app.ts imports, built or not.
+      // The one line a build says when it rewrote the types app.ts imports, built or not (LLP 1116.001 D4.5).
       const types = /^app\.contract\.d\.ts: .*$/m.exec(log)?.[0];
       if (types) console.log(types);
       if (code !== 0) { rmSync(stage, { recursive: true, force: true }); return done({ packages, error: log.split('\n').filter((l) => l.trim() && !/^\s*(Compiling|Finished|Running|warning)/.test(l) && !compilerWarnings(l).length).slice(-12).join('\n') || `build exited ${code}` }); }
@@ -215,7 +217,7 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
     console.log('a source moved while the first build ran: building again');
   }
   let error = built.error, logicRevision = built.logic ?? '';
-  // The page's own plan's source map (the JS target), kept
+  // The page's own plan's source map (LLP 1122 T2b, the JS target), kept
   // after each build by that plan's digest (the SHA-256 of dist's app.plan,
   // which the page says as `planDigest` and the map must name), the 8 last:
   // a selection on the page is joined to it, and an outline drawn from it.
@@ -231,13 +233,13 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   // (What dist serves, built now or kept from before a failed build.)
   keepPageMap();
   // The design the builds run now, with the SHA-256 of the design file's
-  // bytes it was compiled from (an inspected token's edit is
+  // bytes it was compiled from (LLP 1122 D5: an inspected token's edit is
   // offered only while they are the file's): a value-only edit's, or a
   // build's (a native on the resident producer may keep its plan and take
   // it as a batch); null at start, for the plan's own design (the join
   // reads the map's).
   let served = null;
-  // The compiler's warnings when they change, not again at each save that leaves them.
+  // The compiler's warnings (LLP 1116.004 D7) when they change, not again at each save that leaves them.
   let warned = '';
   const warn = (warnings) => {
     if (!warnings || warnings.join('\n') === warned) return;
@@ -255,7 +257,7 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   const clients = new Set();
   // A batch to a page behind waits, then the latest design's notice goes instead (tamber-builds.mjs).
   const push = (m) => { for (const res of clients) if (m.kind === 'tamber-batch') streamFrame(res, JSON.stringify(m), () => snapshot && notice(snapshot)); else res.write(`data: ${JSON.stringify(m)}\n\n`); };
-  // The live table: the design the page in dist was built
+  // The live table (LLP 1121 stage 4): the design the page in dist was built
   // with, and the one the pages run after value-only edits since.
   let design = built.design ?? null, snapshot = null;
   // The SHA-256 of the design file's bytes `design` was compiled from, which
@@ -268,7 +270,7 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   // a native host's event frames are bounded (PlanURL.swift's 64 KiB).
   const framed = (batch) => (Buffer.byteLength(JSON.stringify(batch)) > 32 * 1024 ? notice(snapshot) : batch);
   const same = (a, b) => a.value === b.value && a.slices.length === b.slices.length && a.slices.every((s, i) => s === b.slices[i]);
-  // A scrub: the design the pages run while it
+  // A scrub (LLP 1121 stage 4, commit 6): the design the pages run while it
   // previews, and the snapshot it put aside; the next build, or its end,
   // sends them on from it.
   // `released`: that scrub is being written; the build of what it writes
@@ -384,10 +386,10 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
     return false;
   };
   // The same, starting nothing: for what a request below write scope reaches
-  // (`propose`'s class), which may not start a build.
+  // (`propose`'s class, stage 10 A1), which may not start a build.
   const toolReady = () => tool.ready && fresh(tool.path, `${tool.path}.d`);
   buildTool();
-  // The page's inspect table (inspect.rs), made for dist's
+  // The page's inspect table (LLP 1122 T2b, inspect.rs), made for dist's
   // plan when the page first asks (seconds for a large app, so no build
   // makes it), kept by the plan's digest, the 4 last; it names that plan,
   // and one made while dist moved on is not served.
@@ -435,8 +437,8 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   });
   // The design's shape and the plan's structure (a profile colour's value
   // is in it) as a kept build requires, and each token's accent.
-  // A token the page writes inline (`inline`: no property sets it in place)
-  // builds when its value moves.
+  // A token the page writes inline (`inline`: no property sets it in place,
+  // LLP 1121 stage 6) builds when its value moves.
   const sameShape = (from, next) => from && next && from.shape === next.shape && from.structure === next.structure && from.tokens.length === next.tokens.length
     && next.tokens.every((t, i) => t.name === from.tokens[i].name && String(t.accent) === String(from.tokens[i].accent) && (!t.inline || same(t, from.tokens[i])));
   // A fast batch is checked by the full build after it (its verifying build): the
@@ -451,7 +453,7 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   // Builds set aside in a row past three are said: an input that moves in
   // every build (a build that writes one of its own) is never published.
   let inputs = 0, buildBegan = 0, lastBuildMs = 0, stopped = false, asideRun = 0;
-  // The paths that moved since the full build in flight began: what its set-aside line names.
+  // The paths that moved since the full build in flight began: what its set-aside line names (stage 15 D1.5).
   const movedSinceBuild = new Set();
   // A value-only edit waiting for the design reader to build again (it does after every other edit): it reads the
   // edit then, in seconds, where the full build it would otherwise take is minutes on a large app, said nowhere until
@@ -488,7 +490,7 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
     // event came (a deleted asset) is an edit.
     const designs = [...edited].filter((path) => path.endsWith('.tamber'));
     const designOnly = designs.length > 0 && [...edited].every((path) => path.endsWith('.tamber') || (!existsSync(path) && appeared.has(path)));
-    // A value-only design edit: its design from the
+    // A value-only design edit (LLP 1121 stage 4): its design from the
     // compiler, no build, sent as a batch; the page in dist stays, as a kept
     // build's does; the full build after it checks what the read cannot (the
     // modules' inputs, the whole compile). One that moves the design's shape
@@ -712,14 +714,18 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
     // after the build starts builds again (`again`).
     timer = setTimeout(() => { timer = null; rebuild(); }, 5);
   };
-  // The resident loop's start as a native client sees it: the step it is on
-  // (its `phase: ` lines), whether it is up, and the
+  // The resident loop's start as a native client sees it (dtool2's pass 3
+  // #8): the step it is on (its `phase: ` lines), whether it is up, and the
   // error a start that failed ended with, until an edit.
   const starting = { phase: null, ready: false, failure: null, waiting: new Set() };
   let resident = null, residentChild = null;
   // The app's sources, and the runtime and compiler it builds with.
   const watchers = [watch(app.dir, { recursive: true }, changed(app.dir)), watch(resolve(root, 'host/web-js'), { recursive: true }, changed(resolve(root, 'host/web-js')))];
-  for (const f of ['navigation.js', 'index.html', 'neutral.css', 'look.mjs']) watchers.push(watch(resolve(root, 'host/web', f), changed(resolve(root, 'host/web'))));
+  for (const file of new Set([...hostModuleSources(root, ['host/web/navigation.js']),
+    ...['index.html', 'neutral.css', 'look.mjs'].map(name => `host/web/${name}`)])) {
+    const path = resolve(root, file);
+    watchers.push(watch(path, changed(dirname(path))));
+  }
   // Each Contract package the app uses, wherever it is installed or linked.
   const packages = new Set();
   const contractSources = new Set();
@@ -754,8 +760,8 @@ export async function devJs({ app, dist, port, host, origins, gate, lan, allowHo
   // channel (as host/web/dev.js's): a pin's scheme is the system's, a rule
   // beneath the app's `setScheme`; its status is what paints, sent again
   // once a turn when the app's own commands move it.
-  // A checkpoint the server refuses (403: a canvas below `write`) reloads
-  // afresh, so a reader still sees the new build.
+  // A checkpoint the server refuses (403: a canvas below `write`, LLP 1121
+  // stage 10 C) reloads afresh, so a reader still sees the new build.
   // A gallery page's (dev-gallery.mjs): its own stream, design and checkpoint routes, `page: 'gallery'`, no `navigate`.
   const client = (n, revision, { base = '/__dev', stream = '/__dev/page', page = null } = {}) => `<script>(()=>{const fetch=globalThis.fetch.bind(globalThis),seq=${n},logicRevision=${JSON.stringify(revision)},es=new EventSource('${stream}');let o,reloading=false;
 const show=t=>{if(!t){o?.remove();o=null;return}o??=document.body.appendChild(Object.assign(document.createElement('pre'),{style:'position:fixed;left:0;right:0;bottom:0;margin:0;padding:12px;background:#300;color:#fdd;font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;z-index:2147483647',onclick:()=>show()}));o.textContent=t+'\\n(click to dismiss)'};
@@ -774,7 +780,7 @@ let gate=null,held=(()=>{try{return sessionStorage.getItem('exact.dev.inspect${p
 const inspector=ready().then(()=>import('/__dev/inspect.js')).then(m=>{m.install({${page ? `key:'exact.dev.inspect:${page}',` : ''}fetch,report:rep,status:async()=>status(),facts:()=>({plan:null,design:globalThis.exact?.designDigest??null,revision:ch.revision}),nonce:()=>ch.nonce});gate=m.gate;return m}).catch(e=>{letGo(false);throw e});
 let due=false;const moved=()=>{if(due||!ch.nonce)return;due=true;setTimeout(()=>{due=false;const b=facts();if(JSON.stringify(b)!==ch.told){ch.told=JSON.stringify(b);rep(b)}},0)},seen=new MutationObserver(moved);if(cp)ready().then(()=>{globalThis.exact.onAsked=moved});seen.observe(document.documentElement,{attributes:true,attributeFilter:['style','data-x-modes']});seen.observe(document.head,{childList:true,subtree:true,characterData:true});for(const k of['pushState','replaceState']){const w=history[k];history[k]=function(...a){const o=w.apply(this,a);moved();return o}}addEventListener('popstate',moved);addEventListener('hashchange',moved);
 const nav=m=>{liveQ=liveQ.then(async()=>{await ready();const mine=()=>m.stream===ch.nonce;if(!mine())return;const x=globalThis.exact,u=new URL(m.location,location.origin),to=u.pathname+u.search,no=d=>{if(mine())rep({kind:'unsupported',what:'navigate',detail:String(d).slice(0,1024),revision:m.seq})};if(u.origin!==location.origin||u.pathname.startsWith('//'))return no("the location is no path on this page's origin");const there=()=>history.state?.url===to||location.pathname+location.search===to,before=history.state?.url;try{if(!there()){const why=typeof x?.goTo==='function'?x.goTo(to):'this page has no router';if(why)return no(why)}for(let i=0;i<100&&!there()&&history.state?.url===before;i++)await new Promise(ok=>setTimeout(ok,10));if(mine()&&there()&&u.hash!==location.hash)history.replaceState(history.state,'',location.origin+location.pathname+location.search+u.hash)}catch(e){return no(String(e))}moved()}).catch(e=>console.error('exact dev:',e))};
-const pin=m=>{liveQ=liveQ.then(async()=>{await ready();const r=document.documentElement.style,p=m.pin,x=globalThis.exact,was=x.held;let rm=0;x.held=cp&&p?Object.fromEntries([['scheme',!!p.scheme],['rootFontSize',!!p.rootFontSize],...Object.keys(p.mode??{}).map(a=>['mode:'+a,true])]):null;ch.before??={fontSize:r.fontSize,hostFont:r.getPropertyValue('--exact-host-font-size'),mode:x?.modes?.read?.()??{}};const sh=document.getElementById('exact-dev-pin')??document.head.appendChild(Object.assign(document.createElement('style'),{id:'exact-dev-pin'}));sh.textContent=p?.scheme?':root{color-scheme:'+p.scheme+(cp?'!important':'')+'}':'';if((x.systemScheme??null)!==(p?.scheme??null)){x.systemScheme=p?.scheme??null;dispatchEvent(new Event('resize'))}r.removeProperty('font-size');if(cp&&p?.rootFontSize)r.setProperty('font-size',p.rootFontSize+'px','important');else r.fontSize=p?.rootFontSize?p.rootFontSize+'px':ch.before.fontSize;if(p?.rootFontSize)r.setProperty('--exact-host-font-size',r.fontSize);else if(ch.before.hostFont)r.setProperty('--exact-host-font-size',ch.before.hostFont);else r.removeProperty('--exact-host-font-size');const last=ch.pin?.mode??{},back=Object.fromEntries(Object.entries(ch.before.mode??{}).filter(([a])=>a in last&&!(a in(p?.mode??{}))&&!(cp&&x.asked?.['mode:'+a]))),mode=Object.entries(p?(cp?{...back,...(p.mode??{})}:{...ch.before.mode,...(p.mode??{})}):back);if(mode.length&&x?.modes?.set){const why=x.modes.set(mode);if(why){rm=1;rep({kind:'unsupported',what:'pin.mode',detail:why,revision:m.revision});if(!cp)x.modes.set(Object.entries(ch.before.mode));if(x.held){for(const k of Object.keys(x.held))if(k.startsWith('mode:'))delete x.held[k];for(const [k,on]of Object.entries(was??{}))if(on&&k.startsWith('mode:'))x.held[k]=true}}dispatchEvent(new Event('resize'))}if(p?.contrast)rep({kind:'unsupported',what:'pin.contrast',detail:"a web page cannot pin the browser's contrast",revision:m.revision});for(const [f,on]of Object.entries(was??{}))if(on&&!x.held?.[f])x.asked?.[f]?.apply();if(!p)ch.before=null;ch.pin=p?(cp&&rm?{...p,mode:last}:p):null;ch.revision=m.revision;status()}).catch(e=>console.error('exact dev:',e))};
+const pin=m=>{liveQ=liveQ.then(async()=>{await ready();const r=document.documentElement.style,p=m.pin,x=globalThis.exact,was=x.held;let rm=0;x.held=cp&&p?Object.fromEntries([['scheme',!!p.scheme],['rootFontSize',!!p.rootFontSize],...Object.keys(p.mode??{}).map(a=>['mode:'+a,true])]):null;ch.before??={fontSize:r.fontSize,hostFont:r.getPropertyValue('--exact-host-font-size'),mode:x?.modes?.read?.()??{}};const sh=document.getElementById('exact-dev-pin')??document.head.appendChild(Object.assign(document.createElement('style'),{id:'exact-dev-pin'}));const fx=document.querySelector('meta[name="color-scheme"]')?.content,sc=p?.scheme&&(cp||!['light','dark'].includes(fx))?p.scheme:null;sh.textContent=sc?':root{color-scheme:'+sc+(cp?'!important':'')+'}':'';if((x.systemScheme??null)!==sc){x.systemScheme=sc;dispatchEvent(new Event('resize'))}r.removeProperty('font-size');if(cp&&p?.rootFontSize)r.setProperty('font-size',p.rootFontSize+'px','important');else r.fontSize=p?.rootFontSize?p.rootFontSize+'px':ch.before.fontSize;if(p?.rootFontSize)r.setProperty('--exact-host-font-size',r.fontSize);else if(ch.before.hostFont)r.setProperty('--exact-host-font-size',ch.before.hostFont);else r.removeProperty('--exact-host-font-size');const last=ch.pin?.mode??{},back=Object.fromEntries(Object.entries(ch.before.mode??{}).filter(([a])=>a in last&&!(a in(p?.mode??{}))&&!(cp&&x.asked?.['mode:'+a]))),mode=Object.entries(p?(cp?{...back,...(p.mode??{})}:{...ch.before.mode,...(p.mode??{})}):back);if(mode.length&&x?.modes?.set){const why=x.modes.set(mode);if(why){rm=1;rep({kind:'unsupported',what:'pin.mode',detail:why,revision:m.revision});if(!cp)x.modes.set(Object.entries(ch.before.mode));if(x.held){for(const k of Object.keys(x.held))if(k.startsWith('mode:'))delete x.held[k];for(const [k,on]of Object.entries(was??{}))if(on&&k.startsWith('mode:'))x.held[k]=true}}dispatchEvent(new Event('resize'))}if(p?.contrast)rep({kind:'unsupported',what:'pin.contrast',detail:"a web page cannot pin the browser's contrast",revision:m.revision});for(const [f,on]of Object.entries(was??{}))if(on&&!x.held?.[f])x.asked?.[f]?.apply();if(!p)ch.before=null;ch.pin=p?(cp&&rm?{...p,mode:last}:p):null;ch.revision=m.revision;status()}).catch(e=>console.error('exact dev:',e))};
 es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==='tamber-snapshot'){live(m);return}if(m.kind==='pin'){pin(m);return}if(m.kind==='navigate'){m.stream=ch.nonce;nav(m);return}if(m.kind==='inspect'||m.kind==='outline'||m.kind==='hold'){m.stream=ch.nonce;inspector.then(i=>i.frame(m)).catch(e=>rep({kind:'unsupported',what:m.kind,detail:String(e)}));return}if(m.nonce&&m.nonce!==ch.nonce){const n=ch.nonce=m.nonce;ch.registered=ready().then(async()=>{const id=await bid,got=await post(n,{kind:'register',id,host:'web-js',capabilities:${page ? `['pin','inspect','copies','hold'],page:'${page}'` : "['pin','inspect','copies','hold','navigate']"},plan:null,planDigest:globalThis.exact?.plan??null,design:globalThis.exact?.designDigest??null}),ok=got.ok;if(!ok)console.warn('exact dev: the dev loop refused the register of this page ('+got.status+'), so no tool sees it');if(ok&&window!==parent)parent.postMessage({type:'exact-build',id},'*');return ok}).catch(e=>{console.warn('exact dev: this page could not register with the dev loop, so no tool sees it: '+e);return false});status()}if(m.error!==undefined)show(m.error);if(m.reload>seq&&!reloading){reloading=true;if(!globalThis.exact){location.reload();return}ready().then(async()=>{const checkpoint=capture(m.revision!==logicRevision),id=crypto.getRandomValues(new Uint32Array(4)).join('-');console.info('exact dev reload: checkpoint',m.reload);const saved=await fetch('${base}/checkpoint?id='+id+'&seq='+m.reload+'&revision='+encodeURIComponent(m.revision??''),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(checkpoint)});if(saved.status===403){console.info('exact dev reload: no checkpoint at this scope; a fresh load');location.reload();return}if(!saved.ok)throw new Error('checkpoint handoff answered '+saved.status);const next=new URL(location.href);next.searchParams.set('__exactDev',id);if(admission)for(const [k,v]of admission)if(!next.searchParams.has(k))next.searchParams.set(k,v);location.replace(next.href)}).catch(e=>{reloading=false;console.error('exact dev reload: current page retained; checkpoint handoff failed',e)})}}})()</script>`;
   const checkpoints = new Map();
   /** A scrub's design: the compiler's, with its text in place of the design file's; written nowhere. */
@@ -890,14 +896,14 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
     push(batch);
     tamber?.channel.broadcast(batch);
   }
-  // The install pages and, from a loopback page on a Mac,
+  // The install pages (LLP 1030.003 D6a) and, from a loopback page on a Mac,
   // the local iOS build (D6b): this server's, since only it sees the real
   // peer (a forwarded request's is loopback).
   const installer = localInstaller({ app: () => app, origins, port, gate, listener: { host, port } });
-  // The design server's wire, when the app has a design.
-  // `page`: this loop's own origin, which the design tool frames.
-  // The source maps of the plans the resident loop serves the natives,
-  // by plan digest. The child says each plan it publishes,
+  // The design server's wire (LLP 1121 D13), when the app has a design.
+  // `page`: this loop's own origin, which the design tool frames (LLP 1122 T2).
+  // The source maps of the plans the resident loop serves the natives
+  // (LLP 1122 T2c), by plan digest. The child says each plan it publishes,
   // and its map's card, on a pipe this loop gave it for that alone (fd 3:
   // nothing a request makes is written there); this loop fetches the bytes
   // from the child and keeps them only when they match that card. No
@@ -924,9 +930,9 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
   // A polled stream (Linux, the resident loop's relay) is told the design to run.
   tamber?.channel.greet(() => snapshot && notice(snapshot));
   const server = createServer(async (req, res) => {
-    // Every HTML answer is framed by the design tool only.
+    // Every HTML answer is framed by the design tool only (LLP 1122 T2).
     frameOnlyByTool(res);
-    // A sandboxed page's (a Figma plugin's) wire request, with --allow-plugin-origin: the wire's, before the gate.
+    // A sandboxed page's (a Figma plugin's) wire request, with --allow-plugin-origin (stage 10b): the wire's, before the gate.
     if (remoteAsked.plugin && tamber && await pluginOnLoopback(tamber, req, res)) return;
     const access = gate.check(req);
     if (!access.allowed) { res.writeHead(421, { 'cache-control': 'no-store' }); res.end(); return; }
@@ -934,7 +940,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
     if (!url) { res.writeHead(404, { 'cache-control': 'no-store' }); res.end(); return; }
     if (tamber && await tamber.handle(req, res, url, access)) return;
     if (await installer.handle(req, res, url, access)) return;
-    // The build channel: the page's stream gives it a nonce;
+    // The build channel (LLP 1122 D4): the page's stream gives it a nonce;
     // reports come up by POST; a build with no stream here (the resident
     // loop's devices, Linux) opens a polled one.
     // The page's inspect table, for the plan dist serves now, or (beside a page's generation base) the plan of the
@@ -957,7 +963,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end(bytes);
     }
-    // Inspect mode's half in the page (the JS target): the
+    // Inspect mode's half in the page (LLP 1122 T2b, the JS target): the
     // dev client loads it; it is in no build.
     if (url.pathname === '/__dev/inspect.js' && (req.method === 'GET' || req.method === 'HEAD')) {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
@@ -1027,7 +1033,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
     // A native client opening this URL (`build.mjs --url`, `/__dev/open`,
     // `exact run`) reads the envelope, the dev generations and their event
-    // stream, which the resident loop's producers make: forwarded
+    // stream (LLP 1023), which the resident loop's producers make: forwarded
     // to it (below), started at the first such request.
     const discovery = url.pathname === '/exact.json' || (url.pathname === '/' && (req.headers.accept ?? '').includes('application/vnd.exact.envelope+json'));
     if (discovery || url.pathname === '/__dev' || url.pathname === '/__dev/open' || url.pathname.startsWith('/__dev/generation/')) { forward(req, res, discovery); return; }
@@ -1051,7 +1057,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
           if (c.carryAnswers || c.answers?.length) { c.carryAnswers = false; c.answers = []; carried.text = JSON.stringify(c); }
         }
         const checkpoint = `<script type="application/vnd.exact.dev-checkpoint" data-seq="${carried.seq}">${carried.text.replaceAll('<', '\\u003c')}</script><script>const u=new URL(location.href);u.searchParams.delete('__exactDev');history.replaceState(history.state,'',u.pathname+(u.search?'?'+u.searchParams:'')+u.hash)</script>`;
-        body = body.replace('<script type="module"', checkpoint + '<script type="module"');
+        body = body.replace('<script type="module"', () => checkpoint + '<script type="module"');
       }
       body += client(seq, logicRevision);
     }
@@ -1074,7 +1080,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
         mkdirSync(dirname(residentDist), { recursive: true });
         // (EXACT_DEV_RESIDENT_SCRIPT: a test's stand-in resident)
         residentChild = spawn(process.execPath, [process.env.EXACT_DEV_RESIDENT_SCRIPT || resolve(root, 'host/web/dev.mjs'), '--app', app.name, '--wasm', '--port', String(internal), '--serve-as', String(port), ...(lan ? ['--lan'] : []), ...allowHosts.flatMap((name) => ['--allow-host', name])],
-          { cwd: root, env: { ...process.env, EXACT_WEB_DIST: residentDist, EXACT_LAUNCHER_PID: String(process.pid), EXACT_MAP_FD: '3' }, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+          { cwd: root, env: { ...process.env, EXACT_APP_DIR: app.dir, EXACT_WEB_DIST: residentDist, EXACT_LAUNCHER_PID: String(process.pid), EXACT_MAP_FD: '3' }, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
         // Its errors as before (piped, so a slow terminal holds it back), the
         // last of them kept: what a start that fails says to the client.
         let errors = '';
@@ -1111,7 +1117,7 @@ es.onmessage=e=>{const m=JSON.parse(e.data);if(m.kind==='tamber-batch'||m.kind==
   });
   const forward = (req, res, discovery = false) => {
     // Discovery while the resident starts is answered now with what it is
-    // doing (application/vnd.exact.dev-status+json): not held
+    // doing (application/vnd.exact.dev-status+json, llp/1023.001): not held
     // for the minutes a first build takes; the rest waits for it, as before.
     // After a start failed every request has its error, and none starts it
     // again until an edit.

@@ -1,4 +1,4 @@
-//! Where a warning stands among a build's, source order kept
+//! Where a warning stands among a build's (LLP 1116 D6), source order kept
 //! within a rank: first what changes what the app shows, or how a person
 //! reaches it, on its native targets (a header item the bar leaves out, a
 //! button VoiceOver cannot name, a scroller that grows, a flex property on a
@@ -59,12 +59,13 @@ pub fn web_only(id: &str, message: &str) -> bool {
 }
 
 /// A warning that is information, not a problem: `tamber-unreachable` names
-/// a control whose host draws the platform's own look, which the author
-/// should know of and cannot change. A
-/// build counts it apart, and verify and `test` do not count it
-/// (`scripts/app-cli.mjs` `information`).
+/// a control whose host draws the platform's own look, and `style-undrawn` a
+/// style a host the app ships does not draw (LLP 1159.000 D4), each of which
+/// the author should know of and cannot change (LLP 1121 D9, amended
+/// 2026-10-30). A build counts it apart, and verify and `test` do not count
+/// it (`scripts/app-cli.mjs` `information`).
 pub fn information(id: &str) -> bool {
-    id == "tamber-unreachable"
+    id == "tamber-unreachable" || id == "style-undrawn"
 }
 
 /// The first [`crate::MAX_WARNINGS`] of `out` by rank, source order kept

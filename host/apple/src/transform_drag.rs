@@ -1,4 +1,4 @@
-//! Apple admission of the fixed photo pair.
+//! Apple admission of the fixed photo pair. @ref LLP 1041 §8.5 / LLP 1002 D4.
 //!
 //! Frozen wire v2 is EXACTLY 120 LE bytes: version/op u32 at 0/4;
 //! runtime/handle/target/clip/geometry-sequence u64 at 8/16/24/32/40;
@@ -7,7 +7,7 @@
 //! Ops 10 geometry=[bw,bh,pw,ph,0,0], 11 begin=[x,y,s,0,0,0],
 //! 12 move=[x,y,s,0,0,0], 13 action=[x,y,s,0,0,0], 14 invalidate=[0;6].
 //! Op 13's velocities are the engine's own, measured over every value the
-//! pair was given; the reply carries them as `velocity`.
+//! pair was given (LLP 1057.001 §3); the reply carries them as `velocity`.
 //! Ops 10/11/14 require zero token fields. Every unused value must equal zero
 //! (+0/-0 accepted; NaN/nonzero refused). Single-property v1 ends remain ends.
 //! Stale identity/sequence/tokens refuse before incoming values/time; malformed
@@ -16,6 +16,7 @@
 
 use super::transform_drag_wire::Input;
 use super::{Batch, Host, HostError};
+use crate::batch::WrappedBatch;
 use exact_kernel::{motion::motion_node, Kernel, NodeKey, TransformDragBinding, ViewId};
 use exact_motion::{Engine, HoldEnd, Property, TransformHold};
 use exact_runner::{DataSource, Event, Timed};
@@ -148,16 +149,13 @@ impl<D: DataSource> Host<D> {
     /// or change Kernel layout: it is a bound native observation. Refused stale
     /// inputs never seek their incoming clock. A stale reply may include a batch
     /// retiring old surviving overlays at the existing Engine clock.
-    pub fn transform_motion(&mut self, bytes: &[u8]) -> String {
+    pub fn transform_motion(&mut self, bytes: &[u8]) -> WrappedBatch {
         self.transform_input(bytes).unwrap_or_else(|error| {
-            format!(
-                "{{\"accepted\":false,\"batch\":{}}}",
-                self.hold_refusal(error)
-            )
+            WrappedBatch::new("\"accepted\":false", self.hold_refusal(error))
         })
     }
 
-    fn transform_input(&mut self, bytes: &[u8]) -> Result<String, &'static str> {
+    fn transform_input(&mut self, bytes: &[u8]) -> Result<WrappedBatch, &'static str> {
         let mut input = Input::decode(bytes)?;
         if input.runtime != self.transform_drags.runtime {
             return Ok(self.transform_refused());
@@ -242,9 +240,13 @@ impl<D: DataSource> Host<D> {
             let mut batch = Batch::new();
             self.reconcile_transform_drags(&mut batch);
             self.present(&mut batch, false);
-            return Ok(format!("{{\"accepted\":true,\"runtime\":\"{}\",\"geometrySequence\":\"{}\",\"translateToken\":\"{}\",\"scaleToken\":\"{}\",\"value\":[{},{},{}],\"batch\":{}}}",
-                input.runtime,input.sequence,held.translate().token.serial(),held.scale().token.serial(),held.translate().value.x,held.translate().value.y,held.scale().value.x,
-                self.finish(batch, None)));
+            let fields = format!(
+                "\"accepted\":true,\"runtime\":\"{}\",\"geometrySequence\":\"{}\",\"translateToken\":\"{}\",\"scaleToken\":\"{}\",\"value\":[{},{},{}]",
+                input.runtime, input.sequence, held.translate().token.serial(),
+                held.scale().token.serial(), held.translate().value.x,
+                held.translate().value.y, held.scale().value.x
+            );
+            return Ok(WrappedBatch::new(fields, self.finish(batch, None)));
         }
         let active = active.expect("paired operation");
         if !self
@@ -267,7 +269,7 @@ impl<D: DataSource> Host<D> {
             .action_fired = true;
         self.now_ms = input.now_ms;
         // The release velocity is the engine's, over every value the pair was
-        // given; finite samples give a finite slope.
+        // given (LLP 1057.001 §3); finite samples give a finite slope.
         let now_s = input.now_ms / 1000.0;
         let [translate, scale] = [active.held.translate(), active.held.scale()].map(|s| {
             self.engine
@@ -292,10 +294,11 @@ impl<D: DataSource> Host<D> {
         let (receipts, error, committed) =
             self.deliver_after(view, input.event(), early, early_error, still);
         let batch = self.commit(&receipts, error);
-        Ok(format!(
-            "{{\"accepted\":true,\"dispatched\":true,\"committed\":{committed},\"velocity\":[{},{},{}],\"batch\":{batch}}}",
+        let fields = format!(
+            "\"accepted\":true,\"dispatched\":true,\"committed\":{committed},\"velocity\":[{},{},{}]",
             input.values[3], input.values[4], input.values[5]
-        ))
+        );
+        Ok(WrappedBatch::new(fields, batch))
     }
 
     fn transform_geometry(
@@ -303,7 +306,7 @@ impl<D: DataSource> Host<D> {
         view: ViewId,
         input: &Input,
         previous: Geometry,
-    ) -> Result<String, &'static str> {
+    ) -> Result<WrappedBatch, &'static str> {
         let dimensions = [
             input.values[0],
             input.values[1],
@@ -447,7 +450,7 @@ impl<D: DataSource> Host<D> {
             for (target, view) in valid {
                 if target != owner && self.transform_drags.reported_targets.insert(target) {
                     self.log(&format!(
-                        "transformDragFor: target view #{view} passed over for owner view #{owner_view}; one owner (first valid, never stolen)"
+                        "transformDragFor: target view #{view} passed over for owner view #{owner_view}; one owner (first valid, never stolen; LLP 1071)"
                     ));
                 }
             }
@@ -521,18 +524,15 @@ impl<D: DataSource> Host<D> {
         }
     }
 
-    fn transform_refused(&self) -> String {
-        format!("{{\"accepted\":false,\"batch\":{}}}", self.refused(None))
+    fn transform_refused(&self) -> WrappedBatch {
+        WrappedBatch::new("\"accepted\":false", self.refused(None))
     }
 
-    fn transform_stale(&mut self) -> String {
+    fn transform_stale(&mut self) -> WrappedBatch {
         let mut batch = Batch::new();
         self.reconcile_transform_drags(&mut batch);
         self.present(&mut batch, false);
-        format!(
-            "{{\"accepted\":false,\"batch\":{}}}",
-            self.finish(batch, None)
-        )
+        WrappedBatch::new("\"accepted\":false", self.finish(batch, None))
     }
 
     pub(super) fn emit_transform_drags(&mut self, batch: &mut Batch) {
@@ -563,14 +563,17 @@ impl<D: DataSource> Host<D> {
         self.transform_drags.mapping_pending = pending;
     }
 }
-fn accepted(batch: String) -> String {
-    format!("{{\"accepted\":true,\"batch\":{batch}}}")
+fn accepted(batch: String) -> WrappedBatch {
+    WrappedBatch::new("\"accepted\":true", batch)
 }
 
 /// A geometry reply that says whether its event committed: a timer's
 /// refusal in the batch is not the observation's.
-fn admitted(batch: String, committed: bool) -> String {
-    format!("{{\"accepted\":true,\"committed\":{committed},\"batch\":{batch}}}")
+fn admitted(batch: String, committed: bool) -> WrappedBatch {
+    WrappedBatch::new(
+        format!("\"accepted\":true,\"committed\":{committed}"),
+        batch,
+    )
 }
 
 // Actual native samples are certified again by Swift. This preflight rejects

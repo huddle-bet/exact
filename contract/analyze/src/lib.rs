@@ -1,7 +1,7 @@
 //! Analysis: what the types do not say.
 //!
-//! Effect signatures and region structure; an action's effects are inferred
-//! from its body.
+//! @ref LLP 1004 D2 (effect signatures, region structure)
+//! / LLP 1035.005.000 D1 (an action's effects are inferred from its body)
 //!
 //! After types, a program can still be wrong in ways an implementer would
 //! otherwise discover at runtime: a handler naming an action that does not
@@ -168,7 +168,7 @@ pub fn check_surface_arguments(
 pub struct Analysis {}
 
 /// Check before merging `use` files so imported declarations cannot claim
-/// the app's root slot.
+/// the app's root slot. @ref LLP 1038 D2/D3.
 pub fn check_routes_root(file: &File, root_file: bool) -> Result<(), AnalyzeError> {
     if let Some(routes) = &file.routes {
         if !root_file || file.components.is_empty() {
@@ -179,8 +179,8 @@ pub fn check_routes_root(file: &File, root_file: bool) -> Result<(), AnalyzeErro
             );
         }
     }
-    // The theme is the app's, declared once at its root; a package has no
-    // tokens of its own.
+    // @ref LLP 1095 D4 — the theme is the app's, declared once at its root;
+    // a package's own tokens wait on LLP 1121 D11.
     if let Some(theme) = &file.theme {
         if !root_file {
             return err(
@@ -193,8 +193,8 @@ pub fn check_routes_root(file: &File, root_file: bool) -> Result<(), AnalyzeErro
     Ok(())
 }
 
-/// `analyze-read-after-assign`:
-/// each read of a state or mutation slot that its action
+/// `analyze-read-after-assign` (@ref LLP 1116.003 D6, LLP 1089 D3, LLP
+/// 1035.005.002 C2): each read of a state or mutation slot that its action
 /// assigned before it on a path to it, in the action's own body or behind a
 /// call, which sees the value from before the action. Lowering reports them
 /// as warnings.
@@ -209,16 +209,16 @@ pub fn read_after_assign(checked: &Checked<'_>) -> Vec<AnalyzeError> {
     out
 }
 
-/// `analyze-send-assigned`: each action that both
-/// sends a nonqueued mutation and assigns it on one path, in either order.
+/// `analyze-send-assigned` (@ref LLP 1035.005.002 C1): each action that both
+/// sends a newest-wins mutation and assigns it on one path, in either order.
 /// Lowering reports them as warnings.
 pub fn send_assigned(checked: &Checked<'_>) -> Vec<AnalyzeError> {
     sends::send_assigned(&checked.expanded.root)
 }
 
 /// The analyzer's warnings, which lowering reports beside its own: a read its
-/// action assigned, in its body or behind a call, and a send and an
-/// assignment of one mutation.
+/// action assigned, in its body or behind a call (C2), and a send and an
+/// assignment of one mutation (C1).
 pub fn warnings(checked: &Checked<'_>) -> Vec<AnalyzeError> {
     let mut out = read_after_assign(checked);
     out.extend(send_assigned(checked));
@@ -251,14 +251,23 @@ pub fn check_all(checked: &Checked<'_>) -> Result<Analysis, Vec<AnalyzeError>> {
         }]);
     };
     if !root.props.is_empty() {
+        // A helper written above the root becomes the root (LLP 1156.002 D9).
+        let below = if file.components.len() > 1 {
+            format!(
+                "; if `{}` is a helper, move it below the component the app starts from",
+                root.name
+            )
+        } else {
+            String::new()
+        };
         errors.push(AnalyzeError {
             id: "analyze-root-props",
-            message: "the root component (the first in the file) takes no props".into(),
+            message: format!("the root component (the first in the file) takes no props{below}"),
             span: root.span,
             related: Vec::new(),
         });
     }
-    // A child may own `state`, `derive`, and `action`; that it
+    // A child may own `state`, `derive`, and `action` (LLP 1017 P4c); that it
     // owns no `resource`, `mutation`, or `task` is the type pass's refusal
     // (`type-child-resource`), made before its view is checked.
     for (ci, c) in file.components.iter().enumerate() {
@@ -267,7 +276,8 @@ pub fn check_all(checked: &Checked<'_>) -> Result<Analysis, Vec<AnalyzeError>> {
         let scope = types.component_scope(scoped, ct);
         errors.extend(check_tasks(c));
         // The root's actions with every call expanded: a caller's sends and
-        // writes and its callees' are one commit.
+        // writes and its callees' are one commit (LLP 1088 D8, LLP 1089 D3,
+        // D5, D6).
         errors.extend(check_mutation_then(scoped));
         errors.extend(sends::check(scoped));
         if ci == 0 {
@@ -290,7 +300,7 @@ pub fn check_all(checked: &Checked<'_>) -> Result<Analysis, Vec<AnalyzeError>> {
 }
 
 /// `mutation m as shape T then action` names an action that takes nothing:
-/// it reads the answer from `m`, as the view does.
+/// it reads the answer from `m`, as the view does (LLP 1016.001).
 fn check_mutation_then(c: &Component) -> Vec<AnalyzeError> {
     let mut errors = Vec::new();
     for m in &c.mutations {
@@ -322,7 +332,7 @@ fn check_mutation_then(c: &Component) -> Vec<AnalyzeError> {
                 .into_iter()
                 .find(|e| e.send && e.target == m.name)
             {
-                // Through a call, the call is named.
+                // Through a call, the call is named (LLP 1089 D5).
                 let through = match send.call {
                     Some((callee, call)) => format!(
                         " (it calls `{}` at line {}, which sends it)",
@@ -349,7 +359,7 @@ fn check_mutation_then(c: &Component) -> Vec<AnalyzeError> {
 
 fn check_tasks(c: &Component) -> Vec<AnalyzeError> {
     let mut errors = Vec::new();
-    // A task's action, and a sequence's `ended=`: each runs
+    // A task's action, and a sequence's `ended=` (LLP 1125 D2): each runs
     // as a timer does, with no arguments.
     let ended = c.sequences.iter().filter_map(|q| q.ended.as_ref());
     for (name, span) in c
@@ -384,13 +394,13 @@ fn check_tasks(c: &Component) -> Vec<AnalyzeError> {
     errors
 }
 
-/// The handler attributes (the web's events): `press`,
+/// The handler attributes (the web's events, LLP 1005 §3): `press`,
 /// `change`, `input`, `hover`, `focus`, `blur`, `key`, `submit`, `load`, `message`.
-pub const HANDLERS: [&str; 83] = [
+pub const HANDLERS: [&str; 86] = [
     "press",
     "change",
     "input",
-    // A file input's picker was dismissed.
+    // A file input's picker was dismissed (LLP 1069.002 D2).
     "cancel",
     "close",
     "toggle",
@@ -403,59 +413,65 @@ pub const HANDLERS: [&str; 83] = [
     "key",
     "keycapture",
     // DOM's `keyup`: the key's release, a modifier's included, bubbling as
-    // `key` (keydown) does, with the same name and `KeyboardEvent`.
+    // `key` (keydown) does, with the same name and `KeyboardEvent` (#140).
     "keyup",
     "submit",
     "load",
     "message",
     "contextmenu",
-    // A list row's swipe to delete: lowering expands it
+    // A list row's swipe to delete (LLP 1116.020 D1): lowering expands it
     // to the row's swipe and its Delete button's `press`.
     "delete",
     "dblclick",
     // A touch or button went down on the node, and came up or was cancelled
-    // (DOM's names; a hold-to-record button needs them); the
-    // pointer moved over it or while held. Each may
+    // (DOM's names; Charlie, 2026-10-03: hold-to-record, LLP 1005 §3); the
+    // pointer moved over it or while held (LLP 1056 §3 stage 3). Each may
     // hand its action a `PointerEvent`.
     "pointerdown",
     "pointerup",
     "pointermove",
-    // DOM's clipboard events at the focused node;
+    // DOM's clipboard events at the focused node (spreadsheet F4, F14);
     // each may hand its action a `ClipboardEvent`.
     "copy",
     "cut",
     "paste",
-    // The part of the reader's text selection inside a paragraph; its
-    // action may take a `Selection`.
+    // The part of the reader's text selection inside a paragraph (the
+    // reader diary); its action may take a `Selection`.
     "selectionchange",
-    // DOM's `beforeunload`: the window closing or the app
+    // DOM's `beforeunload` (studio diary R17): the window closing or the app
     // quitting; an action calling `preventDefault()` keeps it open.
     "beforeunload",
     "beforeinput",
-    // `MIDIInput`'s event, heard as `beforeunload` is: by every
+    // `MIDIInput`'s event (LLP 1125 D8), heard as `beforeunload` is: by every
     // mounted element that declares it; it may hand its action a
     // `MIDIMessageEvent`.
     "midimessage",
-    // DOM's `wheel`: a wheel's or a trackpad's scroll, and
+    // DOM's `wheel` (studio diary R3): a wheel's or a trackpad's scroll, and
     // a pinch as a Control-held wheel; it may hand its action a `WheelEvent`.
     "wheel",
-    // DOM's `drop` of files from outside: each a `doc:`
+    // DOM's `drop` of files from outside (studio diary R19): each a `doc:`
     // handle in the `DragEvent` its action may take. `dragenter` and
     // `dragleave` bracket a file drag over the node, with the same record.
     "drop",
     "dragenter",
     "dragleave",
-    // A press on an inline atom of a Markdown text or field; it may hand
-    // its action an `AtomEvent`.
+    // A press on an inline atom of a Markdown text or field (LLP 1045.000
+    // D7); it may hand its action an `AtomEvent`.
     "atompress",
     "swiperight",
+    // Its mirror (Charlie, 2026-11-10).
+    "swipeleft",
     "refresh",
     "scroll",
     // DOM's `scrollend`: a scroll finished, its momentum or animation
     // included; no payload.
     "scrollend",
+    // A drag of a scroller began, and let go (Charlie, 2026-11-10): the
+    // release may hand its action a `ScrollDragEvent`.
+    "scrolldragstart",
+    "scrolldragend",
     "pan",
-    // A pan that began ended: release velocity.
+    // A pan that began ended (LLP 1057 §10.6 phase 2): release velocity.
     "panrelease",
     "loadedmetadata",
     "durationchange",
@@ -475,7 +491,7 @@ pub const HANDLERS: [&str; 83] = [
     "volumechange",
     "error",
     "canplay",
-    // The media session's actions: no payload, then the
+    // The media session's actions (LLP 1098 D2): no payload, then the
     // `MediaSessionActionDetails` record to take or leave.
     "seekbackward",
     "seekforward",
@@ -484,22 +500,22 @@ pub const HANDLERS: [&str; 83] = [
     "nexttrack",
     "stop",
     "navigate",
-    // The platform's history swipe as it tracks it,
+    // The platform's history swipe as it tracks it (LLP 1115.000 D5.5),
     // on the navigation root: a `HistorySwipeEvent` to take or leave.
     "historyswipe",
-    // An iframe's guest, by the Navigation API's names:
+    // An iframe's guest, by the Navigation API's names (LLP 1020.002 D2):
     // each may hand its action a `FrameNavigation`.
     "currententrychange",
     "navigatesuccess",
     "navigateerror",
-    // A guest's window request and its downloads, with a
+    // A guest's window request and its downloads (LLP 1020.002 D5), with a
     // `FrameNewWindow` or a `FrameDownload`.
     "newwindow",
     "download",
-    // A frame's `captureScreenshot` answered, with a
+    // A frame's `captureScreenshot` answered (LLP 1020.002 D7), with a
     // `FrameCapture`.
     "capture",
-    // An agent-controlled frame's dialog, with a
+    // An agent-controlled frame's dialog (LLP 1020.002 D9), with a
     // `FrameUserPrompt`.
     "userpromptopened",
     "heightrelease",
@@ -526,7 +542,7 @@ pub fn is_handler(name: &str, value: &Expr) -> bool {
 
 /// What a handler's event carries as its action's last argument: `input`
 /// and `change` the new value (a text field's text, a checkbox's checked
-/// state), `hover` whether the pointer is over, `key` the
+/// state: LLP 1069.001 D4), `hover` whether the pointer is over, `key` the
 /// key's name, `message` the posted string; the others nothing. An event
 /// may then offer its record ([`contract_types::event_record`]).
 pub fn handler_payload(attr: &str) -> Option<&'static str> {
@@ -551,7 +567,7 @@ pub fn handler_payload(attr: &str) -> Option<&'static str> {
 /// `None` means that this event forbids the supplied explicit arguments.
 /// Analysis and lowering share this rule, including navigate's optional payload.
 /// A list's edges and a pull to refresh carry no payload, so their action takes
-/// exactly the arguments bound at the site.
+/// exactly the arguments bound at the site (LLP 1054.000.006).
 pub fn handler_arity(attr: &str, given: usize) -> Option<std::ops::RangeInclusive<usize>> {
     if attr == "navigate" {
         return (given == 0).then_some(0..=1);
@@ -621,7 +637,7 @@ fn check_node(n: &Node, scope: &Scope, view: &View<'_>, errors: &mut Vec<Analyze
                     if is_handler(&a.name, &a.value) {
                         errors.extend(check_handler(&a.name, &a.value, scope, a.span, control, view).map_err(
                             |mut e| {
-                                // A hyphenated tag is a native module's: an
+                                // A hyphenated tag is a native module's (LLP 1024 D1): an
                                 // event's name there is the box's handler, never a prop.
                                 if tag.contains('-') && matches!(e.id, "analyze-handler-shape" | "analyze-unknown-action") {
                                     e.message.push_str(&format!("; on `{tag}` `{}` is an event, so give the module prop another name", a.name));
@@ -705,6 +721,14 @@ fn check_handler(
     let (name, args) = match value {
         Expr::Ident(n, _) => (n.as_str(), &[][..]),
         Expr::Call(n, args, _) => (n.as_str(), args.as_slice()),
+        // A handler chosen by a condition is one action that chooses (LLP 1156.002 D8).
+        Expr::Ternary(..) => {
+            return err(
+                "analyze-handler-shape",
+                format!("`{attr}=` needs an action name or `action(args)`, not a condition: write one action that chooses, `action pick {{ if cond {{ a() }} else {{ b() }} }}`, and `{attr}=pick`"),
+                span,
+            )
+        }
         _ => {
             return err(
                 "analyze-handler-shape",
@@ -760,7 +784,7 @@ fn check_handler(
                 span,
             );
         }
-        // Then optionally its `ReorderEvent`, which
+        // Then optionally its `ReorderEvent` (LLP 1094 D2), which
         // `handler_accepts` holds to its type.
         if attr == "reorderdrop"
             && params[given..]
@@ -829,17 +853,15 @@ fn check_controls(nodes: &[Node], in_canvas: bool) -> Result<(), AnalyzeError> {
 
 /// Advice for reactive resource arguments that depend on the frame clock.
 /// State stops the dependency walk: an action samples it once, rather than every frame.
-/// Resource freshness diagnostics.
+/// @ref LLP 1086 D12 — EX7 resource freshness diagnostics.
 pub fn resource_clock_warnings(file: &File) -> Vec<AnalyzeError> {
-    fn live(expr: &Expr, names: &BTreeMap<String, bool>) -> bool {
+    fn live(expr: &Expr, names: &dyn Fn(&str) -> bool) -> bool {
         use contract_syntax::TemplatePart;
         match expr {
             Expr::Call(name, args, _) => {
-                name == "performanceNow"
-                    || names.get(name) == Some(&true)
-                    || args.iter().any(|e| live(e, names))
+                name == "performanceNow" || names(name) || args.iter().any(|e| live(e, names))
             }
-            Expr::Ident(name, _) => names.get(name) == Some(&true),
+            Expr::Ident(name, _) => names(name),
             Expr::List(args, _) => args.iter().any(|e| live(e, names)),
             Expr::Template(parts, _) => parts
                 .iter()
@@ -858,40 +880,31 @@ pub fn resource_clock_warnings(file: &File) -> Vec<AnalyzeError> {
                 none,
                 ..
             } => {
-                let mut inner = names.clone();
-                inner.remove(var);
-                live(subject, names) || live(some, &inner) || live(none, names)
+                live(subject, names)
+                    || live(some, &|name| name != var && names(name))
+                    || live(none, names)
             }
-            Expr::Arrow { params, body, .. } => {
-                let mut inner = names.clone();
-                for p in params {
-                    inner.remove(p);
-                }
-                live(body, &inner)
-            }
+            Expr::Arrow { params, body, .. } => live(body, &|name| {
+                !params.iter().any(|p| p == name) && names(name)
+            }),
             Expr::Let {
                 name, value, body, ..
             } => {
-                let mut inner = names.clone();
-                inner.insert(name.clone(), live(value, names));
-                live(body, &inner)
+                let value = live(value, names);
+                live(body, &|n| if n == name { value } else { names(n) })
             }
             Expr::Number(..) | Expr::Str(..) | Expr::Bool(..) | Expr::None(..) => false,
         }
     }
     let mut functions = BTreeMap::new();
-    // Forward function references and derives settle in at most one pass per declaration.
+    // Forward references can need one round per declaration; stop once they settle.
     for _ in 0..=file.fns.len() {
         let mut changed = false;
         for f in &file.fns {
-            let mut scope = functions.clone();
-            for param in &f.params {
-                scope.remove(&param.name);
-            }
-            let now = live(&f.body, &scope);
-            if functions.insert(f.name.clone(), now) != Some(now) {
-                changed = true;
-            }
+            let value = live(&f.body, &|name| {
+                !f.params.iter().any(|p| p.name == name) && functions.get(name) == Some(&true)
+            });
+            changed |= functions.insert(f.name.clone(), value).unwrap_or(false) != value;
         }
         if !changed {
             break;
@@ -906,17 +919,18 @@ pub fn resource_clock_warnings(file: &File) -> Vec<AnalyzeError> {
         for _ in 0..=c.derives.len() {
             let mut changed = false;
             for binding in &c.derives {
-                let now = live(&binding.expr, &scope);
-                if scope.insert(binding.name.clone(), now) != Some(now) {
-                    changed = true;
-                }
+                let value = live(&binding.expr, &|name| scope.get(name) == Some(&true));
+                changed |= scope.insert(binding.name.clone(), value).unwrap_or(false) != value;
             }
             if !changed {
                 break;
             }
         }
         for r in &c.resources {
-            if r.args.iter().any(|e| live(e, &scope)) {
+            if r.args
+                .iter()
+                .any(|e| live(e, &|name| scope.get(name) == Some(&true)))
+            {
                 out.push(AnalyzeError { id: "analyze-resource-clock", span: r.span, related: Vec::new(),
                     message: format!("resource `{}`: performanceNow() changes its arguments every frame and re-requests data; sample the clock into state in an action, then pass that state (or refresh on one shared timer)", r.name) });
             }

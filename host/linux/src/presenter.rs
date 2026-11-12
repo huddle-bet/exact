@@ -1,9 +1,10 @@
 //! The presenter: painter state beyond the kernel — scrolling, images, focus
 //! and the pointer — and operations from frames through input to screenshots.
 //!
-//! Scroll chaining is the web's `overscroll-behavior: auto`.
+//! @ref LLP 1015 §4; LLP 1010 §3 (scroll chaining: the web's
+//! `overscroll-behavior: auto`); LLP 1012 (the five host-side operations)
 //!
-//! Scroll offsets are host state, never plan state. The window
+//! Scroll offsets are host state, never plan state (LLP 1010). The window
 //! is a viewport over a document: the page scrolls when the roots' extent
 //! exceeds it. A press is a hit at a point — the deepest painted box under
 //! it, then up to the nearest node with a `press` handler, the path a click
@@ -64,19 +65,24 @@ mod group;
 mod hatch;
 mod history;
 pub mod ime;
+mod layout_json;
+mod number;
 mod painter;
 mod pan_release;
 mod picker;
 mod pointer;
 mod pump;
 mod radio;
+mod range;
 mod range_frame;
 #[cfg(test)]
 mod save_tests;
+mod select;
 mod svg_hit;
+mod tabs;
 #[cfg(windows)]
 mod windows_field;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(crate) use display_frame::SubmittedFrame;
 #[path = "content_region/presenter.rs"]
 mod content_region;
@@ -104,6 +110,7 @@ mod retained_action;
 mod reveal;
 #[cfg(test)]
 mod scroll_anchor_tests;
+mod scroll_drag;
 mod scroll_end;
 mod scrollbar;
 mod scrollers;
@@ -113,6 +120,7 @@ use scroll_end::Completion;
 #[cfg(all(test, not(windows)))]
 mod scroll_end_tests;
 mod shortcuts;
+mod status_bar;
 #[cfg(target_os = "android")]
 pub(crate) mod still;
 mod swipe;
@@ -134,6 +142,8 @@ mod kept_rows_tests;
 mod longpoll_tests;
 #[cfg(test)]
 mod spacing_tests;
+#[cfg(test)]
+mod swipe_left_tests;
 #[cfg(test)]
 mod swipe_tests;
 #[cfg(test)]
@@ -173,7 +183,8 @@ pub struct Presenter<D: DataSource> {
     pub(crate) surfaces: crate::surfaces::Surfaces,
     module: Option<crate::delivery::Module>,
     painted: bool,
-    activation_failed: bool,
+    /// Why the data module did not activate ([`Presenter::activation_error`]).
+    activation_failed: Option<String>,
     dev: Option<crate::fetch::Poller>,
     pending_dev: Option<crate::fetch::Generation>,
     pending_update: bool,
@@ -187,10 +198,10 @@ pub struct Presenter<D: DataSource> {
     page: (f32, f32),
     images: Images,
     pub(crate) assets: Assets,
-    /// The binary's `compat.json`, also given to a fresh runner on reload.
+    /// The binary's `compat.json`, also given to a fresh runner on reload (LLP 1030 D3a).
     pub(crate) compat: String,
     /// How many hosts this presenter has had: a frame sampler starts over
-    /// when another replaces the one it measured.
+    /// when another replaces the one it measured (LLP 1079 D3).
     pub(crate) hosts: u64,
     pub(crate) focus: Option<ViewId>,
     /// Last connected path from the focused node, for a removal commit.
@@ -201,13 +212,15 @@ pub struct Presenter<D: DataSource> {
     /// a press began, so its fallback does not give its own the focus back.
     pub(crate) disabled_blur: Vec<ViewId>,
     /// The text field typed into since it took the focus: its `change`
-    /// fires on blur or Enter, HTML's commit.
+    /// fires on blur or Enter, HTML's commit (LLP 1069.001 D4).
     pub(crate) edited: Option<ViewId>,
-    /// Each text field's selection, kept for the value
+    /// Each text field's selection (x2apps codeedit #2), kept for the value
     /// it indexes, focused or not: the next key there edits at it.
     pub(crate) fields: BTreeMap<ViewId, field::FieldMark>,
     field_history: history::Histories,
     field_drag: Option<field_pointer::Drag>,
+    /// A contact that went down on a range (`range.rs`).
+    range_drag: Option<range::Drag>,
     ime: Option<ime::Composition>,
     ime_epoch: u64,
     field_reveal: bool,
@@ -215,21 +228,28 @@ pub struct Presenter<D: DataSource> {
     window_focus: Option<exact_kernel::NodeKey>,
     clipboard: Option<Box<dyn clipboard::Clipboard>>,
     url_opener: Option<links::UrlOpener>,
+    /// The desktop portal's answers to document pickers (`portal.rs`).
+    portal: crate::portal::Inbox,
     /// The modifier keys held, each side a bit (Shift, Control, Alt, Meta,
     /// left then right): a `key` event's flags (`KeyboardEvent.shiftKey`…).
     pub(crate) held: u8,
     /// The keys whose down a shortcut took at a world's canvas: their up
-    /// belongs to no handler and no world.
+    /// belongs to no handler and no world (b6 review B1).
     pub(crate) shortcut_keys: std::collections::BTreeSet<String>,
+    /// What the key being pressed types, when not its name (`hardware_key_typing`).
+    pub(crate) key_text: Option<String>,
     /// Unbound checkboxes' own states, as a browser keeps an uncontrolled
-    /// control's; a bound one draws its `checked`.
+    /// control's (LLP 1069.001 D4); a bound one draws its `checked`.
     pub(crate) controls: BTreeMap<ViewId, bool>,
     /// A date's, range's or select's choice, or a field's typed text, since
     /// its bound value last changed, beside that bound value
     /// (`paint::control::choice`, `field_text`).
     pub(crate) chosen: BTreeMap<ViewId, (String, String)>,
-    /// The select whose menu is open.
+    /// The select whose menu is open (LLP 1069.001 D7), the row its keys
+    /// moved to, and how far it is scrolled (`select.rs`).
     pub(crate) menu: Option<ViewId>,
+    menu_row: Option<usize>,
+    menu_scroll: f32,
     autofocus_processed: std::collections::BTreeSet<ViewId>,
     /// What the focus's following of the route keeps (`arrive.rs`).
     route_focus: arrive::State,
@@ -241,7 +261,7 @@ pub struct Presenter<D: DataSource> {
     hover_point: Option<(f32, f32)>,
     /// The node holding the pointer's `pointerdown` until it lifts: the innermost hearing a pointer event, which hears the moves.
     pointer_held: Option<exact_kernel::NodeKey>,
-    /// Where the last pointer press was, its `clientX`/`clientY`.
+    /// Where the last pointer press was, its `clientX`/`clientY` (LLP 1021 D2).
     pub(crate) press_point: Option<(f32, f32)>,
     /// The nodes from the held one up that hear `pointerdown` or
     /// `pointerup`, innermost first: each hears the up.
@@ -255,6 +275,7 @@ pub struct Presenter<D: DataSource> {
     pub(crate) control_bindings: BTreeMap<(u32, u32), crate::surfaces::ControlBinding>,
     pub(crate) control_contact: Option<(ViewId, f32, f32)>,
     boxes: Vec<PaintedBox>,
+    boxes_page: (f32, f32),
     /// Bumped whenever `boxes` is replaced.
     boxes_serial: u64,
     /// The fields `rangeFrame` reads, as painted beside `boxes`.
@@ -262,31 +283,31 @@ pub struct Presenter<D: DataSource> {
     pub(crate) dirty: bool,
     pub(crate) image_paint_pending: bool,
     /// The app's `setScheme` (`None`: follow the system) and the appearance
-    /// its shell or an agent says; light until either does.
+    /// its shell or an agent says (LLP 1061 D5); light until either does.
     pub(crate) scheme: (Option<bool>, bool),
-    /// The device's settings as its shell last told them.
+    /// The device's settings as its shell last told them (LLP 1115.001 D3.1).
     device: Option<Device>,
     text_scale: f32,
-    /// Pointer kind and drag slop: mouse and shared slop until a shell says.
+    /// Pointer kind and drag slop: mouse and shared slop until a shell says (D7.4).
     pointer_kind: PointerKind,
     slop: f64,
-    /// The shell's window, its insets, and the page's place in it.
+    /// The shell's window, its insets, and the page's place in it (D3.3).
     window: window::State,
-    /// What a shell that scrolls by itself was told of its scrollers.
+    /// What a shell that scrolls by itself was told of its scrollers (D7.3).
     reader: scrollers::Reader,
-    /// The colours last painted, and what this asks of its shell.
+    /// The colours last painted (D4), and what this asks of its shell (D5).
     colors: palette::State,
     requests: requests::State,
-    /// The text fields the shell hosts, as it was told them.
+    /// The text fields the shell hosts, as it was told them (D8).
     hosted: hosted::State,
-    /// The top layer's open surface, where a shell makes windows.
+    /// The top layer's open surface, where a shell makes windows (D10).
     top: top::State,
     alert: Option<alert::Open>,
-    /// The shell's top app bar and navigation bar, where it has them.
+    /// The shell's top app bar and navigation bar, where it has them (D11).
     bars: bars::State,
-    /// The accessibility tree its shell was last told, where one asks.
+    /// The accessibility tree its shell was last told, where one asks (D13).
     access: access::State,
-    /// The viewport segments the agent set, for `layout.env`;
+    /// The viewport segments the agent set (LLP 1078 D7), for `layout.env`;
     /// the posture and counts are the runner's.
     pub(crate) segments: Vec<exact_kernel::Rect>,
     /// A failed painter's blank fallback cannot bless an update generation.
@@ -298,9 +319,9 @@ pub struct Presenter<D: DataSource> {
     pub fonts_ms: f64,
     /// The painter, for the report.
     pub painter: PainterInfo,
-    /// The executor for a request that leaves the process.
+    /// The executor for a request that leaves the process (LLP 1016 D2).
     executor: crate::executor::Executor,
-    /// Requests held at dispatch, released after a later commit.
+    /// Requests held at dispatch until a commit or source wake releases them (LLP 1027.002 D3).
     parked: BTreeMap<u64, exact_runner::RequestOut>,
     refusal_turn: bool,
     collection: collection::State,
@@ -309,7 +330,7 @@ pub struct Presenter<D: DataSource> {
     arrange: Option<arrange::State>,
     group: Option<group::State>,
     transform_geometry: transform_geometry::State,
-    /// The update store, once the app opened one (`app.rs`).
+    /// The update store, once the app opened one (LLP 1026 D9; `app.rs`).
     updates: Option<Box<dyn crate::delivery::Store>>,
     /// Commands from the last commits, consumed by `run_commands`.
     commands: Vec<exact_runner::Command>,
@@ -317,8 +338,8 @@ pub struct Presenter<D: DataSource> {
     /// the person's scrolls by then (`person_scrolls`: a wheel, a key, a
     /// scrollbar, the reader's drag): one since cancels that scroll; the
     /// last activation armed, so a router change seen again arms nothing;
-    /// then the target held in place while the pictures load
-    /// (`reveal.rs`).
+    /// then the target held in place while the pictures load (LLP 1153 D5;
+    /// `reveal.rs`).
     fragment_armed: Option<(u64, u64)>,
     fragment_seen: u64,
     fragment_anchor: Option<(ViewId, u64)>,
@@ -329,7 +350,8 @@ pub struct Presenter<D: DataSource> {
     /// Range replacement selects wait until the action's commands finish.
     field_select_tasks: Vec<ViewId>,
     field_change_tasks: std::collections::BTreeSet<ViewId>,
-    /// Driven by the agent (`agent.rs`): a `share` is held, never refused.
+    /// Driven by the agent (`agent.rs`): a `share` is held, never refused
+    /// (LLP 1069.003 D6).
     pub(crate) agent: bool,
     /// Boot resolves every initially referenced asset before first pixel.
     /// During that transaction its integrity refusal is returned as a boot
@@ -338,7 +360,7 @@ pub struct Presenter<D: DataSource> {
     content_registration: Option<crate::content_region::ContentRegionRegistration>,
     last_region_frame: Option<Arc<Pixmap>>,
     last_region_scale: Option<u32>,
-    /// The app's hatches (`presenter/hatch.rs`).
+    /// The app's hatches (LLP 1075.003.000.001; `presenter/hatch.rs`).
     pub(crate) hatches: crate::hatches::Session,
 }
 /// Two decimals, the agent API's precision.
@@ -446,7 +468,7 @@ impl<D: DataSource> Presenter<D> {
             Some(text.clone()),
             (painted_boot && !assets.is_selected()).then_some((&mut images, scale)),
         )?;
-        // A hairline is one device pixel of this.
+        // @ref LLP 1115.000 D10.3 — a hairline is one device pixel of this.
         let error = error.or(host.set_display_scale(f64::from(scale)));
         #[cfg(windows)]
         let (backend, painter) = match preparing {
@@ -508,6 +530,7 @@ impl<D: DataSource> Presenter<D> {
             fields: BTreeMap::new(),
             field_history: Default::default(),
             field_drag: None,
+            range_drag: None,
             ime: None,
             ime_epoch: 0,
             field_reveal: false,
@@ -515,11 +538,15 @@ impl<D: DataSource> Presenter<D> {
             window_focus: None,
             clipboard: None,
             url_opener: None,
+            portal: Default::default(),
             held: 0,
             shortcut_keys: Default::default(),
+            key_text: None,
             controls: BTreeMap::new(),
             chosen: BTreeMap::new(),
             menu: None,
+            menu_row: None,
+            menu_scroll: 0.0,
             autofocus_processed: Default::default(),
             route_focus: Default::default(),
             pointer: None,
@@ -534,6 +561,7 @@ impl<D: DataSource> Presenter<D> {
             pads: Default::default(),
             control_bindings: BTreeMap::new(),
             boxes: Vec::new(),
+            boxes_page: (0., 0.),
             boxes_serial: 0,
             ranges: Default::default(),
             dirty: true,
@@ -563,7 +591,7 @@ impl<D: DataSource> Presenter<D> {
             surfaces: Default::default(),
             module: None,
             painted: false,
-            activation_failed: false,
+            activation_failed: None,
             dev: None,
             pending_dev: None,
             pending_update: false,
@@ -598,7 +626,7 @@ impl<D: DataSource> Presenter<D> {
         Ok((p, error.or(e)))
     }
 
-    /// The dev loop's restart, state carried; pictures and offsets go, focus stays.
+    /// The dev loop's restart, state carried; pictures and offsets go, focus stays (LLP 1007 §6).
     pub fn reload(&mut self, plan: &[u8], data: D) -> Result<Option<String>, HostError> {
         self.reload_module(plan, data, self.module.clone(), false)
     }
@@ -664,20 +692,20 @@ impl<D: DataSource> Presenter<D> {
             .commit_shaders(shaders)
             .map_err(HostError::Asset)?;
         self.host = host;
-        self.replaced();
-        if self.display.new_session() {
-            self.painted = false;
-        }
-        self.activation_failed = false;
-        self.module = module;
-        self.text = candidate_text.clone();
-        self.brush.text = candidate_text;
         // The old executor lets go of everything, then says which uploads had
-        // begun to go out; the rest never left.
+        // begun to go out; the rest never left (LLP 1016.000 D10).
         self.executor.forget(|_| false);
         let started = self.executor.let_go_started(|_| false);
         self.executor = self.host.executor();
         self.host.runner_mut().uploads_started(&started);
+        self.replaced();
+        if self.display.new_session() {
+            self.painted = false;
+        }
+        self.activation_failed = None;
+        self.module = module;
+        self.text = candidate_text.clone();
+        self.brush.text = candidate_text;
         self.parked.clear();
         self.scroll.clear();
         self.collection = collection::State::default();
@@ -816,7 +844,7 @@ impl<D: DataSource> Presenter<D> {
     }
     fn service_commit(&mut self) -> Option<String> {
         self.sync_split();
-        // A resource refused, a request or a send failed: on
+        // A resource refused, a request or a send failed (LLP 1142 D4): on
         // stderr as well as in the journal. The runner queues none unless it
         // measures, so a production binary prints none.
         for line in self.host.runner().take_alerts() {
@@ -824,19 +852,19 @@ impl<D: DataSource> Presenter<D> {
         }
         self.restore_scroll_anchors();
         self.alert_sync();
-        // What the commit asked the host to run goes to the executor;
-        // the reply comes back through `pump`. Its commands wait
+        // What the commit asked the host to run goes to the executor (LLP
+        // 1016 D2); the reply comes back through `pump`. Its commands wait
         // for the loop (`run_commands`).
         self.hatches.stale = true;
         // A continuation is dispatched here, on this thread, after the
-        // commit that handed it out; one a source holds
-        // is parked and released after a later commit.
+        // commit that handed it out (LLP 1027.002 D3); one a source holds
+        // is parked until a later commit or source wake releases it.
         // An app's aborted fetches first (any method), then what the runner let go.
         self.executor
             .cancel(&self.host.runner_mut().take_explicit_aborts());
         self.executor
             .forget(|ticket| self.host.runner().holds(ticket));
-        // Of the uploads it let go, which had begun to go out.
+        // Of the uploads it let go, which had begun to go out (LLP 1016.000 D10).
         let started = (self.executor).let_go_started(|ticket| self.host.runner().holds(ticket));
         self.host.runner_mut().uploads_started(&started);
         if !self.host.has_ordered_request_refusals() {
@@ -851,7 +879,7 @@ impl<D: DataSource> Presenter<D> {
         let admitted = self.host.grants();
         for r in self.host.take_requests() {
             // A deadline the surface and auth paths can't keep, or a long poll
-            // on work that is no HTTP request: the executor
+            // on work that is no HTTP request (LLP 1016.000 D8): the executor
             // refuses it at admission, fencing later ordered work.
             if r.request
                 .timeout_refusal()
@@ -865,8 +893,8 @@ impl<D: DataSource> Presenter<D> {
                 self.surfaces.enqueue(r, &admitted);
                 continue;
             }
-            // No system browser here: 501, delivered by the next pump as an
-            // admission answer; under the agent it is held, as on every host.
+            // No system browser here (LLP 1069.006 D5): 501, delivered by the next pump as an
+            // admission answer; under the agent it is held, as on every host (LLP 1146 D4).
             if r.request.is_auth() {
                 let (agent, none) = (self.agent, exact_runner::auth::Browser::None);
                 exact_runner::auth::arm(self.host.runner_mut(), &r, agent, none, None);
@@ -876,22 +904,18 @@ impl<D: DataSource> Presenter<D> {
             let dispatch = match r.request.continuation {
                 Some(token) => self.host.dispatch_work(token),
                 None if r.request.is_native() => self.host.native_work(&r.request),
-                // A driver fault fails it before transport.
+                // @ref LLP 1103 D1 — a driver fault fails it before transport.
                 None => (self.host.runner_mut().fault_dispatch(&r))
                     .unwrap_or(exact_runner::Dispatch::Missing),
             };
             self.run_dispatch(r, dispatch);
         }
-        for (token, dispatch) in self.host.release_work() {
-            if let Some(r) = self.parked.remove(&token) {
-                self.run_dispatch(r, dispatch);
-            }
-        }
+        self.release_held_work();
         // An abort made in this batch's turns is answered at the next pump: wake it.
         if self.host.runner_mut().collected_aborts() {
             self.executor.notify();
         }
-        // The platform's checks for presence calls: the shell's.
+        // The platform's checks for presence calls: the shell's (LLP 1133.010 D8).
         for ask in self.host.runner_mut().take_presence_asks() {
             match self.has_shell() {
                 true => _ = self.request(requests::Request::Presence(ask.json())),
@@ -904,7 +928,7 @@ impl<D: DataSource> Presenter<D> {
                 ),
             }
         }
-        // Socket frames of the commits that stood.
+        // Socket frames of the commits that stood (LLP 1016.000 D7).
         let executor = &self.executor;
         self.host
             .runner_mut()
@@ -959,7 +983,7 @@ impl<D: DataSource> Presenter<D> {
                 }
                 Ok(())
             }
-            // A re-ask: settled in its ordered place, no work.
+            // A re-ask: settled in its ordered place, no work (LLP 1041 §8.4).
             exact_runner::Dispatch::Again => self.executor.again(&r),
             exact_runner::Dispatch::Host(_) | exact_runner::Dispatch::Missing => {
                 self.executor.run(r, None)
@@ -972,7 +996,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// The document's extent: the roots' frames, never smaller than the
-    /// viewport (`fitDocument`).
+    /// viewport (`fitDocument`, LLP 1010 §3).
     fn document(&self) -> (f32, f32) {
         self.display
             .document()
@@ -991,7 +1015,7 @@ impl<D: DataSource> Presenter<D> {
         size
     }
 
-    /// Views commits renewed start as new ones: a scroller at its
+    /// Views commits renewed (LLP 1078) start as new ones: a scroller at its
     /// start, a picture only of the source its node names.
     fn renew(&mut self) -> Option<String> {
         let renewed = self.host.take_renewed();
@@ -1092,8 +1116,8 @@ impl<D: DataSource> Presenter<D> {
             })
     }
 
-    /// How far scroll container `id`'s offset travels on each axis (`rx`/`ry`): the bounds its
-    /// offset is clamped to, as `clamp_scroll` reads them.
+    /// How far scroll container `id`'s offset travels on each axis (LLP 1012 `rx`/`ry`): the bounds its offset is
+    /// clamped to, as `clamp_scroll` reads them.
     fn scroll_range(&self, id: ViewId, collection_limits: &BTreeMap<ViewId, f32>) -> (f32, f32) {
         let kernel = self.host.kernel();
         let Some(node) = kernel.node(id) else {
@@ -1108,153 +1132,6 @@ impl<D: DataSource> Presenter<D> {
             )
         });
         (bounds.max.0.max(0.), bounds.max.1.max(0.))
-    }
-
-    /// The agent's `layout`: every node's box in the viewport (scroll
-    /// folded in), scroll containers with their offsets, by id. With a
-    /// `node`, the runner's explanation of that node plus
-    /// what a painter knows — its painted box and a 1:1 capture; no window,
-    /// no screen, nothing mounted, and the reply says so rather than
-    /// guessing.
-    pub fn layout_json(&mut self, node: Option<u32>, include_plan: bool) -> String {
-        let clock = self.host.now();
-        let (vw, vh) = self.viewport;
-        let mut boxes: Vec<PaintedBox> = self.boxes().to_vec();
-        boxes.sort_by_key(|b| b.id);
-        let mut s = String::new();
-        // The insets a device's shell told (`window.rs`; zeros
-        // on a host with none, which has no safe area or software keyboard);
-        // the fold is whatever the agent preferred.
-        let fold = self.host.runner().viewport().fold;
-        let [top, right, bottom, left, keyboard] = self.env_insets().map(|v| num(r2(v)));
-        let _ = write!(
-            s,
-            "{{\"clock\":{},\"viewport\":{{\"w\":{},\"h\":{}}},\"env\":{{\"safe-area-inset-top\":{top},\"safe-area-inset-right\":{right},\"safe-area-inset-bottom\":{bottom},\"safe-area-inset-left\":{left},\"keyboard-inset-height\":{keyboard},\"device-posture\":\"{}\",\"horizontal-viewport-segments\":{},\"vertical-viewport-segments\":{},\"viewport-segments\":[",
-            num(clock),
-            num(r2(vw)),
-            num(r2(vh)),
-            fold.posture.keyword(),
-            fold.cols,
-            fold.rows
-        );
-        for (i, r) in self.segments.iter().enumerate() {
-            if i > 0 {
-                s.push(',');
-            }
-            let _ = write!(
-                s,
-                "[{},{},{},{}]",
-                num(r2(r.x)),
-                num(r2(r.y)),
-                num(r2(r.width)),
-                num(r2(r.height))
-            );
-        }
-        s.push_str("]},\"nodes\":[");
-        let limits = self.collection_scroll_limits();
-        for (i, b) in boxes.iter().enumerate() {
-            if i > 0 {
-                s.push(',');
-            }
-            let _ = write!(
-                s,
-                "{{\"id\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{}",
-                b.id,
-                num(r2(b.rect.0)),
-                num(r2(b.rect.1)),
-                num(r2(b.rect.2)),
-                num(r2(b.rect.3))
-            );
-            if let Some((sx, sy)) = b.scroll {
-                let (rx, ry) = self.scroll_range(b.id, &limits);
-                let _ = write!(
-                    s,
-                    ",\"sx\":{},\"sy\":{},\"rx\":{},\"ry\":{}",
-                    num(r2(sx)),
-                    num(r2(sy)),
-                    num(r2(rx)),
-                    num(r2(ry))
-                );
-            }
-            s.push('}');
-        }
-        s.push(']');
-        if let Some(id) = node {
-            let detail = self.host.agent(&format!(
-                "{{\"op\":\"node\",\"id\":{id},\"plan\":{include_plan}}}"
-            ));
-            if detail.starts_with("{\"error\"") {
-                return detail;
-            }
-            // Reopen the runner's object: exactly its last brace, never the
-            // inner object's before it.
-            let mut detail = detail;
-            if detail.ends_with('}') {
-                detail.pop();
-            }
-            // Hidden rows remain in the kernel, but have no painted box and refuse input.
-            let (route_hidden, inert) = self.host.route_visibility(id);
-            let hidden = route_hidden || self.placement_hidden(id);
-            let _ = write!(
-                detail,
-                ",\"visible\":{{\"hidden\":{hidden},\"inert\":{inert}}}"
-            );
-            match boxes.iter().find(|b| b.id == id) {
-                Some(b) => {
-                    let _ = write!(
-                        detail,
-                        ",\"space\":{{\"viewport\":{{\"x\":{},\"y\":{},\"w\":{},\"h\":{}}},\"capture\":{{\"scale\":1}}}}",
-                        num(r2(b.rect.0)),
-                        num(r2(b.rect.1)),
-                        num(r2(b.rect.2)),
-                        num(r2(b.rect.3))
-                    );
-                }
-                None if self.placement_hidden(id) => detail.push_str(",\"space\":{\"viewport\":{\"x\":0,\"y\":0,\"w\":0,\"h\":0},\"capture\":{\"scale\":1}}"),
-                None => detail.push_str(",\"space\":{\"capture\":{\"scale\":1}}"),
-            }
-            // Ordinary paragraphs keep the existing
-            // reply shape, while a flowed empty paragraph still reports its facts.
-            if let Some(p) = self.paragraph(id).filter(|p| p.flow_line_height() > 0.0) {
-                detail.push_str(",\"fragments\":[");
-                for (i, f) in p.fragments().iter().enumerate() {
-                    if i > 0 {
-                        detail.push(',');
-                    }
-                    let _ = write!(detail, "{{\"start\":{},\"end\":{},\"x\":{},\"y\":{},\"width\":{},\"band\":{},\"height\":{}}}", f.start, f.end, num(f.x as f64), num(f.y as f64), num(f.width as f64), f.line, num(p.flow_line_height() as f64));
-                }
-                detail.push(']');
-            }
-            detail.push_str(",\"native\":{\"unavailable\":true");
-            if let Some(source) = self
-                .host
-                .runner()
-                .kernel()
-                .node(id)
-                .filter(|n| n.node_type == NodeType::Image)
-                .and_then(|n| n.props.str(PropId::ImageSource))
-                .filter(|s| s.starts_with("symbol:"))
-            {
-                let name = &source[7..];
-                let reason = if name == "sf/" || name.is_empty() {
-                    "empty"
-                } else if !name.starts_with("sf/") && exact_kernel::symbol_path(name).is_none() {
-                    "role"
-                } else {
-                    "platform"
-                };
-                detail.push_str(",\"symbol\":{\"found\":false,\"source\":");
-                quote(source, &mut detail);
-                detail.push_str(",\"name\":");
-                quote(name.strip_prefix("sf/").unwrap_or(name), &mut detail);
-                let _ = write!(detail, ",\"reason\":\"{reason}\"}}");
-            }
-            let _ = write!(detail, "}},\"observed\":{{\"clock\":{}}}}}", num(clock));
-            s.push_str(",\"node\":");
-            s.push_str(&detail);
-        }
-        s.push('}');
-        s
     }
 
     pub(crate) fn placement_hidden(&self, id: ViewId) -> bool {
@@ -1300,8 +1177,8 @@ impl<D: DataSource> Presenter<D> {
             .rev()
             .filter(|b| {
                 self.alert_allows(b.id)
-                    && b.contains(x, y)
-                    && crate::paint::hits(self.host.kernel(), b, x, y)
+                    && (b.contains(x, y) && crate::paint::hits(self.host.kernel(), b, x, y)
+                        || crate::paint::slop_hits(self.host.kernel(), b, x, y))
                     && !self.host.route_visibility(b.id).1
                     && self.display.allows(self.host.kernel(), b.id)
             })
@@ -1340,7 +1217,7 @@ impl<D: DataSource> Presenter<D> {
         ))
     }
 
-    /// The agent's `tap <list> into <key>`: the runner's
+    /// The agent's `tap <list> into <key>` (LLP 1070.000 §5): the runner's
     /// request, committed, then every report it asks for.
     pub fn into_view(
         &mut self,
@@ -1376,29 +1253,35 @@ impl<D: DataSource> Presenter<D> {
         self.host.runner().has_pending()
     }
 
-    /// Another host took over: it is measured as the last was, and counted.
+    /// Another host took over, with its executor: it is measured as the
+    /// last was, given what the last was given, and counted.
     pub(crate) fn replaced(&mut self) {
         self.read_ranges();
         self.scroll_end = Default::default();
         self.give_clock();
-        // A new kernel may have the same epoch.
-        self.brush.paint_epoch = None;
+        self.modules_replaced();
+        self.brush.replaced();
         // A new runner reuses view ids and node keys: an unbound control's
-        // own state, a choice or typed text, an edit to
-        // commit, a caret, an open menu, a hover or a held pointer is not
-        // its tree's, as Apple's reset and the web's rebuilt page have it.
+        // own state, a choice or typed text (LLP 1069.001 D4), an edit to
+        // commit, a caret, an open menu, a hover, a held pointer, a picker's
+        // answer or a GPU surface is not its tree's, as Apple's reset and
+        // the web's rebuilt page have it.
+        self.picks_replaced();
         self.chosen.clear();
         self.controls.clear();
         self.edited = None;
         self.fields.clear();
         self.field_drag = None;
+        self.range_drag = None;
         self.field_history = Default::default();
         self.ime = None;
         self.window_focus = None;
-        self.menu = None;
+        self.close_menu();
         self.hovered.clear();
         self.pointer_held = None;
         self.pointer_path.clear();
+        self.surfaces.replaced(&mut self.host);
+        self.control_bindings.clear();
         self.hatch_reset();
         self.top_replaced();
         self.holds_changed();
@@ -1406,16 +1289,16 @@ impl<D: DataSource> Presenter<D> {
         self.measure();
     }
 
-    /// Measure the work of every binary but a production one, once
-    /// its compat is known: the runner boots measuring nothing.
+    /// Measure the work of every binary but a production one (LLP 1079
+    /// D1), once its compat is known: the runner boots measuring nothing.
     pub(crate) fn measure(&mut self) {
         let on = !exact_runner::delivery::production(&self.compat);
         self.host.runner_mut().measure(on, true);
-        // The live table is development's too.
+        // The live table is development's too (LLP 1121 stage 4).
         self.host.runner_mut().admit_live(Some(&self.compat));
     }
 
-    /// The binary's delivery facts, from its `compat.json`:
+    /// The binary's delivery facts (LLP 1030 D7), from its `compat.json`:
     /// a `delivery` resource is answered again, and the picture follows.
     pub fn set_delivery_from_compat(&mut self, json: &str) -> Option<String> {
         self.compat = json.to_string();

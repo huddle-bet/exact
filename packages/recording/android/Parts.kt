@@ -1,4 +1,4 @@
-// A take that survives its process. Under `device.microphone-background` the Task Manager's Stop can
+// A take that survives its process (LLP 1133.033 D5). Under `device.microphone-background` the Task Manager's Stop can
 // end the app mid-take with no callback, and `MediaMuxer` writes an MP4's index only at `stop()`. So a take recorded
 // where the line is granted is written as a stream readable at every frame: each AAC access unit the encoder makes,
 // with the seven-byte ADTS header built from its `csd-0` (ISO/IEC 14496-3 §1.A.2), appended to `<path>.part`. At stop
@@ -114,14 +114,15 @@ internal fun mux(part: File, file: File): Boolean {
     return true
 }
 
-/** Each part a process that died left, made an MP4, [log] naming each: `recovered <path>`. */
+/** Each part a process that died left, made an MP4 (D5), [log] naming each: `recovered <path>`. */
 internal fun recoverParts(app: Context, log: (String) -> Unit) {
     val ledger = ledger(app)
     for (path in ledger.all.keys.toList()) {
         val file = File(path)
         val part = File("$path.part")
         try {
-            if (part.isFile && mux(part, file)) log("recording: recovered $path")
+            // A part the app's own code made a link reads nothing through it.
+            if (dev.exact.canvas.Files.regular(part) && mux(part, file)) log("recording: recovered $path")
         } catch (e: Exception) {
             log("recording: $path did not recover: $e")
         }

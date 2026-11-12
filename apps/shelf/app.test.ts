@@ -1,8 +1,12 @@
-// `bun test apps/shelf`: the recipe stays tell-free, and the data
+// `bun test apps/shelf`: the recipe stays tell-free (LLP 1115), and the data
 // module keeps its store's rules. The flows are app.test.contract's, driven on
 // the web and iOS.
-import { expect, test } from 'bun:test';
+import { expect, mock, test } from 'bun:test';
 import { tells, tellsIn } from '../../scripts/no-tells.mjs';
+
+// The build generates the package's module; these tests reach no tag.
+mock.module('@exact/nfc', () => Object.fromEntries(['ndefRecords', 'write']
+  .map(name => [name, () => { throw new Error(`unexpected NFC call: ${name}`); }])));
 
 test('Shelf writes no colour, font size or weight of its own', () => {
   expect(tells(import.meta.dir)).toEqual([]);
@@ -38,8 +42,8 @@ async function shelf() {
   return { call, book, reads: () => reads };
 }
 
-// Two edits that both wait on the first load (a tool's and the person's)
-// each apply to the newest state, so neither is lost.
+// Two edits that both wait on the first load (a tool's and the person's,
+// LLP 1133.023 §11) each apply to the newest state, so neither is lost.
 test('two edits waiting on the first load both land', async () => {
   const { call } = await shelf();
   await Promise.all([
@@ -82,4 +86,26 @@ test('a fresh widget reads the same library as the app, then follows edits', asy
   expect(rows[0].props.count).toBe(3); // The gallery's preview has seven.
   await call('removeBook', 'seed-3');
   expect(await call('widgetLibrary', 5678)).toEqual([{ date: 5678, props: { count: 2, latest: 'Piranesi' } }]);
+});
+
+// Only a missing file is a first launch. Any other failed read leaves the
+// library not ready and refuses every edit, so the seed never replaces it.
+test('a failed read is not a first launch, and no edit saves over the stored library', async () => {
+  const stored = new TextEncoder().encode(JSON.stringify({ books: [{ id: 'mine', title: 'My Own Book' }], goal: 12 }));
+  let failing = true, writes = 0;
+  const storage = { fs: {
+    readFile: async () => {
+      if (failing) throw Object.assign(new Error('failed filesystem: Permission denied (os error 13)'), { code: 'failed' });
+      return stored.buffer;
+    },
+    mkdir: async () => {},
+    atomicWriteFile: async () => { writes++; },
+  } };
+  const source = await import(`./app.ts?case=${Math.random()}`);
+  const call = (name: string, ...args: unknown[]) => source.answer(name, args, {}, storage, {});
+  expect((await call('library')).ready).toBe(false);
+  expect(await call('addBook', 'Second Book', 'Me', 100, 'want', '', '', 1)).toEqual({ ok: false });
+  expect(writes).toBe(0);
+  failing = false;
+  expect((await call('library')).books.map((b: { title: string }) => b.title)).toEqual(['My Own Book']);
 });

@@ -50,9 +50,9 @@ fn captures_fonts_and_complete_static_trees_without_following_links() {
         std::fs::write(path, bytes).unwrap();
     }
     std::fs::write(app.0.join("private.bin"), b"not an app asset").unwrap();
-    // The driver's test file is no build's input.
+    // The driver's test file is no build's input (trivia F8).
     std::fs::write(app.0.join("app.test.contract"), b"test \"t\"\n").unwrap();
-    // Nor is the app's `.exact/`: an agent's evidence and runtime files.
+    // Nor is the app's `.exact/`: an agent's evidence and runtime files (Depot).
     std::fs::create_dir_all(app.0.join(".exact/evidence")).unwrap();
     std::fs::write(app.0.join(".exact/evidence/results.json"), b"{}").unwrap();
     // Nor a web build in `dist` and what it keeps beside it (`web-build --out dist`), each a tree of
@@ -219,6 +219,11 @@ fn captured_module_guard_uses_real_files_and_path_components() {
     std::fs::write(stage.join("__exact_config.mjs"), super::resident::CONFIG).unwrap();
     std::fs::write(stage.join("__exact_binding.mjs"), super::resident::BINDING).unwrap();
     std::fs::write(stage.join("__exact_env.mjs"), super::resident::ENV).unwrap();
+    std::fs::write(
+        stage.join("__exact_portable.mjs"),
+        super::resident::PORTABLE,
+    )
+    .unwrap();
     let checked = exact_bake::bun()
         .args([
             "--input-type=module",
@@ -294,6 +299,63 @@ fn native_resource_trees_are_not_captured_as_typescript_or_assets() {
     let captured = sources(&app.0).unwrap();
     assert_eq!(captured.len(), 1);
     assert!(captured.contains_key(std::path::Path::new("app.json")));
+}
+
+/// A tree only iOS declares (`host.ios.resources`) is not captured either:
+/// a file in it over the capture's per-file cap does not fail the bake.
+#[test]
+fn an_ios_resource_tree_is_not_captured_as_typescript() {
+    let app = Scratch::new(&std::env::temp_dir()).unwrap();
+    std::fs::create_dir_all(app.0.join("shipped")).unwrap();
+    std::fs::write(
+        app.0.join("app.json"),
+        r#"{"host":{"ios":{"resources":[{"from":"shipped","to":"Resources/shipped"}]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(app.0.join("shipped/catalog.json"), vec![b' '; 17 << 20]).unwrap();
+    let captured = sources(&app.0).unwrap();
+    assert_eq!(
+        captured.len(),
+        1,
+        "{:?}",
+        captured.keys().collect::<Vec<_>>()
+    );
+}
+
+/// A declared tree is known by identity, not by spelling: where the volume
+/// resolves a `from` in another case or Unicode normalization to the
+/// directory (macOS's, by default), the tree is excluded; a sibling directory
+/// is never taken for it.
+#[test]
+fn a_resource_tree_is_excluded_by_identity_not_spelling() {
+    let nfd = "cafe\u{301}";
+    for (on_disk, declared) in [("Shipped", "shipped"), (nfd, "caf\u{e9}")] {
+        let app = Scratch::new(&std::env::temp_dir()).unwrap();
+        std::fs::create_dir_all(app.0.join(on_disk)).unwrap();
+        std::fs::create_dir_all(app.0.join("sibling")).unwrap();
+        std::fs::write(app.0.join("sibling/kept.json"), b"{}").unwrap();
+        std::fs::write(
+            app.0.join("app.json"),
+            format!(r#"{{"host":{{"ios":{{"resources":[{{"from":"{declared}","to":"Resources/shipped"}}]}}}}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            app.0.join(on_disk).join("catalog.json"),
+            vec![b' '; 17 << 20],
+        )
+        .unwrap();
+        if !app.0.join(declared).exists() {
+            continue; // This volume does not resolve the declared name to the directory.
+        }
+        let captured = sources(&app.0).unwrap();
+        let names: Vec<_> = captured.keys().collect();
+        assert_eq!(
+            names.len(),
+            2,
+            "{on_disk:?} declared {declared:?}: {names:?}"
+        );
+        assert!(captured.contains_key(std::path::Path::new("sibling/kept.json")));
+    }
 }
 
 /// A Cargo bake reruns on each package's installed paths and on each
@@ -372,7 +434,7 @@ fn a_linked_module_leaves_its_bytecode_to_the_link() {
     );
 }
 
-/// The one direct dependency whose `exact.json`, at its root,
+/// LLP 1154 D3: the one direct dependency whose `exact.json`, at its root,
 /// declares `native` fills the slot, whatever its `exports` "." names (here
 /// its TypeScript driver). On a native platform `module.rs` joins its shim
 /// by an absolute `#[path]` and writes the factory; the web gets neither; a

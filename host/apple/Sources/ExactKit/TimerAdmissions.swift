@@ -1,4 +1,4 @@
-// Observations for timer admission, sampled after every applied batch.
+// Observations for timer admission, sampled after every applied batch (LLP 1147).
 #if canImport(UIKit)
 import UIKit
 #else
@@ -121,7 +121,7 @@ final class TimerAdmissions {
             #if canImport(UIKit)
             let scroll = node.scrollView
             let held = scroll?.gestureRecognizers?.contains { ($0 as? TimerScrollTouch)?.held == true } == true
-            return held || scroll?.isTracking == true || scroll?.isDragging == true || scroll?.isDecelerating == true || node.scrollEnd?.owed == true
+            return held || scroll?.isTracking == true || scroll?.isDragging == true || scroll?.isDecelerating == true || node.scrollEnd?.live == true || node.scrollEnd?.owed == true
             #else
             return node.scrollEnd?.live == true || node.scrollEnd?.owed == true
             #endif

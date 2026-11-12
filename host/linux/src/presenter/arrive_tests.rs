@@ -1,4 +1,5 @@
-//! The focus follows the route on the painted hosts: the cases the web's rule is held by in Chrome
+//! The focus follows the route on the painted hosts (LLP 1115.000 D4.2,
+//! ruling 5): the cases the web's rule is held by in Chrome
 //! (`host/web/tests/route-focus.test.mjs`), over this presenter. A pointer's
 //! push and a key's, Back to the pressed control, a route with no heading,
 //! a focus the commit set, a route with no press, a press too old to explain
@@ -285,6 +286,73 @@ fn another_tabs_stack_is_no_arrival() {
     assert_eq!(focused(&p), "tab-other", "the focus stays on its tab");
     click(&mut p, "tab-home");
     assert_eq!(focused(&p), "tab-home");
+}
+
+#[test]
+fn a_modal_route_blocks_the_tab_bar_until_dismissed() {
+    for presentation in ["modal", "fullscreen", "push"] {
+        let source = APP.replace(
+            "testId=\"route-detail\"",
+            &format!("testId=\"route-detail\" navigationPresentation=\"{presentation}\""),
+        );
+        let mut p = boot_source(&source);
+        click(&mut p, "open");
+        let tab = id(&p, "tab-other");
+        let modal = presentation != "push";
+        click(&mut p, "tab-other");
+        assert_eq!(
+            p.host
+                .kernel()
+                .node(tab)
+                .unwrap()
+                .props
+                .bool(PropId::AccessibilitySelected),
+            Some(!modal),
+            "{presentation}: only a pushed page permits switching tabs"
+        );
+        if !modal {
+            click(&mut p, "tab-home");
+        }
+        for name in ["tabs", "tab-home", "tab-other"] {
+            assert_eq!(p.host.route_visibility(id(&p, name)), (false, modal));
+        }
+        if modal {
+            assert!(p.tap(tab).unwrap_err().contains("inert"));
+        }
+        let (x, y, w, h) = p.rect_of(tab).unwrap();
+        assert_eq!(p.hit(x + w / 2., y + h / 2.) == Some(tab), !modal);
+        click(&mut p, "back");
+        assert_eq!(p.host.route_visibility(tab), (false, false));
+        click(&mut p, "tab-other");
+        assert_eq!(
+            p.host
+                .kernel()
+                .node(tab)
+                .unwrap()
+                .props
+                .bool(PropId::AccessibilitySelected),
+            Some(true),
+            "{presentation}: dismissing the route restores tab presses"
+        );
+    }
+}
+
+#[test]
+fn a_tablist_no_longer_owned_by_a_navigation_root_is_released() {
+    let source = APP
+        .replace("  state note", "  state tabs = true\n  state note")
+        .replace("    nav = replace(nav, url)", "    tabs = false")
+        .replace("role=\"tablist\"", "role=(tabs ? \"tablist\" : \"group\")")
+        .replace(
+            "testId=\"route-detail\"",
+            "testId=\"route-detail\" navigationPresentation=\"modal\"",
+        );
+    let mut p = boot_source(&source);
+    click(&mut p, "open");
+    let tabs = id(&p, "tabs");
+    assert_eq!(p.host.route_visibility(tabs), (false, true));
+    click(&mut p, "swap");
+    assert_eq!(p.host.route_visibility(tabs), (false, false));
 }
 
 #[test]

@@ -2,7 +2,7 @@ import Foundation
 import QuartzCore
 import CExact
 
-/// The card's reader. It samples on the collector's own publications,
+/// The card's reader (LLP 1079.000 §5.3, §7.2). It samples on the collector's own publications,
 /// at most twice a second, keeps at most 60 samples over 30 seconds and takes the per-read maxima,
 /// which no other reader does. It reads nothing while the card is hidden.
 final class FrameHealthCardReader {
@@ -65,7 +65,7 @@ final class FrameHealthCardReader {
     }
 
     /// Counts a window adds from its samples. Thirty seconds of them fit 32 bits, which keeps the
-    /// card within its memory budget; only the time observed needs 64.
+    /// card within its memory budget (LLP 1079.000 §5.2); only the time observed needs 64.
     struct Counts {
         var activeNs: UInt64 = 0
         var frames: UInt32 = 0, callbacks: UInt32 = 0, held: UInt32 = 0, changes: UInt32 = 0, epochs: UInt32 = 0
@@ -177,12 +177,12 @@ final class FrameHealthCardReader {
     }
 }
 
-/// The card's figures, words and the text Share sends, common to iOS and macOS. In numbers:
-/// no space before a unit, no "<", "average" or middots, and "—" where there is no value.
+/// The card's figures, words and the text Share sends, common to iOS and macOS. Numbers follow LLP 1079.000
+/// §7.2: no space before a unit, no "<", "average" or middots, and "—" where there is no value.
 enum FrameHealthCardText {
     struct Display { var name: String, detail: String, maximumHz: Double, adaptiveSync: Bool }
 
-    /// What the face measures.
+    /// What the face measures (LLP 1079.000 §7.2, §7.4).
     enum Source: Equatable {
         /// Exact's frame callbacks, under the rate Exact requested and the schedule the system gave them
         case exact
@@ -363,7 +363,7 @@ enum FrameHealthCardText {
                         source: Source = .exact, paused: Bool, health: FrameHealth) -> Summary {
         let windows = [(0.5, reader.window(0.5)), (5, reader.window(5)), (30, reader.window(30))]
             .map { (window($0.1, nominal: $0.0, source: source).lowercased(), $0.1) }
-        let figures = windows.map { figures($0.1, rates: rates, adaptiveSync: display.adaptiveSync, source: source, count: { String($0) }) }
+        let windowFigures = windows.map { figures($0.1, rates: rates, adaptiveSync: display.adaptiveSync, source: source, count: { String($0) }) }
         let (verdict, detail) = pacing(windows[1].1, rates: rates, adaptiveSync: display.adaptiveSync, source: source, count: { String($0) })
         let requested = rates.requestedHz > 0
             ? "Requested rate: \(Int(rates.requestedHz.rounded())) FPS" + (rates.limited ? ", limited by the system to \(Int(rates.scheduleHz.rounded())) FPS" : "")
@@ -376,7 +376,7 @@ enum FrameHealthCardText {
                 caption(rates, source: source, varied: windows[2].1.counts.epochs > 0),
                 (source.screen ? "Main thread" : "Pacing") + " (\(windows[1].0)): " + [verdict, detail].filter { !$0.isEmpty }.joined(separator: "; ")],
             figures: rows(source).map { name, key in
-                let values = zip(figures, windows).filter { $0.0[keyPath: key] != "—" }.map { "\($0.0[keyPath: key]) (\($0.1.0))" }
+                let values = zip(windowFigures, windows).filter { $0.0[keyPath: key] != "—" }.map { "\($0.0[keyPath: key]) (\($0.1.0))" }
                 return "\(name): " + (values.isEmpty ? "—" : values.joined(separator: ", "))
             },
             results: results(reader: clock ?? reader, health: health, screen: source.screen),

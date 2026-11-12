@@ -1,10 +1,10 @@
-// app-owned browser storage, installed after first pixel.
+// @ref LLP 1027 D10 — app-owned browser storage, installed after first pixel.
 // Each operation is one IndexedDB transaction: readers never see partial writes,
 // and directory moves/removals cannot race another tab's filesystem operation.
 // Modification times come from the platform's clock, captured when this
 // module evaluates: a realm that later refuses ambient time to app code (the
-// module Worker) still stamps files with the real one.
-import { agentStorageRefusal, directories as roots, now, storageKey } from './storage-environment.js';
+// module Worker, LLP 1027.002 D2) still stamps files with the real one.
+import { agentStorageRefusal, directories as roots, fileVersion, now, storageKey } from './storage-environment.js';
 import { coversPath } from './grant-admission.js';
 const rootPaths = Object.values(roots);
 // Calls from one host module retain invocation order. Web Locks queue
@@ -40,8 +40,8 @@ export function authorize(grants, operation, path) {
   throw error;
 }
 
-/** A path refusal names the path and the grant lines that would admit it (a bare `denied: sqlite.open` would leave
- * the reader guessing which file it wanted). As js/src/prelude.js says it natively. */
+/** A path refusal names the path and the grant lines that would admit it (app farm round 2: a bare
+ * `denied: sqlite.open` left builds guessing which per-persona file it wanted). As js/src/prelude.js says it natively. */
 export function deniedPath(operation, path) {
   const dir = path.slice(0, path.lastIndexOf('/'));
   const directory = /^[a-z]+:\/[^/]/.test(dir) ? `, or \`${operation} ${dir}\` for every file there` : '';
@@ -182,7 +182,10 @@ export function createFileStore(appId) {
         const values = requests.flatMap(request => request.result ?? []);
         const records = new Map(values.map(value => [value.path, value]));
         const changes = {
-          put(value) { records.set(value.path, value); store.put(value); },
+          put(value) {
+            if (value.kind === 'file') value = { ...value, version: fileVersion() };
+            records.set(value.path, value); store.put(value);
+          },
           remove(path) { records.delete(path); store.delete(path); },
           touch(path) { const value = directory(records, path); this.put({ ...value, modifiedMs: now() }); },
         };
@@ -203,10 +206,14 @@ export function createFileStore(appId) {
       if (previous && previous.kind !== 'file') throw failure('write needs a regular file', 'EISDIR');
       let contents = copied;
       if (append && previous) {
-        const joined = new Uint8Array(previous.contents.byteLength + copied.byteLength);
-        joined.set(new Uint8Array(previous.contents));
-        joined.set(new Uint8Array(copied), previous.contents.byteLength);
-        contents = joined.buffer;
+        if (previous.contents instanceof Blob) {
+          contents = new Blob([previous.contents, copied], { type: previous.contents.type });
+        } else {
+          const joined = new Uint8Array(previous.contents.byteLength + copied.byteLength);
+          joined.set(new Uint8Array(previous.contents));
+          joined.set(new Uint8Array(copied), previous.contents.byteLength);
+          contents = joined.buffer;
+        }
       }
       changes.put({ path, kind: 'file', contents, modifiedMs: now() });
       if (!previous) changes.touch(parentOf(path));
@@ -217,21 +224,24 @@ export function createFileStore(appId) {
     async readFile(path) {
       path = normalizePath(path);
       // IndexedDB already returns an independent structured clone for this read.
-      // A picked file's entry holds the browser's own File.
+      // A picked file's entry holds the browser's own File (LLP 1069.002 D5).
       const contents = await run(false, records => file(records, path).contents, path);
       return contents instanceof Blob ? contents.arrayBuffer() : contents;
     },
-    // Trusted host only: a file as a Blob, for an `image` or `video` source,
-    // and when it last changed. A picked entry is its File.
+    // Trusted host only: a file as a Blob, for an `image` or `video` source
+    // (LLP 1069.002 D7), its modification time and its version. A picked entry is its File.
     async blob(path, type, maxBytes = Infinity, label = 'compressImage') {
       path = normalizePath(path);
-      const { contents, modifiedMs } = await run(false, records => file(records, path), path);
+      const { contents, modifiedMs, version } = await run(false, records => file(records, path), path);
       const size = contents.byteLength ?? contents.size;
       if (size > maxBytes) throw failure(`${label}: too-large: ${size} bytes is over ${maxBytes}`, 'too-large');
-      return { blob: contents instanceof Blob ? contents : new Blob([contents], { type }), modifiedMs };
+      // A stored Blob with no type (an `exactBodyTo` reply's) takes the caller's, as bytes do.
+      const blob = !(contents instanceof Blob) ? new Blob([contents], { type })
+        : contents.type || !type ? contents : contents.slice(0, contents.size, type);
+      return { blob, modifiedMs, version };
     },
     // Trusted host only: a picked file's entry, backed by the browser's File
-    // rather than bytes read into memory.
+    // rather than bytes read into memory (LLP 1069.002 D5).
     putBlob(path, blob) {
       path = normalizePath(path);
       requireBelowRoot(path);
@@ -328,7 +338,9 @@ export function createFileStore(appId) {
         directory(records, parentOf(to));
         if (from === to) throw failure('copy requires distinct regular files');
         if (records.has(to)) file(records, to);
-        changes.put({ path: to, kind: 'file', contents: source.contents.slice(0), modifiedMs: now() });
+        // `Blob.slice` with no type gives an untyped Blob: a picked file's copy keeps its type, as an append does.
+        const { contents } = source;
+        changes.put({ path: to, kind: 'file', contents: contents instanceof Blob ? contents.slice(0, contents.size, contents.type) : contents.slice(0), modifiedMs: now() });
         changes.touch(parentOf(to));
       }, [from, to, parentOf(to)]);
     },
@@ -386,15 +398,15 @@ export function createFileSystem(appId, grants, timers = ownTimers) {
   }
   // `copyFile` from a document the person chose (documents-glue.js
   // `copyFile`): `to` is admitted before `open` gives the document's File,
-  // which becomes the file's contents, as a picked file's does.
+  // which becomes the file's contents, as a picked file's does (LLP 1069.002 D5).
   fs.copyIn = async (to, open) => {
     to = authorize(grants, 'fs.write', to);
     requireBelowRoot(to);
     const file = await open();
     return mutate([to], () => store.putBlob(to, file));
   };
-  // `compressImage(from, to, {maxDimension, maxBytes, type, rotate, flip, crop})`:
-  // both grants are checked and the
+  // `compressImage(from, to, {maxDimension, maxBytes, type, rotate, flip, crop})`
+  // (LLP 1069.002 A1, LLP 1133.019 D15): both grants are checked and the
   // options too before anything is read; the codec runs outside the mutation
   // lock, and only the write takes it.
   fs.compressImage = async (from, to, options) => {
@@ -414,7 +426,7 @@ export function createFileSystem(appId, grants, timers = ownTimers) {
     await mutate([to], () => store.atomicWriteOwnedFile(to, out.bytes));
     return { path: to, type, size, width: out.width, height: out.height };
   };
-  // `transformImage(from, to, options)`, as `compressImage`
+  // `transformImage(from, to, options)` (LLP 1133.019 D14), as `compressImage`
   // is run; a `to` with no extension gains the written type's, under its grant.
   fs.transformImage = async (from, to, options) => {
     if (typeof from !== 'string' || typeof to !== 'string' || !from.startsWith('app:/') || !to.startsWith('app:/'))
@@ -434,10 +446,10 @@ export function createFileSystem(appId, grants, timers = ownTimers) {
   return Object.freeze(fs);
 }
 
-/** `fetch(url, {exactBodyFrom})`: the app file at `path` as
+/** `fetch(url, {exactBodyFrom})` (LLP 1108 D6 R2): the app file at `path` as
  * a request body, read by the host that sends it, under `fs.read`, at most
  * 64 MiB. A Blob, never bytes handed to app code: a picked file's entry is
- * its own `File`, sliced with no type so the browser adds
+ * its own `File` (LLP 1069.002 D5), sliced with no type so the browser adds
  * no Content-Type (the author's header is the only one); a byte entry is the
  * record IndexedDB already read, wrapped. Every refusal names the path and
  * why, as the native executor's does. Trusted host only. */
@@ -462,7 +474,7 @@ export async function requestBody(appId, grants, path) {
   } finally { store.close(); }
 }
 
-/** `fetch(url, {exactBodyTo})` (2026-10-26): the app file a
+/** `fetch(url, {exactBodyTo})` (LLP 1108 D6 R2, 2026-10-26): the app file a
  * 2xx reply's body becomes, admitted under `fs.write` with its parent folder
  * checked before the request is sent. `put` counts the body through a stream
  * into a Blob the browser holds (never bytes in the module), refused past its

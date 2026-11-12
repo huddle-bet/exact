@@ -1,4 +1,4 @@
-//! A table laid out as a grid: cells placed by HTML's
+//! A table laid out as a grid (LLP 1153 D7.3): cells placed by HTML's
 //! table-forming algorithm, `auto` columns, the table as wide as its
 //! columns, and HTML's UA spacing (`border-spacing: 2px`, a cell's `padding:
 //! 1px`). Each cell here holds a sized box, so no text is measured; the
@@ -363,7 +363,7 @@ fn a_hidden_row_leaves_the_grid_and_comes_back() {
 
 /// The distance of the kernel's columns from Chrome's, which conformance
 /// measured on the fixture `table-widths` (Chrome 156, 2026-10-30), to the
-/// hundredth of a pixel: what the declared deviation is.
+/// hundredth of a pixel: what the declared deviation is (LLP 1153 D7.3).
 fn from_chrome(grid: [f32; 2], chrome: [f32; 2]) -> [f32; 2] {
     [0, 1].map(|i| ((grid[i] - chrome[i]) * 100.0).round() / 100.0)
 }
@@ -1158,4 +1158,26 @@ fn the_grid_reports_each_items_area_and_places_it_as_before() {
     );
     assert_eq!(origin(absolute), Some((3.0, 3.0)), "its area's");
     assert_eq!(origin(grid), None, "no grid placed the grid");
+}
+
+/// A table's rows past the 10,000 tracks the engine allows an authored grid
+/// follow each other, 14 apart (a 12 tall row and 2 of spacing), as Chrome
+/// 156 lays out 10,010 `tr > td > div` rows: row 10,000 at y 140,002, row
+/// 10,009 at 140,128, the table 140,142 tall.
+#[test]
+fn a_tables_rows_past_ten_thousand_follow_each_other() {
+    let row = || tag("tr", vec![cell(&[], 20.0, 10.0)]);
+    let k = lay_out(tag("table", (0..10_010).map(|_| row()).collect()));
+    // 2 table; row i is 3 + 3i (tr, td, box).
+    let row_y = |i: u32| frame(&k, 3 + 3 * i)[1];
+    for (i, y) in [
+        (9_998, 139_974.0),
+        (9_999, 139_988.0),
+        (10_000, 140_002.0),
+        (10_001, 140_016.0),
+        (10_009, 140_128.0),
+    ] {
+        assert_eq!(row_y(i), y, "row {i}");
+    }
+    assert_eq!(frame(&k, 2)[3], 140_142.0, "the table's height");
 }

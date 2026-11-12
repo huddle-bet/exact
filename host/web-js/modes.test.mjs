@@ -60,7 +60,7 @@ test('a boundary takes its tuple and the inherited token text, in document order
   expect(T(pinned, 'color', 'var(--x-text-secondary)')).toEqual({ names: ['text.secondary'], text: 'var(--x-text-secondary)', modes: 'dark-style=dim,ink=tint', implied: true });
   expect(T(page, 'color', 'var(--x-text-secondary)').implied).toBe(false);
   expect(T(page, 'color', '#123456')).toBeUndefined();
-  // A role's override is named too (a held row that reads it names it); a host's own property is not.
+  // A role's override is named too (stage 9 E: a held row that reads it names it); a host's own property is not.
   expect(T(page, 'color', 'var(--exact-canvas-text)').names).toEqual(['CanvasText']);
   expect(T(page, 'color', 'var(--exact-accent)')).toBeUndefined();
   // Off a boundary a clear is written as itself.
@@ -82,7 +82,7 @@ test('a boundary takes its tuple and the inherited token text, in document order
   expect(journal.at(-1)).toBe('setMode("dark-style", "grey") refused: an axis of the app\'s design and one of its values');
 });
 
-// A development build's live batch sets each changed
+// LLP 1121 stage 4: a development build's live batch sets each changed
 // token's property in every tuple's rule, on its base only.
 test('a live batch sets each tuple rule on its base, and a stale one asks for the snapshot', async () => {
   const document = createDocument();
@@ -107,7 +107,7 @@ test('a live batch sets each tuple rule on its base, and a stale one asks for th
   expect(design(batch).live).toBe('stale');
   expect(design({ ...batch, kind: 'tamber-snapshot', base: null, design: 'd2', tokens: [{ ...batch.tokens[0], css: ['#000000ff', '#111111ff'] }] }).live).toBe('applied');
   expect(dim.style.map.get('--x-ink')).toBe('#111111ff');
-  // A scrub's frames: each applies with transitions off, and
+  // A scrub's frames (LLP 1121 D13): each applies with transitions off, and
   // one older than the last of its scrub applied (a snapshot fetched late)
   // is dropped.
   const frame = (design, rev, css, more = {}) => ({ ...batch, base: null, kind: 'tamber-snapshot', design, scrub: { id: 'scrub-1', rev }, tokens: [{ ...batch.tokens[0], css }], ...more });
@@ -133,7 +133,7 @@ test('a live batch sets each tuple rule on its base, and a stale one asks for th
   expect(dim.style.map.get('--x-ink')).toBe('#ddddddff');
 });
 
-// A type token is a property a row it writes; a
+// Stage 6 C's follow-up: a type token is a property a row it writes; a
 // batch sets each of its `parts` in every tuple's rule.
 test('a live batch sets each part of a type token', async () => {
   const document = createDocument();
@@ -150,7 +150,7 @@ test('a live batch sets each part of a type token', async () => {
   expect(compact.style.map.get('--x-type-a-weight')).toBe('700');
 });
 
-// A role override's property is set in each tuple's rule,
+// LLP 1121 stage 5: a role override's property is set in each tuple's rule,
 // and the tint's (`root`) in the theme's own `:root` rule alone, so a tuple
 // rule on a boundary does not mask an authored accent above it.
 test('a live batch sets a role override, the tint in the theme rule', async () => {
@@ -187,6 +187,32 @@ test('a development build with no axes puts its boundaries in the empty tuple', 
   for (const f of After) f();
   expect(document.documentElement.getAttribute('data-x-modes')).toBe('');
   expect(b.getAttribute('data-x-modes')).toBe('');
+});
+
+// A boundary that writes the colour around it again names the state looks
+// whose colour reaches it (`data-x-lc`): those up to and with the nearest
+// element that sets the colour. One that sets its own, or writes nothing
+// again, names none.
+test('a boundary names the looks whose colour reaches it', async () => {
+  const document = createDocument();
+  Object.assign(globalThis, { document, __exactRender: true });
+  const { modes } = await import('./modes.js');
+  const el = (parent, cls, attrs = {}) => { const e = document.createElement('div'); if (cls) e.setAttribute('class', cls); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.append(e); return e; };
+  const root = document.getElementById('exact-root');
+  const page = el(root, 'c1', { 'data-exact-looks': '3' });
+  const link = el(page, '', { 'data-exact-looks': '1' });
+  const below = el(link, 'c2', { 'data-x-b': '0' });
+  const own = el(link, 'c3', { 'data-x-b': '1' });
+  const writer = el(link, 'c1', { 'data-exact-looks': '2' });
+  const inWriter = el(writer, 'c2', { 'data-x-b': '0' });
+  const plain = el(root, '');
+  const untinted = el(plain, 'c2', { 'data-x-b': '0' });
+  modes([], { c1: { 0: 0 }, c3: { 0: -1 } }, ['color:var(--x-ink)'], {}, [], { '--x-ink': 'ink' });
+  for (const f of After) f();
+  expect(below.getAttribute('data-x-lc')).toBe('1 3');
+  expect(inWriter.getAttribute('data-x-lc')).toBe('2');
+  expect(own.getAttribute('data-x-lc')).toBeNull();
+  expect(untinted.getAttribute('data-x-lc')).toBeNull();
 });
 
 // A dev reload's checkpoint carries the window's modes: each axis the

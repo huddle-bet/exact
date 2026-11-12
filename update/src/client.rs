@@ -1,6 +1,6 @@
 //! The store as a host runs it: opened from what the bake wrote, selecting
 //! at launch, counting the boot, checking after first pixel, and answering
-//! the app.
+//! the app (LLP 1026 D9/D11/D12; LLP 1030 D7; 1030.000 §4 stage 4).
 //!
 //! Everything a host would otherwise write twice is here — the Apple and
 //! Linux hosts wrap a [`Client`] in their own lock and thread and hand it
@@ -23,7 +23,7 @@
 use crate::binary::{Activate, Baked};
 use crate::envelope::sha256_hex;
 use crate::store::{
-    Check, Generation, PreparedSelection, Selection, SelectionRefusal, Status, Store,
+    Check, EmbeddedAsset, Generation, PreparedSelection, Selection, SelectionRefusal, Status, Store,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -63,8 +63,8 @@ pub struct Client {
     baked: Baked,
     head_url: Option<String>,
     assets_root: PathBuf,
-    /// Embedded asset digests by name, hashed the first time a check asks.
-    digests: HashMap<String, Option<String>>,
+    /// Embedded assets by name, hashed the first time a check asks.
+    embedded: HashMap<String, Option<EmbeddedAsset>>,
     /// Whether the selection at open is what booted (a plan the host was
     /// handed — `EXACT_PLAN`, the dev loop — boots instead and is nobody's
     /// to count).
@@ -79,7 +79,7 @@ pub struct CheckRequest {
     store: Store,
     head: String,
     assets_root: PathBuf,
-    digests: HashMap<String, Option<String>>,
+    embedded: HashMap<String, Option<EmbeddedAsset>>,
 }
 
 /// A finished download, ready to revalidate against the live client record.
@@ -88,7 +88,7 @@ pub struct DownloadedCheck {
     dir: PathBuf,
     head: String,
     envelope: Result<crate::Envelope, String>,
-    digests: HashMap<String, Option<String>>,
+    embedded: HashMap<String, Option<EmbeddedAsset>>,
 }
 
 impl CheckRequest {
@@ -104,9 +104,9 @@ impl CheckRequest {
         fetch: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>,
     ) -> DownloadedCheck {
         let mut embedded = |name: &str| {
-            self.digests
+            self.embedded
                 .entry(name.to_string())
-                .or_insert_with(|| embedded_asset_digest(&self.assets_root, name))
+                .or_insert_with(|| embedded_asset(&self.assets_root, name))
                 .clone()
         };
         let envelope = self.store.download(&self.head, fetch, &mut embedded);
@@ -114,7 +114,7 @@ impl CheckRequest {
             dir: self.store.dir().to_path_buf(),
             head: self.head,
             envelope,
-            digests: self.digests,
+            embedded: self.embedded,
         }
     }
 }
@@ -124,10 +124,11 @@ impl Client {
     /// given, under `base` — the platform's data directory — at
     /// `<base>/exact/<app id>/update`, subject to the dev overrides above.
     /// `assets_root` is where the binary's own assets live by name (the
-    /// bundle, `EXACT_ASSETS`). Refused when the file names no cohort, or
-    /// when it says this binary links no store (`store.L` of `0`).
+    /// bundle, `EXACT_ASSETS`). Refused when the file names no cohort, when
+    /// it says this binary links no store (`store.L` of `0`), or when there
+    /// is no `base` and no override names a directory.
     pub fn open(
-        base: &Path,
+        base: Option<&Path>,
         assets_root: &Path,
         compat: &str,
         plan: &[u8],
@@ -135,7 +136,7 @@ impl Client {
         let origin = std::env::var("EXACT_UPDATE_ORIGIN")
             .ok()
             .filter(|s| !s.is_empty());
-        Client::open_at(base, assets_root, compat, plan, origin.as_deref())
+        Client::open_in(base, assets_root, compat, plan, origin.as_deref())
     }
 
     /// [`Client::open`] with the `EXACT_UPDATE_ORIGIN` override given, not
@@ -147,11 +148,21 @@ impl Client {
         plan: &[u8],
         origin: Option<&str>,
     ) -> Result<Client, String> {
+        Client::open_in(Some(base), assets_root, compat, plan, origin)
+    }
+
+    fn open_in(
+        base: Option<&Path>,
+        assets_root: &Path,
+        compat: &str,
+        plan: &[u8],
+        origin: Option<&str>,
+    ) -> Result<Client, String> {
         let baked = Baked::from_compat(compat, plan)?;
         if !baked.store_linked {
             return Err("this binary links no update store (L = 0)".into());
         }
-        let dir = store_dir(base, &baked.embedded.app_id);
+        let dir = store_dir(base, &baked.embedded.app_id)?;
         let mut store = Store::open(&dir, baked.embedded.clone())?;
         store.hold_staged(baked.activate == Activate::AppDecides);
         let head_url = baked.head_url(origin);
@@ -160,7 +171,7 @@ impl Client {
             baked,
             head_url,
             assets_root: assets_root.to_path_buf(),
-            digests: HashMap::new(),
+            embedded: HashMap::new(),
             booted_selection: false,
             started: false,
             succeeded: false,
@@ -231,7 +242,7 @@ impl Client {
         out
     }
 
-    /// The selection is booting: count it, once per process.
+    /// The selection is booting: count it (LLP 1026 D11), once per process.
     pub fn boot_started(&mut self) -> Result<(), String> {
         if self.started {
             return Ok(());
@@ -267,7 +278,7 @@ impl Client {
         self.store.refuse_prepared(generation, why)
     }
 
-    /// First pixel: the selection that booted is good, once
+    /// First pixel: the selection that booted is good (LLP 1026 D11), once
     /// per process, and only when the selection is what booted.
     pub fn boot_succeeded(&mut self, generation: &Generation) -> Result<(), String> {
         if self.succeeded || !self.booted_selection || *generation != self.store.generation() {
@@ -297,7 +308,7 @@ impl Client {
             store: self.store.check_snapshot(),
             head,
             assets_root: self.assets_root.clone(),
-            digests: self.digests.clone(),
+            embedded: self.embedded.clone(),
         })
     }
 
@@ -307,12 +318,12 @@ impl Client {
         if downloaded.dir != self.dir() || self.head_url.as_deref() != Some(&downloaded.head) {
             return Outcome::Refused("the update client changed during its check".into());
         }
-        self.digests.extend(downloaded.digests);
+        self.embedded.extend(downloaded.embedded);
         let envelope = match downloaded.envelope {
             Ok(envelope) => envelope,
             Err(why) => return Outcome::Refused(why),
         };
-        let mut embedded = |name: &str| self.digests.get(name).cloned().flatten();
+        let mut embedded = |name: &str| self.embedded.get(name).cloned().flatten();
         match self
             .store
             .finish_check(envelope, &downloaded.head, &mut embedded)
@@ -351,25 +362,26 @@ impl Client {
 
 /// The store's directory: `EXACT_UPDATE_DIR`, else a fresh temporary
 /// directory under `EXACT_AGENT=1`, else `<base>/exact/<app id>/update`.
-fn store_dir(base: &Path, app_id: &str) -> PathBuf {
+fn store_dir(base: Option<&Path>, app_id: &str) -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("EXACT_UPDATE_DIR").filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir);
+        return Ok(PathBuf::from(dir));
     }
     if std::env::var_os("EXACT_AGENT").is_some() {
         let dir = std::env::temp_dir().join(format!("exact-update-agent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        return dir;
+        return Ok(dir);
     }
+    let base = base.ok_or("no data directory for the update store")?;
     let id = if app_id.is_empty() { "app" } else { app_id };
-    base.join("exact").join(id).join("update")
+    Ok(base.join("exact").join(id).join("update"))
 }
 
-/// The digest of the asset the binary embeds under `name`, or `None`. The
+/// The asset the binary embeds under `name`, hashed, or `None`. The
 /// name is the envelope's — `assets/mark.png`, `deck/index.html`,
 /// `shaders/glass.wgsl` — under the asset root; a `shaders/` name is also
 /// tried under `gpu/`, where the source tree keeps them when the root is
 /// the app directory rather than a bundle.
-fn embedded_asset_digest(root: &Path, name: &str) -> Option<String> {
+fn embedded_asset(root: &Path, name: &str) -> Option<EmbeddedAsset> {
     if crate::envelope::safe_name(name).is_err() {
         return None;
     }
@@ -377,10 +389,13 @@ fn embedded_asset_digest(root: &Path, name: &str) -> Option<String> {
     if name.starts_with("shaders/") {
         candidates.push(root.join("gpu").join(name));
     }
-    candidates
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
-        .map(|bytes| sha256_hex(&bytes))
+    candidates.into_iter().find_map(|path| {
+        let bytes = std::fs::read(&path).ok()?;
+        Some(EmbeddedAsset {
+            sha256: sha256_hex(&bytes),
+            path,
+        })
+    })
 }
 
 fn json_string(s: &str, out: &mut String) {
@@ -415,7 +430,10 @@ mod tests {
     const ORIGIN: &str = "https://o.example";
 
     #[test]
-    #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows durable store is not qualified (LLP 1026 D11a)"
+    )]
     fn a_client_opens_under_the_app_id_and_names_its_head() {
         let base = temp("open");
         let assets = temp("open-assets");
@@ -440,11 +458,14 @@ mod tests {
         c.boot_succeeded(&c.generation()).unwrap();
         assert_eq!(c.status().stream, "embedded");
         assert_eq!(
-            embedded_asset_digest(&assets, "assets/mark.png").as_deref(),
-            Some(sha256_hex(b"a mark").as_str())
+            embedded_asset(&assets, "assets/mark.png"),
+            Some(EmbeddedAsset {
+                sha256: sha256_hex(b"a mark"),
+                path: assets.join("assets/mark.png"),
+            })
         );
-        assert_eq!(embedded_asset_digest(&assets, "assets/none.png"), None);
-        assert_eq!(embedded_asset_digest(&assets, "../mark.png"), None);
+        assert_eq!(embedded_asset(&assets, "assets/none.png"), None);
+        assert_eq!(embedded_asset(&assets, "../mark.png"), None);
         // A check with no reachable origin is a refusal, never an error.
         let mut fetch = |url: &str| -> Result<Vec<u8>, String> { Err(format!("down: {url}")) };
         assert_eq!(
@@ -469,7 +490,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows durable store is not qualified (LLP 1026 D11a)"
+    )]
     fn a_download_cannot_overwrite_a_newer_check_or_concurrent_activation() {
         let base = temp("check-race");
         let mut client = Client::open_at(&base, &base, COMPAT, b"embedded", Some(ORIGIN)).unwrap();
@@ -525,7 +549,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+    fn no_data_directory_opens_no_store() {
+        let refused = Client::open_in(None, Path::new("."), COMPAT, b"", Some(ORIGIN)).unwrap_err();
+        assert_eq!(refused, "no data directory for the update store");
+    }
+
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows durable store is not qualified (LLP 1026 D11a)"
+    )]
     fn entry_refused_keeps_first_pixel_from_blessing_it() {
         let base = temp("refused");
         let mut c = Client::open_at(&base, &base, COMPAT, b"plan", Some(ORIGIN)).unwrap();

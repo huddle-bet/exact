@@ -1,4 +1,4 @@
-//! Keys and paste, and where they are routed.
+//! Keys and paste, routed as LLP 1101 D6 says.
 //!
 //! A key goes to the focused node's (or its nearest ancestor's) `key`
 //! handler first, with nothing focused to the root's (as the web's `window`
@@ -6,8 +6,10 @@
 //! called `preventDefault()`, a field edits, a dialog's Escape closes it,
 //! `aria-keyshortcuts` presses its node (without moving the focus), Tab and
 //! the arrows move the focus — or, with nothing focused, the arrows, Space,
-//! Home and End scroll, as a page's keys do — and Ctrl-C leaves — so an app that wants Ctrl-C (an agent interrupting
-//! a reply) claims it with `preventDefault()`.
+//! Home and End scroll, as a page's keys do. Ctrl-C leaves and Ctrl-Z
+//! suspends unless the app claims them with `preventDefault()`. Ctrl-\ leaves
+//! before any of this: no handler or shortcut can take it, so an app that
+//! claims every key still has one that ends it.
 
 use crate::host::{After, Host, Key};
 use exact_kernel::{PropId, ViewId};
@@ -119,7 +121,7 @@ impl<D: DataSource> Host<D> {
             }
             Key::Named(dir @ ("ArrowUp" | "ArrowDown")) if self.is_textarea(f) => {
                 // By visual line, keeping the column; at the first or last
-                // line the caret stays: the arrows never
+                // line the caret stays (LLP 1101.001 P15): the arrows never
                 // leave the field.
                 let up = *dir == "ArrowUp";
                 let width = self.cells_of(f).map_or(1, |r| r.w.max(1) as usize);
@@ -166,11 +168,14 @@ impl<D: DataSource> Host<D> {
 
     /// A key, routed as the module comment says.
     pub fn key(&mut self, key: Key) -> After {
+        if key == Key::Ctrl('\\') {
+            return After::Quit;
+        }
         self.advance_for_input();
         let chord = key.chord();
         // A focused control the screen has not shown yet (a dialog this
         // read opened) takes no typed-ahead key: not its handler, not its
-        // text, not its submit.
+        // text, not its submit (LLP 1101.002 §0 P1).
         let focus = self.focus.filter(|f| self.armed(*f));
         // The focused node's (or its nearest ancestor's) `key` handler
         // first; with nothing focused, the first root's.
@@ -217,12 +222,12 @@ impl<D: DataSource> Host<D> {
             return After::Continue;
         }
         match key {
-            // Ctrl-\ always leaves; Ctrl-C and Ctrl-D leave when nothing took them.
-            Key::Ctrl('\\') => return After::Quit,
+            // Ctrl-C and Ctrl-D leave when nothing took them.
             Key::Ctrl('c') | Key::Ctrl('d') => return After::Quit,
+            Key::Ctrl('z') => return After::Suspend,
             // With nothing focused the keys scroll, as a page's do on the
             // web; with a control focused the arrows move among controls
-            // (a terminal list's convention).
+            // (a terminal list's convention, LLP 1101 D6).
             Key::Named("ArrowDown") if self.focus.is_none() => self.scroll_rows(1),
             Key::Named("ArrowUp") if self.focus.is_none() => self.scroll_rows(-1),
             Key::Char(' ') if self.focus.is_none() => self.page(true),

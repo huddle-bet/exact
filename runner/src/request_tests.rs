@@ -115,7 +115,7 @@ fn a_body_to_a_file_is_an_http_reply_written_by_the_host() {
     assert_eq!(written.body_written(), Some(17));
 }
 
-/// What may change its server runs to its end once its
+/// LLP 1146 D2: what may change its server runs to its end once its
 /// answer is let go; what cannot (a safe method), or what is Exact's own
 /// work, a stream or a held request, does not.
 #[test]
@@ -142,4 +142,41 @@ fn a_request_has_effects_only_when_its_method_is_unsafe_over_http() {
     assert!(!with(|r| r.storage = Some(Vec::new())));
     assert!(!with(|r| r.surface = Request::capture_surface("x").surface));
     assert!(!Request::continuation(7).has_effects());
+}
+
+#[test]
+fn a_held_mark_does_not_remove_a_file_transfers_effects() {
+    let post = Request::post_json("https://example.test/x", "");
+    for request in [
+        post.clone().body_from("app:/data/a"),
+        post.clone().body_to("app:/data/b"),
+        post.body_from("app:/data/a").body_to("app:/data/b"),
+    ] {
+        assert!(request.has_effects());
+        let request = request.held();
+        assert!(!request.is_held());
+        assert!(request.has_effects(), "{request:?}");
+    }
+    assert!(!Request::get("https://example.test/x")
+        .body_to("app:/data/b")
+        .held()
+        .has_effects());
+}
+
+#[test]
+fn cache_mode_is_part_of_request_equality() {
+    let default = Request::get("https://example.test");
+    assert_ne!(default, default.clone().cache(super::CacheMode::Default));
+    for word in [
+        "no-store",
+        "reload",
+        "no-cache",
+        "force-cache",
+        "only-if-cached",
+    ] {
+        let mode = super::CacheMode::parse(Some(word)).unwrap();
+        assert_eq!(mode.name(), word);
+        assert_ne!(default, default.clone().cache(mode));
+    }
+    assert!(super::CacheMode::parse(Some("other")).is_err());
 }

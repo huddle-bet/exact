@@ -11,7 +11,7 @@ and no core crate depends on an `exact-game*` crate or Rapier. An app opts in by
 linking `exact-game` and `exact-game-render` into its **GPU module**, never its
 host or data module. The host loads that artifact after first paint when a canvas
 needs it. An app whose other screens draw too can give the world a module of its own
-(`gpu.modules` in `app.json`), loaded only when the world's canvas mounts.
+(`gpu.modules` in `app.json`, LLP 1009 D6), loaded only when the world's canvas mounts.
 Removing the app's game module removes the engine from its bundle.
 The root build, test and boot checks stay independent of the engine workspace.
 
@@ -88,8 +88,8 @@ then runs wasm-bindgen and swaps it into the page without `wasm-opt`. The first
 such edit compiles that profile's dependencies; later edits reuse them.
 To explore the existing sample instead, run `bun game/dev.mjs beacons`.
 `game/dev.mjs` passes the dev server's flags through (`--port`, `--lan`, and
-`--allow-host <name>`, repeatable, to serve the game through a tunnel;
-without it a request under any name but the printed ones gets 421).
+`--allow-host <name>`, repeatable, to serve the game through a tunnel such as
+`tuft host`; without it a request under any name but the printed ones gets 421).
 
 Once the game plays and its `proof.mjs` describes it, establish its proof baseline:
 
@@ -120,7 +120,7 @@ A game outside this checkout — `bun scripts/exact.mjs new ../my-game --game` m
 one, as `exact new` makes an app — also gets an app's `exact.mjs` and `AGENTS.md`:
 `bun exact.mjs test-rust` (the hostless tests), `web`, `web-build`, `test web`
 (each `*.test.contract`; also `macos`, `ios`), `agent`, `mac`, `ios`, `windows`, `contract`,
-`prove` and `feedback`, with the exact2 checkout named once.
+`prove` and `feedback`, with the exact2 checkout named once (LLP 1086).
 Generation resolves the generated workspace offline against the current SDK lock, so
 the first locked test and proof need no lock refresh. Generation writes only inside that game. A game is the files its author writes; bakes
 generate its hosts, Cargo workspace and lock, ignored, under `.shells/`.
@@ -169,7 +169,7 @@ implicitly. The registry has type `&'static [(&'static str, u64)]`, holding shad
 names and reflected interface hashes. The generated GPU shell combines these hooks
 with `game.audio` and `game.assets`. Never edit `.shells/` to install hooks. The
 older `game.presentation`/`presentation/`/`type` spelling is refused with this
-rename; "presentation" now names only derived appearance
+rename (LLP 1046.008 amendment); "presentation" now names only derived appearance
 state (`#[derive(Presentation)]`, `Game::present`).
 Render games also expose `exact-gpu.workspace = true` and
 `exact-gpu-reflect.workspace = true` (the latter as a build dependency). The bake
@@ -313,6 +313,28 @@ HUD children keep native resolution. Bind a `#[live]` argument through this meth
 for an app setting. This is the presented raster's size, and a look frame's; a
 fixture's or a readback's size is the one its caller asks for.
 
+`Game::render_scale` is read again at every frame, so a `#[live]` argument steps
+it while the world runs.
+
+`Game::render_idle(world, args)` lets a world that has come to rest stop
+drawing. Return true when nothing it shows is changing (the dice lie still). The
+canvas draws until both ticks it interpolates between are idle, then asks the
+host for no frame until input, a bind, an asset, a resize or a render hook's
+`Needs::ANIMATE` or `Needs::PENDING` wakes it; queued input and a pending hold or
+tap keep it drawing. The idle time never runs as ticks: the first frame after a
+wake advances one display period, and input that arrived meanwhile lands on its
+first tick. The agent's clock ignores it, so a seeked run ticks every
+millisecond as before. `Game::max_fps(world, args)` caps the drawn frames per
+second (0, the default, for the display's rate), changeable at any frame: 60 at
+rest, say, and 0 while the dice fly. The simulation still ticks at `HZ`; a render
+hook's `Hooks::max_fps` can cap lower (a budget or a thermal cap), and the lower
+non-zero cap stands. `Game::samples(args)` chooses scene sampling (by default
+`Game::SAMPLES`); a change makes the renderer again under the same world, as a
+"smooth edges" setting needs. None of the three is saved or hashed. The web, iOS,
+macOS and Android hosts rest and cap a canvas; the Linux and Windows desktop
+hosts draw a mounted world every display frame and take no cap
+([GPU module ABI](../gpu/README.md#frame-pacing-and-timing)).
+
 `Game::quality(args)` picks the renderer's rung of the quality ladder, read once,
 when the renderer is made, and never saved: the world hash is the same on every
 rung. The default `Quality::Auto` follows the device's GPU tier
@@ -328,7 +350,8 @@ module loads (`high` until then). A rung clamps only what the game left unsaid:
 | `Mid` (a recent phone or tablet) | `Game::SAMPLES` | 1 cascade | 0.75 | as `Water` says |
 | `High` (a computer; the agent's) | `Game::SAMPLES` | as `Shadows` says | 1 | as `Water` says |
 
-What the game says stands on every rung: an inserted `Shadows` resource, an
+What the game says stands on every rung: an inserted `Shadows` resource (but for
+its local lights' layer size, which `Low` caps at 1024² and `Mid` at 2048²), an
 inserted `AmbientOcclusion`, and any `render_scale` the game returns (the default,
 `AUTO_RENDER_SCALE`, leaves the scale to the rung). `Low` leaves out a `Water`'s
 caustics and shafts at present time (`Renderer::set_water_effects`): the saved
@@ -352,7 +375,7 @@ web leg reports as its result. The page waits at most a second for the install
 data, and goes, with the HUD's inertness, when its surface does. Any other GPU
 surface, a game's or an app's (a decorative backdrop, such as Caltrain's sky), shows
 no page: its content stays live over the empty canvas. No WebGL renderer
-exists.
+exists (LLP 1128 I6).
 
 After the first GPU build, the compiler and dev loop check surface names and
 arguments against the emitted `.shells/surfaces.json`, including hidden branches
@@ -383,10 +406,10 @@ device mid-hold neither presses again nor drops.
 | Task | Declare and read |
 |---|---|
 | A fire button, one shot per press | `.button("fire", &["KeyF", "MouseLeft", "GamepadR2"])` read with `input.pressed("fire")` |
-| Fire while held, and on a quick tap | `input.held("fire") \|\| input.pressed("fire")`: `held` alone misses a tap whose press and release share a tick |
+| Fire while held, and on a quick tap | `input.held("fire") \|\| input.pressed("fire")` (Rivals): `held` alone misses a tap whose press and release share a tick |
 | Move with keys, a stick or touch | `Stick::wasd().or_arrows().or_pad(Pad::Left).or_touch(Region::Left)`; `.dead_zone(0.15)` (radial, the default) and `.curve(Curve::Power(1.5))` shape the pad's reading (Beacons) |
 | Throttle and brake | `Stick::pad(Pad::Triggers)`: forward is `GamepadR2`'s travel less `GamepadL2`'s |
-| Move by tilting the device | `Stick::wasd().or_tilt(Tilt { max_degrees: 20.0, dead_zone: 2.0 })`, fed by the app's `startSensorInput(surface="world", sensor="gravity")`: full deflection at `max_degrees` from level, nothing within `dead_zone` degrees, nothing before the first sample or after the input ends (`exact_game::tilt_stick` is the map). Level is the first sample, or what the tick sets with `w.set_tilt_neutral("move", gravity)` from a posted reading, from the next tick (Beacons' `tilt x y z`) |
+| Move by tilting the device | `Stick::wasd().or_tilt(Tilt { max_degrees: 20.0, dead_zone: 2.0 })`, fed by the app's `startSensorInput(surface="world", sensor="gravity")` (LLP 1133.013 D6): full deflection at `max_degrees` from level, nothing within `dead_zone` degrees, nothing before the first sample or after the input ends (`exact_game::tilt_stick` is the map). Level is the first sample, or what the tick sets with `w.set_tilt_neutral("move", gravity)` from a posted reading, from the next tick (Beacons' `tilt x y z`) |
 | Read a sensor every frame | `input.sensor(SensorKind::Gyroscope)`, the latest sample, which holds through ticks that receive none and is gone after the input ends; `input.sensor_samples(kind)`, this tick's own samples, every one the host delivered |
 | Sprint after holding a key | `.hold("sprint", &["ShiftLeft", "GamepadL1"], 0.2)`: `pressed` when held 200 ms, `held` until release; a shorter press fires nothing (Beacons) |
 | A double tap | `.double("roll", &["Space"], 0.25)`: `pressed` on a second press within 250 ms |
@@ -424,6 +447,52 @@ pushed as far, the lower index); a button is down while any pad holds it. Per ho
 | Linux | evdev, at each report, stamped with the report's time moved into the host's clock by one origin per read and kept when that report moves the pads to a canvas, so readings buffered in one read keep their spacing and several pads' arrive in the order they happened (ties by index, then as read); in the kernel's gamepad layout (Xbox drivers' letters read as their positions); a pad's state is read when it opens and delivered ahead of the reports buffered since | pads present at launch only; every pad is reported standard |
 | Windows | XInput's four slots, every 8 ms while one is connected and every 250 ms otherwise, while the window has focus, and all four at once when it regains focus, so a pad unplugged meanwhile reads gone | `GamepadHome` is never down (XInput does not report the guide button); a reading is stamped at its poll |
 
+`input.pointer()` is one primary pointer: the first contact down, or the hovering
+mouse. For several fingers at once, `input.pointers()` is every contact down, sorted by
+id: each touch, and the mouse while a button is held (`PointerContact`: `id`,
+`position`, `press_origin`, `down`, `delta`). `input.pointer_events()` is this tick's
+contact edges in the order they happened (`PointerEdge`: `id`, `phase`, `position`,
+`world_us`): a `Down` where a contact began, an `Up` or `Cancel` where it ended. A move
+is not an edge. A down and up in one tick are two edges, and the contact stays in
+`pointers()` with `down: false` for that tick only. A blur cancels every contact. Input
+applied while the game is paused leaves no edge, so a finger lifted during a pause never
+reads as a tap; nor does an Up or a blur then, so a hold ends when its contact is no
+longer down in `pointers()`, not at an edge. A save holds the contacts down with their
+origins and no edges. Each finger holds the die under it:
+
+```rust
+use exact_game::*;
+#[derive(Clone, Default, Data)]
+struct Grab { finger: u64, die: Entity }
+#[derive(Default, Resource)]
+struct Grabs(Vec<Grab>);
+
+fn tick(w: &mut World, input: &Input, _: &()) {
+    for e in input.pointer_events() {
+        w.resource_mut::<Grabs>().0.retain(|g| g.finger != e.id);
+        if e.phase == PointerPhase::Down {
+            if let Some(die) = die_under(w, input.viewport(), e.position) {
+                w.resource_mut::<Grabs>().0.push(Grab { finger: e.id, die });
+            }
+        }
+    }
+    // A finger no longer down lets go, though it lifted during a pause.
+    let down = |id| input.pointers().iter().any(|p| p.id == id && p.down);
+    w.resource_mut::<Grabs>().0.retain(|g| down(g.finger));
+    let grabs = w.resource::<Grabs>().0.clone();
+    for p in input.pointers() {
+        if let Some(g) = grabs.iter().find(|g| g.finger == p.id) {
+            drag_to(w, g.die, input.viewport(), p.position);
+        }
+    }
+}
+// The game's own pick (a ray through the point) and drag.
+fn die_under(w: &World, viewport: Vec2, at: Vec2) -> Option<Entity> {
+    todo!()
+}
+fn drag_to(w: &mut World, die: Entity, viewport: Vec2, at: Vec2) {}
+```
+
 What is saved and what is hashed differ. A save holds the input queue and the keys,
 pads and contacts held, which the world hash leaves out. The world hash covers the world
 the input changed, plus resources that exist only once a game uses them:
@@ -454,9 +523,14 @@ nothing yet.
 | Fade a glowing mesh | Attach `Glow` to `Material::glow`; call `beacon.glow_to(1.0, 0.5)` once. The renderer samples at frame time. |
 | Fade a point light | Attach `Lit(Spring)` and call `lit.to(w.tick_end(), intensity)`. |
 | A flashlight | `SpotLight { inner, outer, range, intensity, .. }` along the entity's −Z; intensity in candela, as `PointLight`'s |
-| Shadows from a lamp | Add `LightShadows` to a `SpotLight` or `PointLight`; the renderer shadows the nearest few |
+| A lamp without distance falloff | `SpotLight { decay: 0., .. }` or a `PointLight`'s: only the range, cone and angle shape it (three.js `decay`; default 2, inverse-square) |
+| Shadows from a lamp | Add `LightShadows` to a `SpotLight` or `PointLight`; the renderer shadows the nearest few. `Shadows { local_resolution: 2048, local_filter, local_softness, .. }` sizes and filters every lamp's map |
 | A moon | A second `DirectionalLight` (in entity order) is an unshadowed fill |
 | Team colours, mutation looks | A `Material` on a model entity tints every node and adds emission; `NodeMaterials` per named node or `MaterialOverrides` per material (one model in every team's colours), written from `Game::present` ([team colour from a saved `Team`](render/tests/instances.rs): `p.insert(e, MaterialOverrides(vec![MaterialOverride { material: 0, color: Some(team_rgba), ..Default::default() }]))`) |
+| A skin or theme picked while playing | One model per shape, its textures per instance: `MaterialOverride { material: 0, textures: TextureSlots { base_color: Some("walnut.tex".into()), ..Default::default() }, ..Default::default() }` from `Game::present`; each instance keeps its old look until the new textures arrive ([surface test](render/src/surface_tests/cosmetics.rs)) |
+| A scrolling texture: a light running along a ribbon, flowing water | `MaterialOverride { material: 0, uv_offset: Some([head, 0.]), ..Default::default() }` from `Game::present` each frame; blended materials too, one draw, any period ([surface test](render/src/surface_tests/cosmetics.rs)) |
+| No growth or compile when the first pieces spawn | `const PREPARE: &'static [(&'static str, u32)] = &[("die.model", 16)];` sizes the instance and skin buffers before the first frame and prepares the listed models' pipelines in the frames after; `state.world.perf.pipelineMs` times pipeline creation ([surface test](render/src/surface_tests/prepare.rs)) |
+| A model generated when the player picks it | The tick writes `Mesh::asset("walnut-d6.model")`; `Game::present` calls `p.cosmetic_model(name, \|\| model)` for each name a `Mesh` shows. Never saved or hashed, freed when unshown; the entity draws its previous model until the new one can |
 | Cheaper far trees and crowds | `ModelLod { levels: vec![LodLevel { distance: 30., model: "tree_low.model".into() }], hide: Some(120.) }` on the entity |
 | Fade a tree between camera and player | `Opacity(0.3)` on the entity from `Game::present`: a dithered fade, no sorting, never in a save or pin |
 | A first-person weapon | Add `ViewModel` to each part; it draws in front of the world and casts no shadow |
@@ -469,6 +543,7 @@ nothing yet.
 | Turn the drawn camera between ticks | Put `MouseLook { yaw_per_point, pitch_per_point, pitch_limit }` on the camera at the rates the tick turns it by: the drawn camera and its children turn by `Sim::unshown_motion()`, so a turn shows at the next frame whatever the tick and display rates (`engine/tests/look.rs`). Presentation only; insert it in `setup` or register it. |
 | Right or middle mouse button | Bind it as a key: `.button("aim", &["MouseRight"])`; `MouseLeft` and `MouseMiddle` too (`MOUSE_BUTTONS`). Touch contacts press none. |
 | Start a selection rectangle | `input.pointer().and_then(\|p\| p.press_origin)` is the latest MouseLeft/touch Down point, even if movement and Up reach the same tick. Gate commands on your action's pressed/released edges. The origin survives normal Up and saves; Cancel, Blur or replacement clears it. |
+| Several fingers at once | `input.pointers()` (every contact down, by id) and `input.pointer_events()` (this tick's Down, Up and Cancel edges, in order); [Controls](#controls) has a multi-finger grab |
 
 `Character` saves velocity and configuration and reports displacement, grounded,
 jumped and landed. `near`/`near_xz` use current global poses, inclusive radii and
@@ -525,7 +600,7 @@ acknowledgement, and a delivered message is not part of a later save. Use live
 arguments for settings, messages for things that happen once. A paused world holds
 a message for its first tick after the pause.
 
-A message carries who posted it. One from a tool's commit, or
+A message carries who posted it (LLP 1133.022 D6). One from a tool's commit, or
 a wake's, arrives marked with that origin; the world keeps the least privileged
 origin it has heard until a fresh start (and saves it), and marks each string it
 `emit`s with it, so the `message=` handler runs as that origin and a tool cannot
@@ -553,7 +628,7 @@ See the [tick admission contract](engine/README.md#tick-admission).
 
 ## Proof pins
 
-`bun game/app/shells.mjs --test` checks each game's
+The async lane runs `bun game/app/shells.mjs --test`. It gates each game's
 hostless current-tick assertions: `Sim::assert_pin` compares only the tick the
 simulation has reached, not every checkpoint or any continuation-save digest.
 Later checkpoints not asserted by those tests and continuation saves remain the
@@ -846,9 +921,9 @@ The same driver reaches web, macOS, Linux and iOS. iOS agent input is
 labelled `recognized`; it is not physical-touch evidence. Pointer-completed HUD
 buttons return focus to the input canvas, while keyboard activation retains button
 focus and consumes its activation keys. Native hover/focus-visible parity remains
-open work.
+[open work](../QUEUE.md).
 
-## Determinism — the contract
+## Determinism — the contract (LLP 1046.001 D5)
 
 Same seed, tick-stamped inputs and completed tick must produce the same world hash
 on every host. Pixels have a tolerance; simulation state is exact.
@@ -877,7 +952,7 @@ their save rules. Settle does not pause time or force physics bodies asleep.
 See the [engine reference](engine/README.md) for those declarations and their limits.
 
 Parity evidence applies to exercised operations and hosts. [Bench receipts](bench/README.md)
-record measurements and remaining targets.
+and [authoring diaries](diaries/001-scores.md) record measurements and remaining targets.
 
 ## Exact2 integration
 
@@ -961,7 +1036,7 @@ Linux proofs use `gpu-dev` with separate completed host and GPU receipts;
 a logic-only edit can rebuild the GPU alone. Completed development receipts bind
 the whole file. `bun proof.mjs linux --build-only` builds this host/module pair.
 The generic `bun exact.mjs linux` verb builds only the host, under `host-dev`.
-The registry cache in `game/app/crates.mjs` is built but not enabled. Enabling it requires
+The registry cache in `game/app/crates.mjs` is built but not enabled. D2 requires
 three cold `gpu-dev` runs under load 5 with an eligible registry dependency
 chain over a quarter of the total before wiring it into `buildBake` or setup.
 See `game/bench/cold-build/README.md` for the measurement commands.
@@ -1066,7 +1141,8 @@ Layout, accessibility and ordinary controls stay with the app host. See
 | Rendering and effects | [render](render/README.md) |
 | Collision and sound | [physics](physics/README.md), [audio](audio/README.md) |
 | App adapters | [shell generation](app/shells.mjs) |
-| Measurements | [bench](bench/README.md) |
+| Measurements and history | [bench](bench/README.md), [diaries](diaries/README.md) |
+| Architecture | LLP 1046.003 (as built), LLP 1046.001 (the agent contract) |
 
 From `game/` (an unset `EXACT_UPDATE_TRUST` bakes development trust):
 

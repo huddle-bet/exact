@@ -1,6 +1,6 @@
-// Persisted state: `state … persist` kept in the page's
+// Persisted state (LLP 1116 D5): `state … persist` kept in the page's
 // `localStorage` under "exact.state.<name>" (a development build's own
-// prefix, rt.js `Kept`), as the runner keeps it
+// prefix, rt.js `Kept`, LLP 1116.004 D8), as the runner keeps it
 // (runner/src/runner/persist.rs): JSON text, a number as JSON's (non-finite
 // ones as "NaN", "Infinity", "-Infinity", -0 as `-0`), an option as `null`
 // or its value, a list as an array. Read as the slot is made, before the
@@ -16,7 +16,7 @@ const name = t => typeof t === 'string' ? { n: 'number', s: 'string', b: 'bool' 
 
 /** `v`, parsed JSON, as a value of type `t`; `undefined` when it is not one. */
 function revive(v, t) {
-  if (t === 'n') return typeof v === 'number' ? v : typeof v === 'string' && v in NONFINITE ? NONFINITE[v] : undefined;
+  if (t === 'n') return typeof v === 'number' ? v : typeof v === 'string' && Object.hasOwn(NONFINITE, v) ? NONFINITE[v] : undefined;
   if (t === 's') return typeof v === 'string' ? v : undefined;
   if (t === 'b') return typeof v === 'boolean' ? v : undefined;
   if (t[0] === '?') return v === null ? null : revive(v, t[1]);

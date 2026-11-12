@@ -1,4 +1,4 @@
-// Development previews and agent reads use the same
+// @ref LLP 1126 D14 — development previews and agent reads use the same
 // headless entry and snapshot view. The running app keeps its presenter.
 #if EXACT_WIDGET_GALLERY && (os(iOS) || os(macOS))
 import Foundation
@@ -104,10 +104,17 @@ final class WidgetPreview: ObservableObject {
             frozenDate: appSession.clock == nil ? nil : date)
     }
     deinit { session.close() }
+
+    /// The refresh here runs on an empty, disposable store and sends no
+    /// requests, so a widget that reads the app's saved data, or asks the
+    /// network, refreshes as if there were none. The extension reads both.
+    static let refreshWithoutStorage = "the gallery's refresh reads none of the app's saved data and sends no requests; on the Home Screen the extension's refresh reads both"
+    /// Whether a refresh made the props, and so ran without storage.
+    var refreshed: Bool { suppliedProps == nil }
 }
 
 /// WidgetKit's container is supplied by the system only in an extension.
-/// These are the same family dimensions and mode stand-ins as the widget baseline.
+/// These are the same family dimensions and mode stand-ins as WP4's baseline.
 /// The mode is also passed to the actual driver; archive parity is a separate test.
 @MainActor
 struct WidgetPreviewView: View {
@@ -142,7 +149,7 @@ private struct WidgetGalleryCell: View {
             Text("\(variant.family) · \(variant.mode) · \(variant.scheme) · \(variant.size)").font(.caption)
             if let preview {
                 WidgetPreviewView(preview: preview)
-                Text(preview.refresh == "timeline" ? "First timeline entry" : "Preview · \(preview.refresh)").font(.caption).foregroundStyle(.secondary)
+                Text((preview.refresh == "timeline" ? "First timeline entry" : "Preview · \(preview.refresh)") + " · no saved data or requests").font(.caption).foregroundStyle(.secondary)
             } else if let failure { Text(failure).foregroundStyle(.red) }
             else { ProgressView() }
         }
@@ -154,7 +161,7 @@ private struct WidgetGalleryCell: View {
     }
 }
 
-/// A Live Activity entry: its kind and preview state,
+/// A Live Activity entry (LLP 1126.001 WP10): its kind and preview state,
 /// from the bake's `plans/activities.json`.
 struct ActivityEntry {
     let kind: String
@@ -514,6 +521,7 @@ enum WidgetGallery {
                 }
                 let preview = agent.widgetPreview!
                 var result: [String: Any] = ["widget": ["entry": variant.entry, "family": variant.family, "mode": variant.mode, "scheme": variant.scheme, "size": variant.size]]
+                if preview.refreshed { result["storage"] = WidgetPreview.refreshWithoutStorage }
                 switch op {
                 case "tree":
                     let snapshot = try preview.session.snapshot()
@@ -533,9 +541,7 @@ enum WidgetGallery {
                     result["refresh"] = preview.refresh; result["refreshReason"] = preview.refreshReason
                 case "screenshot":
                     guard let path = request["path"] as? String else { throw HeadlessSession.Failure(description: "screenshot needs a path") }
-                    let renderer = ImageRenderer(content: WidgetPreviewView(preview: preview))
-                    renderer.scale = variant.scale; renderer.proposedSize = ProposedViewSize(variant.displaySize)
-                    guard let image = renderer.cgImage,
+                    guard let image = GalleryCapture.image(WidgetPreviewView(preview: preview), width: variant.displaySize.width, height: variant.displaySize.height, scale: variant.scale),
                           let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil) else {
                         throw HeadlessSession.Failure(description: "could not render widget screenshot")
                     }

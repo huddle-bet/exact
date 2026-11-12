@@ -1,4 +1,4 @@
-//! The specimen door: each specimen of the Material
+//! The specimen door (LLP 1115.001.001 D4): each specimen of the Material
 //! oracle's manifest, drawn by the Linux presenter as Android's reader
 //! would show it. Not the neutral look; the scheme's palette and a phone's
 //! settings told before the first frame; the top app bar and the navigation
@@ -281,6 +281,26 @@ fn draw(
         ];
         for (text, words) in words {
             let (Some(text), Some(words)) = (text, words) else {
+                continue;
+            };
+            let (x, y, w, h) = text.rect;
+            let line = json!({"top": y, "bottom": y + h, "baseline": text.baseline});
+            texts.push(json!({"text": words, "box": rect(x, y, w, h), "lines": [line]}));
+        }
+    }
+    // A segmented group's labels are painted in its radios, one each.
+    if let Some(group) = specimen {
+        let radios = p
+            .host()
+            .kernel()
+            .node(group)
+            .map(|n| n.children())
+            .unwrap_or_default();
+        for radio in radios {
+            let Some(text) = p.field_texts(radio).and_then(|t| t.label) else {
+                continue;
+            };
+            let Some(words) = said(&p, radio) else {
                 continue;
             };
             let (x, y, w, h) = text.rect;

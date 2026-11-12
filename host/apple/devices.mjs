@@ -8,31 +8,89 @@ import { createServer as createTCPServer } from 'node:net';
 import { basename, dirname, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { decodePng, encodePng } from '../../scripts/png.mjs';
+import { fileURLToPath } from 'node:url';
 
-const root = resolve(new URL('../..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 /** Use Xcode when `xcode-select` names the Command Line Tools, which carry
- * no iOS SDK and no `simctl`: the iOS build failed deep in a
+ * no iOS SDK and no `simctl` (LLP 1054 O2): the iOS build failed deep in a
  * crate's build script with `SDK "iphonesimulator" cannot be located`, and a
  * driver that resolved Xcode apart from the build could not find `simctl`
- * where the build had just installed the app. Every
+ * where the build had just installed the app (shop F20, recipes F16). Every
  * `xcrun` here goes through it, the build's and the driver's alike; an
  * explicit `DEVELOPER_DIR` is kept. Said on stderr: a drive's stdout is its reply. */
 export function useXcode() {
   if (process.platform !== 'darwin' || process.env.DEVELOPER_DIR) return;
-  const selected = spawnSync('xcode-select', ['-p'], { encoding: 'utf8' }).stdout?.trim() ?? '';
-  const xcode = '/Applications/Xcode.app/Contents/Developer';
-  if (selected.includes('CommandLineTools') && existsSync(xcode)) {
+  const selected = spawnSync('xcode-select', ['-p'], { encoding: 'utf8' }).stdout?.trim() ?? '', xcode = developerDir();
+  if (xcode !== selected) {
     process.env.DEVELOPER_DIR = xcode;
     console.error(`host/apple: xcode-select names the Command Line Tools (${selected}); using ${xcode}`);
   }
+}
+/** The developer directory an Apple build under `env` uses (`useXcode`). */
+export function developerDir(env = process.env) {
+  if (env.DEVELOPER_DIR) return env.DEVELOPER_DIR;
+  const selected = spawnSync('xcode-select', ['-p'], { encoding: 'utf8', env }).stdout?.trim() ?? '';
+  const xcode = '/Applications/Xcode.app/Contents/Developer';
+  return selected.includes('CommandLineTools') && existsSync(xcode) ? xcode : selected;
+}
+
+/** The oldest SDK each platform's Swift host compiles against: the newest
+ * symbol it names, as the SDK declares it, behind `#available` or not (an
+ * `@available` on the host's own code is no floor: it compiles on an older SDK
+ * when every symbol it names is there). iOS: UIKit's `UIArrangementViewController`,
+ * 27.1 (IOS/ArrangementIOS.swift). tvOS: `AVAudioSession.didBecomeInactiveNotification`
+ * and its `DeactivationContext` and `ResumptionContext`, 27.0 (AudioSession.swift).
+ * macOS: `NSGlassEffectView` (Mac/NodeViewMac.swift) and WKWebView's
+ * `obscuredContentInsets` (webarm/WebArm.swift), 26.0; sound_engine.m compiles
+ * the 27 SDKs' AVAudioEngine calls only from those SDKs. A newer SDK is no
+ * promise that the host compiles; an older one certainly does not. Xcode N.M
+ * carries the N.M SDKs. */
+export const HOST_SDKS = { ios: '27.1', tvos: '27.0', macos: '26.0' };
+/** Each SDK a build compiles with: its platform's floor and its name in a message. */
+const SDK_NAMES = { iphoneos: ['ios', 'iOS'], iphonesimulator: ['ios', 'iOS Simulator'], appletvos: ['tvos', 'tvOS'], appletvsimulator: ['tvos', 'tvOS Simulator'], macosx: ['macos', 'macOS'] };
+/** The SDK an Apple build compiles with: a device's or a simulator's (`device`), or the Mac's. */
+export const appleSdkName = (platform, device) => ({ ios: device ? 'iphoneos' : 'iphonesimulator', tvos: device ? 'appletvos' : 'appletvsimulator', macos: 'macosx' })[platform];
+
+/** Whether a build with `args` is `--embed` alone: what an embedding app links, with no Swift built. */
+export function appleEmbedOnly(args) {
+  return args.includes('--embed') && !args.includes('--archive') && !args.includes('--run') && !args.includes('--host');
+}
+/** Whether a build with `args` compiles the Swift host: neither `--embed` alone nor the Mac's painted carrier
+ *  (`--painted-benchmark`, host/apple-painted) does. */
+export const compilesSwiftHost = (args) => !appleEmbedOnly(args) && !(args.includes('--painted-benchmark') && !['--ios', '--device', '--tvos', '--watchos'].some((flag) => args.includes(flag)));
+
+/** Whether dotted version `have` is older than `need` (`27.0.1` < `27.1`; a missing part is 0). */
+export function olderVersion(have, need) {
+  const a = have.split('.').map(Number), b = need.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
+  return false;
+}
+
+/** Why the selected Xcode cannot compile the Swift host with SDK `sdkName`
+ * (`appleSdkName`'s), or null when it can. An SDK older than the floor is
+ * named, with the Xcode it needs and how to select one: it would fail deep in
+ * the Swift compile, after the Rust build, on a missing symbol. An SDK whose
+ * version cannot be read is said in xcrun's own words. `run` runs a command
+ * (as `spawnSync`) in `developer`, the developer directory the build uses. */
+export function xcodeRefusal(sdkName, run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf8' }), developer = developerDir()) {
+  const [platform, label] = SDK_NAMES[sdkName], need = HOST_SDKS[platform];
+  const probe = run('xcrun', ['--sdk', sdkName, '--show-sdk-version']), sdk = probe.status === 0 ? probe.stdout.trim() : '';
+  if (/^\d+(\.\d+)*$/.test(sdk) && !olderVersion(sdk, need)) return null;
+  const built = run('xcodebuild', ['-version']), xcode = `${built.status === 0 ? built.stdout.trim().split('\n')[0] : 'no Xcode'}, ${developer || 'none selected'}`;
+  if (!/^\d+(\.\d+)*$/.test(sdk)) {
+    const said = [...new Set(String(probe.stderr ?? '').split('\n').map(line => line.trim()).filter(line => /error/.test(line)))];
+    return `host/apple: the selected Xcode (${xcode}) could not report its ${label} SDK: ${said.join('; ') || sdk || `xcrun exited ${probe.status ?? probe.error?.message}`}`;
+  }
+  return `host/apple: the selected Xcode (${xcode}) has the ${label} ${sdk} SDK; the Swift host needs the ${label} ${need} SDK, which Xcode ${need} and later carry. `
+    + 'Select one for this build with DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer, or for every build with sudo xcode-select -s /path/to/Xcode.app';
 }
 const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const read = (cmd, args, opts = {}) => { useXcode(); return spawnSync(cmd, args, { cwd: root, encoding: 'utf8', ...opts }); };
 
 /** A window capture the app drew (`path`, in `r`'s scale), its pixels then the simulator's own screenshot's, as a
  *  device screenshot has them: `drawHierarchy` draws Liquid Glass and the other backdrop materials only roughly (a tab
- *  bar's glass left the rows under it legible, an alert's the list behind it), and the
- *  software keyboard and the status bar are other processes' pixels. The rows of the
+ *  bar's glass left the rows under it legible, an alert's the list behind it: the euxy port's judged captures), and the
+ *  software keyboard (round 9: "blank keyboard region") and the status bar are other processes' pixels. The rows of the
  *  status bar, its top `appTop` points, stay the app's when the caller did not ask for it (`r.statusBar` unset; with it
  *  set, `xcrun simctl status_bar <udid> override --time 9:41` sets what it shows).
  *
@@ -158,7 +216,7 @@ function displayReads(udid, gap = 400) {
 /** What a drive passes from its own environment to an app that `simctl launch` (which forwards only `SIMCTL_CHILD_`
  *  names) or `devicectl` (only what it is given) starts, as a macOS drive's app inherits it: `EXACT_STORE`, so
  *  `EXACT_STORE=real` gives an iOS drive the Keychain a normal launch reads (host/apple/src/store.rs), and
- *  `EXACT_AGENT_PADS`, a drive's game pads. */
+ *  `EXACT_AGENT_PADS`, a drive's game pads (LLP 1133.022 §21). */
 export function forwardedEnv(env = process.env) {
   return Object.fromEntries(['EXACT_STORE', 'EXACT_AGENT_PADS'].filter((k) => env[k]).map((k) => [k, env[k]]));
 }
@@ -208,7 +266,7 @@ export function displayAsIs(r, path, udid) {
 
 /** Why the display is not the app's at the points the app drew itself (`points`, window points), or null: around a
  *  point whose 5x5 pixels the app drew in one colour (no edge of text or shape) the display's must be within 2 levels of
- *  it, as they are exactly where nothing lies over the app (measured light and dark). A notification
+ *  it, as they are exactly where nothing lies over the app (measured on the euxy port, light and dark). A notification
  *  banner's frosted material, 3 or 4 levels off a light page, changes such points; more than 1% of them, or 3, refuse. */
 function covered(points, app, display, scale) {
   if (!Array.isArray(points) || points.length === 0) return 'the app named no points to check the display against';
@@ -346,7 +404,7 @@ export function installedBuild(udid, id) {
 }
 
 /** What `build.mjs --ios` says when its development build replaced `replaced` (an `installedBuild` of another kind):
- *  one bundle id, so a benchmark or a person then finds the development build; how to put it back, from
+ *  one bundle id, so a benchmark or a person then finds the development build (euxy port); how to put it back, from
  *  the Release bundle at `release` when it was built here. */
 export function replacedNote(udid, app, replaced, release) {
   const back = existsSync(release) ? `xcrun simctl install ${udid} ${shellQuote(release)}` : `bun host/apple/build.mjs --ios ${app.crate('apple')} --release --sim ${udid}`;
@@ -358,7 +416,7 @@ export function replacedNote(udid, app, replaced, release) {
  *  not a development one (its receipt's `build.trust`: a `--release` or production bake, or one with no receipt), an
  *  APFS clone of it under `records`/<udid>-<id>, replacing any older one, and `note`, the one command that puts it back.
  *  Both share the bundle id, so a later benchmark or person would otherwise find the development build with no way
- *  back. Nothing is reinstalled for the drive: that is the person's call. A clone that cannot be made
+ *  back (euxy port). Nothing is reinstalled for the drive: that is the person's call. A clone that cannot be made
  *  throws, and nothing is installed. A drive's later sessions find the development build and copy nothing. */
 export function keepInstalledRelease(udid, id, bundle, executable, { records = resolve(homedir(), '.cache/exact/simulator-releases') } = {}) {
   if (installedAlready(udid, id, bundle, executable)) return { install: false };
@@ -379,7 +437,7 @@ export function keepInstalledRelease(udid, id, bundle, executable, { records = r
 
 /** A simulator's software keyboard for a drive: shown for a focused field, as a person's iPhone shows it. Once a Device
  *  Hub has attached the Mac's keyboard, the device keeps `com.apple.keyboard.preferences` `AutomaticMinimizationEnabled
- *  = 1` and minimizes its software keyboard behind it ("The pushed route's keyboard, found"). Read and
+ *  = 1` and minimizes its software keyboard behind it (LLP 1078, "The pushed route's keyboard, found"). Read and
  *  changed through the device's own `defaults` (`simctl spawn`), which cfprefsd answers before it writes the plist.
  *  On a simulator this drive booted (`owned`) the key is cleared and `restore()` puts it back; on any other it is
  *  left as it is and `note` says the keyboard may be hidden. Before clearing it the drive writes a record under
@@ -631,7 +689,7 @@ export function deviceLaunchArgs(device, id, environment = process.env) {
 
 /** The explicit app URL: the launch locator, and the one dev-server origin a
  * development build admits opening links for (`developmentAdmission`).
- * Validate it before invoking any build or signing tools. */
+ * Validate it before invoking any build or signing tools. @ref LLP 1030.000 §7 */
 export function developmentLaunchEnvironment(args, environment = process.env) {
   const index = args.indexOf('--url');
   if (index < 0) return { ...environment };
@@ -645,34 +703,54 @@ export function developmentLaunchEnvironment(args, environment = process.env) {
   return { ...environment, EXACT_DEV_PLAN: url.href };
 }
 
+/** The environment a build signs under a profile that is (`debuggable`) or is not a development one: App Attest's
+ * and push's (LLP 1133.028 D15 item 1; LLP 1133.004 §9 P2). */
+export const signedEnvironment = (debuggable) => debuggable ? 'development' : 'production';
+
+/** Whether profile `p` allows entitlement `name` as the build signs it under `p`: the key, and for push's environment,
+ * which a profile carries as a value, the value the build writes there. The Live Activity path and the grant path
+ * both ask this. */
+export const allowsEntitlement = (p, name) => name === 'aps-environment' ? p.aps === signedEnvironment(p.dev) : p.entitlements.includes(name);
+
+/** What `p` lacks of `required`, each as a refusal names it. */
+export const lacks = (p, required = []) => required.filter((name) => !allowsEntitlement(p, name)).map((name) => name === 'aps-environment' && p.aps
+  ? `aps-environment ${signedEnvironment(p.dev)} (it allows ${p.aps ?? 'no value'}, and this build signs ${signedEnvironment(p.dev)} under a ${p.dev ? 'development' : 'distribution'} profile)`
+  : name);
+
 /** Whether a profile allows every entitlement in `required` (a grant's
- * signing entitlements). */
-export const allows = (p, required = []) => !!p && required.every((name) => p.entitlements.includes(name));
+ * signing entitlements, LLP 1069.008.000 D4). */
+export const allows = (p, required = []) => !!p && lacks(p, required).length === 0;
 
 /** What a profile that lacks a grant's entitlement needs, said once. */
 const missing = (bundle, required, why) => new Error(required.includes('com.apple.developer.web-browser')
   ? `browser-device-profile: ${required.join(', ')} required by ${bundle}, and ${why}. Request Apple's managed default-browser approval, enable it for this App ID, then install a profile that grants it (or name it with EXACT_PROFILE).`
   : `grant-device-profile: ${required.join(', ')} ${required.length > 1 ? 'are' : 'is'} needed by this app's grants, and ${why} (a team wildcard never allows HealthKit). In the Apple Developer portal, register the App ID ${bundle} with that capability, make a development profile for it that includes this phone, and install it (or name it with EXACT_PROFILE).`);
 
-/** A development profile on this Mac covering the phone and the bundle id (the team's wildcard or the id itself, under the profile's App ID prefix, which an older team's App IDs keep apart from its team id), unexpired; EXACT_PROFILE names one.
+/** A development profile on this Mac covering the phone and the bundle id (the team's wildcard or the id itself, under the profile's App ID prefix, which an older team's App IDs keep apart from its team id), unexpired; DEVELOPMENT_TEAM restricts the team, and EXACT_PROFILE overrides that choice.
  * With `required` (a grant's signing entitlements), only one that allows them all, which is one for the id itself. */
-export function profile(udid, bundle, required = [], { installed = installedProfiles(), named = process.env.EXACT_PROFILE ? decodeProfile(process.env.EXACT_PROFILE) : null } = {}) {
+export function profile(udid, bundle, required = [], { installed = installedProfiles(), named = process.env.EXACT_PROFILE ? decodeProfile(process.env.EXACT_PROFILE) : null, team = process.env.DEVELOPMENT_TEAM?.trim(), phoneName = udid } = {}) {
   if (named) {
     if (!iosProfile(named)) throw new Error(`EXACT_PROFILE (${named.name}) is not an iOS profile; its platform is ${named.platforms.join(', ')}`);
     if (!allows(named, required)) throw missing(bundle, required, `EXACT_PROFILE (${named.name}) does not allow ${required.length > 1 ? 'them' : 'it'}`);
     return named;
   }
-  const covering = coveringProfiles(udid, bundle, installed);
-  if (!covering.length) throw new Error(`no development provisioning profile on this Mac covers ${bundle} on this phone (${udid}); run any app on it from Xcode once with team signing, or name one with EXACT_PROFILE`);
+  const covering = coveringProfiles(udid, bundle, installed, team);
+  if (!covering.length) throw missingDevelopmentProfile(udid, bundle, team, phoneName);
   const found = covering.filter((p) => allows(p, required));
   if (!found.length) throw missing(bundle, required, `no development profile on this Mac for ${bundle} on this phone allows ${required.length > 1 ? 'them' : 'it'}`);
   return found[0];
 }
 
+/** A missing development profile, naming what Xcode must sign to create one. */
+export function missingDevelopmentProfile(udid, bundle, team, phoneName = udid) {
+  const phone = phoneName && phoneName !== udid ? `${phoneName}, ${udid}` : udid;
+  return new Error(`no development provisioning profile on this Mac${team ? ` for team ${team} (DEVELOPMENT_TEAM)` : ''} covers ${bundle} on this phone (${phone}); in Xcode, run a project with bundle ID ${bundle}${team ? ` and team ${team}` : ' and your team'} on that phone with Automatically manage signing enabled, then retry (or ${team ? "unset DEVELOPMENT_TEAM to take any team's profile, or " : ''}name a profile with EXACT_PROFILE)`);
+}
+
 /** The unexpired development profiles on this Mac that cover the phone and the bundle id (the team's wildcard or
  * the id itself), the longest-lived first. */
-export function coveringProfiles(udid, bundle, installed = installedProfiles()) {
-  return profilesFor(bundle, installed).filter((p) => iosProfile(p) && p.dev && !profileMisfit(p, udid)).sort(byExpiry);
+export function coveringProfiles(udid, bundle, installed = installedProfiles(), team = null) {
+  return profilesFor(bundle, installed).filter((p) => (!team || p.team === team) && iosProfile(p) && p.dev && !profileMisfit(p, udid)).sort(byExpiry);
 }
 /** The profile for a bundle the app embeds under an App ID of its own (its App Clip), chosen as `entryProfiles`
  * chooses the widget extension's: for `bundle` itself or the team's wildcard, of the app's profile's (`like`) team,
@@ -681,7 +759,7 @@ export function coveringProfiles(udid, bundle, installed = installedProfiles()) 
  * the longest-lived. Or a refusal naming what each profile for the id lacked. */
 export function embeddedProfile(udid, bundle, like, required = [], installed = installedProfiles()) {
   const candidates = profilesFor(bundle, installed).filter(iosProfile).sort(byExpiry);
-  const why = candidates.map((p) => [p, profileMisfit(p, udid, like) ?? (allows(p, required) ? null : `does not allow ${required.filter((name) => !p.entitlements.includes(name)).join(', ')}`)]);
+  const why = candidates.map((p) => [p, profileMisfit(p, udid, like) ?? (allows(p, required) ? null : `does not allow ${lacks(p, required).join(', ')}`)]);
   const found = why.find(([, reason]) => !reason)?.[0];
   if (found) return found;
   throw new Error(`host/apple: no ${METHODS[like.method]} profile on this Mac covers ${bundle} as the app's (${like.name}) does: ${why.length ? why.map(([p, reason]) => `"${p.name}" ${reason}`).join('; ') : 'none is for it'}. In the Apple Developer portal, register the App ID ${bundle}${required.length ? ` with ${required.join(', ')}` : ''}, make a ${METHODS[like.method]} profile for it of team ${like.team}${udid ? ' that includes this phone' : ''}, and install it.`);
@@ -726,7 +804,7 @@ export function decodeProfile(path) {
   const allowed = /<key>Entitlements<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(xml)?.[1] ?? '';
   const entitlements = [...allowed.matchAll(/<key>([^<]+)<\/key>\s*(<false\/>)?/g)].filter((m) => !m[2]).map((m) => m[1]);
   const appId = str('application-identifier') ?? str('com.apple.application-identifier');
-  // What an app with widgets or Live Activities needs of it: the App Groups it grants, the
+  // What an app with widgets or Live Activities needs of it (LLP 1126.001 WP13): the App Groups it grants, the
   // Keychain groups (the team's `<prefix>.*`, usually) and the push environment.
   const dev = /<key>(?:com.apple.security.)?get-task-allow<\/key>\s*<true\/>/.test(xml), enterprise = /<key>ProvisionsAllDevices<\/key>\s*<true\/>/.test(xml);
   return { path, name: str('Name'), team, appId, prefix: appId?.split('.')[0], devices, dev, expires: new Date(expires ?? 0), entitlements, platforms: strings('Platform'),
@@ -735,12 +813,12 @@ export function decodeProfile(path) {
 }
 
 /** The Apple Development identity (its SHA-1) for a team, from the keychain; EXACT_IDENTITY names one. */
-export function identity(team) {
-  if (process.env.EXACT_IDENTITY) return process.env.EXACT_IDENTITY;
-  const valid = [...(read('security', ['find-identity', '-v', '-p', 'codesigning']).stdout ?? '').matchAll(/\d+\) ([0-9A-F]{40}) "(Apple Development: [^"]+)"/g)].map((m) => ({ sha1: m[1], name: m[2] }));
-  const pems = (read('security', ['find-certificate', '-a', '-c', 'Apple Development', '-p']).stdout ?? '').split('-----END CERTIFICATE-----').filter((c) => c.includes('BEGIN CERTIFICATE'));
+export function identity(team, { env = process.env, read: readSigning = read } = {}) {
+  if (env.EXACT_IDENTITY) return env.EXACT_IDENTITY;
+  const valid = [...(readSigning('security', ['find-identity', '-v', '-p', 'codesigning']).stdout ?? '').matchAll(/\d+\) ([0-9A-F]{40}) "(Apple Development: [^"]+)"/g)].map((m) => ({ sha1: m[1], name: m[2] }));
+  const pems = (readSigning('security', ['find-certificate', '-a', '-c', 'Apple Development', '-p']).stdout ?? '').split('-----END CERTIFICATE-----').filter((c) => c.includes('BEGIN CERTIFICATE'));
   for (const pem of pems) {
-    const x = read('openssl', ['x509', '-noout', '-subject', '-fingerprint', '-sha1'], { input: pem + '-----END CERTIFICATE-----\n' }).stdout ?? '';
+    const x = readSigning('openssl', ['x509', '-noout', '-subject', '-fingerprint', '-sha1'], { input: pem + '-----END CERTIFICATE-----\n' }).stdout ?? '';
     const sha1 = /Fingerprint=([0-9A-F:]+)/i.exec(x)?.[1].replace(/:/g, '');
     const ou = /OU\s*=\s*([A-Z0-9]+)/.exec(x)?.[1];
     const id = valid.find((v) => v.sha1 === sha1);

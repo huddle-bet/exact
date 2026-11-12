@@ -1,5 +1,5 @@
 //! The portable adapter's workers share Exact's physical-worker reservation.
-//! Capacity precedes dispatch.
+//! @ref LLP 1120#d4-linux-and-the-render-host-the-same-core-over-a-bounded-blocking-adapter — capacity precedes dispatch.
 use super::*;
 
 /// Start one base thread; the job owns its process reservation.
@@ -112,6 +112,7 @@ mod portable {
                 )
             };
             let request = || exact_runner::RequestOut {
+                class: exact_runner::RequestClass::Ordered,
                 ticket: 1,
                 target: "worker-lifecycle".into(),
                 forced: false,

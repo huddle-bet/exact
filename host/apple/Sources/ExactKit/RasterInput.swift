@@ -26,8 +26,8 @@ final class RasterCancellation: @unchecked Sendable {
 /// spool to a bounded temporary file and are reused for metadata and decode.
 final class RasterInput: @unchecked Sendable {
     static var httpCacheUsage: [String: Int] { RasterDownload.cacheUsage }
-    /// A `data:` source's bound, in bytes of URL text, on every host
-    /// (`exact_raster::MAX_DATA_URL_BYTES`, the web hosts' `DATA_LIMIT`).
+    /// A `data:` source's bound, in bytes of URL text, on every host (LLP 1011
+    /// §2; `exact_raster::MAX_DATA_URL_BYTES`, the web hosts' `DATA_LIMIT`).
     static let dataLimit = 1024 * 1024
     let url: URL
     let encodedBytes: Int
@@ -46,9 +46,17 @@ final class RasterInput: @unchecked Sendable {
     /// image data" ignores the status), so only one that is not fails, as
     /// that status (`failure(_:)`).
     private var status: (code: RasterHTTPStatus, from: URL)?
-    private init(url: URL, encodedBytes: Int, temporary: Bool, catalog: String? = nil, status: (RasterHTTPStatus, URL)? = nil) {
-        self.url = url; self.encodedBytes = encodedBytes; self.temporary = temporary; self.catalog = catalog
+    /// An `app:/` source's path: each read opens it again through no link
+    /// (`AppFiles.open`), never by `url`.
+    private let appFile: String?
+    private init(url: URL, encodedBytes: Int, temporary: Bool, catalog: String? = nil, status: (RasterHTTPStatus, URL)? = nil, appFile: String? = nil) {
+        self.url = url; self.encodedBytes = encodedBytes; self.temporary = temporary; self.catalog = catalog; self.appFile = appFile
         self.status = status.map { (code: $0.0, from: $0.1) }
+    }
+    private func handle() throws -> FileHandle {
+        guard let appFile else { return try FileHandle(forReadingFrom: url) }
+        guard let file = AppFiles.open(appFile) else { throw RasterFailure.unresolved }
+        return file
     }
     /// Why the source fails when reading its header failed with `error`: a
     /// body that came with a status that is not 2xx fails as that status,
@@ -69,7 +77,7 @@ final class RasterInput: @unchecked Sendable {
     private static let launchImage = (Bundle.main.object(forInfoDictionaryKey: "UILaunchScreen") as? [String: Any])?["UIImageName"] as? String
     deinit { if temporary { try? FileManager.default.removeItem(at: url) } }
     /// CommonCrypto's, not CryptoKit's: launching an app that touches no
-    /// other CryptoKit then dirties none of its pages (40 KB on iOS).
+    /// other CryptoKit then dirties none of its pages (40 KB in euxy on iOS).
     private static func sha256(_ data: Data) -> String {
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         _ = data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
@@ -77,13 +85,13 @@ final class RasterInput: @unchecked Sendable {
     }
     static func open(_ name: String, resolver: AssetResolver, cancellation: RasterCancellation = RasterCancellation()) throws -> RasterInput {
         guard !cancellation.isCancelled else { throw URLError(.cancelled) }
-        // The app's own file: a picked photo's preview.
+        // The app's own file (LLP 1069.002 D7): a picked photo's preview.
         if name.hasPrefix("app:/") {
-            guard let url = AppFiles.url(name) else { throw RasterFailure.unresolved }
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true, let count = values.fileSize,
-                  count > 0, count <= RasterMetadata.encodedLimit else { throw RasterFailure.encodedLimit }
-            return RasterInput(url: url, encodedBytes: count, temporary: false)
+            guard let file = AppFiles.open(name), let url = AppFiles.url(name) else { throw RasterFailure.unresolved }
+            let size = try file.seekToEnd()
+            try? file.close()
+            guard size > 0, size <= UInt64(RasterMetadata.encodedLimit) else { throw RasterFailure.encodedLimit }
+            return RasterInput(url: url, encodedBytes: Int(size), temporary: false, appFile: name)
         }
         // A `data:` URL (RFC 2397), as a page's `<img>` takes one: its bytes,
         // spooled like a download's, so metadata and decode read a file.
@@ -151,7 +159,7 @@ final class RasterInput: @unchecked Sendable {
             return try RasterMetadata.validated(width: decoded.width, height: decoded.height, orientation: 1,
                                                 encodedBytes: encodedBytes, headerBytes: 1, deep: decoded.bitsPerComponent > 8)
         }
-        let file = try FileHandle(forReadingFrom: url)
+        let file = try handle()
         defer { try? file.close() }
         // The launch image's name: the whole file is read once (only under
         // that name, on the worker inspecting it), and the catalog stands in
@@ -168,7 +176,7 @@ final class RasterInput: @unchecked Sendable {
         return try RasterMetadata.read(prefix: prefix, encodedBytes: encodedBytes)
     }
     func bytes() throws -> Data {
-        let file = try FileHandle(forReadingFrom: url)
+        let file = try handle()
         defer { try? file.close() }
         // A changed file cannot make readToEnd allocate an unbounded buffer.
         guard try file.seekToEnd() == encodedBytes else { throw RasterFailure.encodedLimit }
@@ -180,7 +188,7 @@ final class RasterInput: @unchecked Sendable {
 }
 
 /// A response that is not 2xx: its status is the image's `error` when it
-/// has no body that is an image.
+/// has no body that is an image (LLP 1011 §4).
 /// `retryAfter`: not asked again before this, a 429's or 503's `Retry-After`,
 /// on the monotonic clock (a wall clock's step never shortens it).
 struct RasterHTTPStatus: Error, CustomStringConvertible {
@@ -254,7 +262,7 @@ private final class RasterDownload: NSObject, @unchecked Sendable {
             return done(.success((destination, count, nil)))
         }
         // A server that said when to ask again is not asked sooner, by any
-        // source of the URL.
+        // source of the URL (LLP 1011 §4).
         if let cooling = RasterDownloads.shared.cooling(url) {
             try? file.close(); try? FileManager.default.removeItem(at: destination)
             return done(.failure(cooling))

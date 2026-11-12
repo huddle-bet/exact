@@ -1,4 +1,4 @@
-//! The cut: a walk over the flow thread in document
+//! @ref LLP 1093 D3–D5 — the cut: a walk over the flow thread in document
 //! order, as Chrome 154 breaks, and Chrome's column balancer over it.
 //!
 //! Each candidate break gets an *appeal* (Chrome's term), best first:
@@ -11,7 +11,7 @@
 use super::build::{self, Flow, Para};
 use super::{Column, Columns, Fragment, FragmentRefusal, Placement};
 use crate::arena::NodeArena;
-use crate::generated::{ColumnFill, Direction, NodeType, StyleMask};
+use crate::generated::{AlignContent, ColumnFill, Direction, NodeType, StyleMask};
 use crate::id::AxisOffer;
 use crate::layout::LayoutTree;
 use crate::text::{TextMeasureRequest, TextMeasurer, TextRun};
@@ -26,7 +26,7 @@ pub(crate) struct Cut {
     pub placements: Vec<(u32, Placement)>,
     pub fragments: Vec<(u32, Vec<super::Fragment>)>,
     pub refusals: Vec<(u32, FragmentRefusal)>,
-    /// Walks the cut took (for the multicol probe).
+    /// Walks the cut took (LLP 1093 §3's probe).
     #[cfg(test)]
     pub walks: usize,
     /// The container's border box once its used height applies.
@@ -69,9 +69,9 @@ pub(super) struct Cutter<'a> {
     pub flow: Flow,
     arena: &'a NodeArena,
     measurer: &'a mut dyn TextMeasurer,
-    /// The first column's top: the container's content top.
+    /// Where the flow thread starts: the container's content top.
     pub top: f32,
-    /// Walks run, for the probe.
+    /// Walks run, for the probe (LLP 1093 §3).
     #[cfg(test)]
     pub walks: usize,
 }
@@ -93,7 +93,7 @@ impl<'a> Cutter<'a> {
         }
     }
 
-    // A paragraph's line boxes, asked of the host once: the walk asks
+    // A paragraph's line boxes, asked of the host once (D6): the walk asks
     // only when the paragraph would cross a column's end.
     fn expand(&mut self, para: usize) {
         let p = &self.flow.paras[para];
@@ -169,7 +169,7 @@ impl<'a> Cutter<'a> {
     }
 
     // The break before `pos`, in a column that began at `first`: its appeal,
-    // whether it is forced, and where the next column would start.
+    // whether it is forced, and where the next column would start (D3).
     fn candidate(&self, pos: Pos, first: Pos) -> (u8, bool, f32) {
         let atom = &self.flow.atoms[pos.atom];
         if pos.line == 0 {
@@ -188,7 +188,7 @@ impl<'a> Cutter<'a> {
             before
         };
         // Chrome 154 scores `widows` only when the paragraph has room for
-        // both rules (L >= orphans + widows); `orphans` always.
+        // both rules (L >= orphans + widows); `orphans` always (D4).
         let short =
             here < p.orphans || (total - before < p.widows && total >= p.orphans + p.widows);
         let mut appeal = if short { ORPHANS_WIDOWS } else { PERFECT };
@@ -198,7 +198,7 @@ impl<'a> Cutter<'a> {
         (appeal, false, self.unit(pos).0)
     }
 
-    /// Cut the flow thread into columns of height `h`.
+    /// Cut the flow thread into columns of height `h` (D4).
     pub(super) fn walk(&mut self, h: f32) -> Walk {
         #[cfg(test)]
         {
@@ -290,7 +290,7 @@ impl<'a> Cutter<'a> {
             .map_or(0.0, |a| (a.bottom - self.top).max(0.0))
     }
 
-    /// Chrome's balancer: start at the content's height over `n` (each
+    /// Chrome's balancer (D5): start at the content's height over `n` (each
     /// run between forced breaks shares the columns its height asks for),
     /// clamped to `cap` and kept no lower than the tallest unbreakable piece,
     /// then stretch by the walk's shortage while it needs more than `n`
@@ -346,7 +346,7 @@ impl<'a> Cutter<'a> {
 }
 
 /// A paragraph's metrics and line-box bottoms at a content width, from the
-/// host's engine; no bottoms when it answers none.
+/// host's engine (D6); no bottoms when it answers none.
 pub(super) fn lines(
     arena: &NodeArena,
     measurer: &mut dyn TextMeasurer,
@@ -381,7 +381,7 @@ pub(super) fn lines(
     (height, bottoms)
 }
 
-/// Cut `slot`, a laid-out multi-column container.
+/// Cut `slot`, a laid-out multi-column container (D3–D7).
 pub(crate) fn container(
     arena: &NodeArena,
     tree: &LayoutTree,
@@ -398,7 +398,8 @@ pub(crate) fn container(
     let l = tree.layout(node);
     let (p, b) = (l.padding, l.border);
     let (x0, y0) = (p.left + b.left, p.top + b.top);
-    let inset_v = p.top + p.bottom + b.top + b.bottom;
+    // The block axis outside the content box: padding, borders and a bottom gutter
+    let inset_v = p.top + p.bottom + b.top + b.bottom + l.scrollbar_size.height;
     let u = (l.size.width - p.left - p.right - b.left - b.right - l.scrollbar_size.width).max(0.0);
     let (n, w) = m.columns(u);
     let n = n as usize;
@@ -425,11 +426,18 @@ pub(crate) fn container(
     let (min_outer, max_outer) = tree.multicol_bounds(node);
     let definite = s.height != Dimension::Auto;
     let max = max_outer.map(|v| (v - inset_v).max(0.0));
-    let content = (l.size.height - inset_v - l.scrollbar_size.height).max(0.0);
+    let content = (l.size.height - inset_v).max(0.0);
     let (h, walk, used) = match (definite, max, s.column_fill) {
         (true, _, ColumnFill::Auto) => {
+            // As tall as the content while it fits one column, as Chrome
+            // sizes the columns `align-content` moves.
             let walk = cutter.walk(content);
-            (content, walk, None)
+            let h = if walk.starts.len() > 1 {
+                content
+            } else {
+                tallest_column(&cutter, &walk)
+            };
+            (h, walk, None)
         }
         (true, _, ColumnFill::Balance) => {
             let (h, walk) = cutter.balance(n, content);
@@ -472,14 +480,34 @@ pub(crate) fn container(
     } else {
         used
     };
+    let height = match used {
+        Some(columns) => {
+            let mut outer = columns + inset_v;
+            if let Some(v) = max_outer {
+                outer = outer.min(v);
+            }
+            if let Some(v) = min_outer {
+                outer = outer.max(v);
+            }
+            outer
+        }
+        None => l.size.height,
+    };
+    let free = height - inset_v - h;
+    let align = align(arena.effective_style(slot).align_content, free);
+    let pitch = match (definite, s.column_fill) {
+        (true, ColumnFill::Auto) => content,
+        _ => h,
+    };
     publish(
         &cutter,
         &walk,
         Geometry {
             x0,
-            y0,
+            y0: y0 + align,
             w,
             h,
+            pitch,
             n,
             gap,
             left: &left,
@@ -489,21 +517,14 @@ pub(crate) fn container(
         used,
         Outer {
             width: l.size.width,
-            height: match used {
-                Some(columns) => {
-                    let mut outer = columns + inset_v;
-                    if let Some(v) = max_outer {
-                        outer = outer.min(v);
-                    }
-                    if let Some(v) = min_outer {
-                        outer = outer.max(v);
-                    }
-                    outer
-                }
-                None => l.size.height,
-            },
+            height,
             border: b,
             padding: p,
+            // Taffy reserves a vertical scrollbar's gutter on the left in RTL
+            gutter: (
+                if rtl { 0.0 } else { l.scrollbar_size.width },
+                l.scrollbar_size.height,
+            ),
             scrolls: s.overflow_x != crate::Overflow::Visible
                 || s.overflow_y != crate::Overflow::Visible,
         },
@@ -529,11 +550,30 @@ fn tallest_column(cutter: &Cutter<'_>, walk: &Walk) -> f32 {
     tallest
 }
 
+/// How far `align-content` moves the columns down: they are one alignment
+/// subject (CSS Box Alignment 3 §5.1), so a distribution falls back as a
+/// block container's does (vendored Taffy's patch 53).
+fn align(v: AlignContent, free: f32) -> f32 {
+    match v {
+        AlignContent::End | AlignContent::FlexEnd => free,
+        AlignContent::Center => free / 2.0,
+        AlignContent::SpaceAround | AlignContent::SpaceEvenly => (free / 2.0).max(0.0),
+        AlignContent::Normal
+        | AlignContent::Start
+        | AlignContent::FlexStart
+        | AlignContent::Stretch
+        | AlignContent::SpaceBetween => 0.0,
+    }
+}
+
 struct Geometry<'a> {
     x0: f32,
     y0: f32,
     w: f32,
     h: f32,
+    /// The column height the walk broke at, which an absolutely positioned
+    /// box below the last column steps on by.
+    pitch: f32,
     n: usize,
     gap: f32,
     left: &'a dyn Fn(usize) -> f32,
@@ -545,6 +585,8 @@ struct Outer {
     scrolls: bool,
     border: taffy::Rect<f32>,
     padding: taffy::Rect<f32>,
+    /// The scrollbar gutters at the right and bottom edges, outside the client box
+    gutter: (f32, f32),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -689,16 +731,16 @@ fn publish(
         ));
         cut.fragments.push((b.slot, frags));
     }
-    // An absolutely positioned box takes the column holding its own
+    // D10.4: an absolutely positioned box takes the column holding its own
     // flow-thread top, past the content's last column too.
     for a in &flow.absolutes {
         let (dx, dy) = if a.in_flow && cols > 0 {
             let mut k = walk.starts.partition_point(|(_, s)| *s <= a.top).max(1) - 1;
             let mut s = walk.starts[k].1;
-            if k + 1 == cols && g.h > 0.0 && a.top >= s + g.h {
-                let more = ((a.top - s) / g.h).floor();
+            if k + 1 == cols && g.pitch > 0.0 && a.top >= s + g.pitch {
+                let more = ((a.top - s) / g.pitch).floor();
                 k += more as usize;
-                s += more * g.h;
+                s += more * g.pitch;
             }
             ((g.left)(k), g.y0 - s)
         } else {
@@ -710,7 +752,7 @@ fn publish(
         }
         // Its column is part of the overflow too, as in Chrome.
         if a.in_flow && cols > 0 {
-            extend(g.x0 + dx, g.y0, g.w, g.h);
+            extend(g.x0 + dx, g.y0, g.w, g.pitch);
         }
         cut.placements
             .push((a.slot, Placement { dx, dy, size: None }));
@@ -720,19 +762,20 @@ fn publish(
             cut.refusals.push((s, why));
         }
     }
-    // The scrollable overflow: the columns and every translated box,
+    // The scrollable overflow (D7): the columns and every translated box,
     // a scroll container's end padding (as Taffy and Chrome count it), and
-    // at least the client box, measured from the
+    // at least the client box (inside the borders and any scrollbar
+    // gutter, CSS 2.1 §11.1.1), measured from the
     // padding box's corner as Taffy measures it. Its left edge is kept but
-    // only the right and bottom are published.
-    let (b, p) = (outer.border, outer.padding);
+    // only the right and bottom are published (D10.8).
+    let (b, p, (gr, gb)) = (outer.border, outer.padding, outer.gutter);
     let (pr, pb) = if outer.scrolls {
         (p.right, p.bottom)
     } else {
         (0.0, 0.0)
     };
-    let right = (right + pr).max(outer.width - b.right) - b.left;
-    let bottom = (bottom + pb).max(outer.height - b.bottom) - b.top;
+    let right = (right + pr).max(outer.width - b.right - gr) - b.left;
+    let bottom = (bottom + pb).max(outer.height - b.bottom - gb) - b.top;
     cut.overflow = Some(taffy::Rect {
         left: (leftmost - b.left).min(0.0),
         right,

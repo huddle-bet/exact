@@ -3,17 +3,20 @@
 // resident, js/bake/src), which copies this file into its stage as
 // `__exact_config.mjs`, and the web build (host/web-js/build.mjs), which
 // imports it from here. One app.ts builds on every host or on none, refused
-// with the same diagnostics at the same point.
+// with the same diagnostics at the same point (calc F2, calendar F9/F11).
 // It reads only captured configuration; the producer owns the stage.
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { builtinModules, createRequire } from 'node:module';
 import { resolve, relative, dirname, basename, join, sep, isAbsolute, toNamespacedPath } from 'node:path';
 // The bake writes the binding's generator beside this file in its stage (js/bake/src/resident.rs `BINDING`).
 import { moduleBinding } from './__exact_binding.mjs';
 // And the settings' reader beside it (resident.rs `ENV`).
-import { inlineSettings, strayReads } from './__exact_env.mjs';
+import { envReads, inlineSettings } from './__exact_env.mjs';
+// And the check of what package code may use (resident.rs `PORTABLE`).
+import { bare, lineColumn, packageRefusals, propertyName, walkRuntime } from './__exact_portable.mjs';
 
 export { moduleBinding };
 
@@ -126,7 +129,7 @@ const developmentTrust = (env) => env.EXACT_UPDATE_TRUST === undefined || env.EX
 
 /** A `net.fetch local-network` or `net.websocket local-network` line, as the native bake's entry matches it too. */
 export const LOCAL_NETWORK_LINE = /^([ \t]*net\.(?:fetch|websocket)[ \t]+local-network)[ \t]*$/gm;
-/** In a development build each such line gains the word that admits loopback as well, so a
+/** In a development build each such line gains the word that admits loopback as well (LLP 1133.036 D5), so a
  * drive's fixture on this machine stands in for a device on the LAN. A production build's lines stay as written,
  * and its bake refuses the word. */
 export const developmentLocalNetwork = (spec, env=process.env) => developmentTrust(env) ? spec.replace(LOCAL_NETWORK_LINE, '$1 development') : spec;
@@ -214,8 +217,8 @@ export function injectBackendOrigin(code, origin, parse, env=process.env) {
 
 /** A grant line that begins with the word `development` is a development
  * build's only: a production bake leaves it out, any other build keeps it
- * without the word (a chat app's test call, `development device.calls
- * purpose.calls`). No grant family is a bare
+ * without the word (Harmony's test call, `development device.calls
+ * purpose.calls`, LLP 1133.033 §13 question 4). No grant family is a bare
  * word, so the marker is never a grant's own; the bake's trailing
  * `local-network development` is another thing. Only the captured copy is
  * rewritten, so the app's own `grants` is the build's at run time too. Run
@@ -240,7 +243,7 @@ export function developmentGrants(code, parse, env=process.env) {
 }
 
 // Rolldown IDs are file paths, not URL or slash-normalized strings. Both
-// producers enforce the same captured-file boundary. A
+// producers enforce the same captured-file boundary (LLP 1027 D5). A
 // package's declarations are captured for the checker alone (`stagePackages`)
 // and never load; a package's code loads only from where `capturedSources`
 // captured it, which admits it before this check.
@@ -253,7 +256,7 @@ export function assertCapturedModule(stage, id) {
   if (path.split(sep).includes('node_modules')) throw new Error('module outside captured app: '+packageOrigin(root,file));
 }
 
-// Package declarations ("Type-only package imports"). A bare
+// Package declarations (LLP 1027 D5, "Type-only package imports"). A bare
 // specifier names a package. Its declaration files (`.d.ts`, which emit
 // nothing) and `package.json` files are captured into the stage's
 // `node_modules`, at the place TypeScript looks for them, so the checker reads
@@ -266,6 +269,30 @@ const DECLARATION=/\.d\.[cm]?ts$/;
 // import costs at most a package's declarations, staged and unread.
 const SPECIFIER=/(?:\bfrom|\bimport|\brequire|\bmodule|\btypes\s*=)(?:\s|\(|\/\*[\s\S]*?\*\/|\/\/[^\n]*)*(['"])([^'"\r\n]+)\1/g;
 const PACKAGES='__exact_declarations.json';
+// A package's `/// <reference lib="esnext.disposable" />` to an ES library the
+// configuration leaves out is staged as a plain comment, so it loads nothing:
+// what that library declares (`Symbol.dispose`) no executor is known to have,
+// so the app's code still cannot name it, and the package's declarations that
+// do resolve it to nothing (`skipLibCheck`). Any other library a package
+// names, the DOM's, is still loaded and refused (`check`). TypeScript reads a
+// directive from a `///` comment in the comments before the file's first token,
+// its attributes in any order.
+const unreferenced=(bytes)=>{
+  const text=bytes.toString('utf8');
+  let out=text, at=text.charCodeAt(0)===0xFEFF ? 1 : 0;
+  for (;;) {
+    at+=/^\s*/.exec(text.slice(at))[0].length;
+    if (text.startsWith('/*',at)) { const end=text.indexOf('*/',at+2); if (end<0) break; at=end+2; continue; }
+    if (!text.startsWith('//',at)) break;
+    // A `//` comment ends at ECMAScript's first line terminator: LF, CR, U+2028 or U+2029.
+    const ends=text.slice(at).search(/[\n\r\u2028\u2029]/), end=ends<0 ? -1 : at+ends, line=text.slice(at,end<0 ? undefined : end);
+    const lib=/^\/\/\/\s*<reference\s(?:[^>]*?\s)?lib\s*=\s*(["'])([^"']*)\1/i.exec(line)?.[2];
+    if (lib && /^es(?:next|\d{4})(?:\.|$)/i.test(lib) && !configuredLibrary(`lib.${lib.toLowerCase()}.d.ts`)) out=out.slice(0,at)+'// '+out.slice(at+3);
+    if (end<0) break;
+    at=end+1;
+  }
+  return out===text ? bytes : Buffer.from(out);
+};
 // The package a specifier names, or null: relative, absolute, `#` subpath and
 // scheme (`node:`, `exact:`) specifiers name none.
 export function packageName(spec) {
@@ -309,6 +336,13 @@ export function stagePackages(stage) {
   const roots=capturedOrigins(stage);
   const staged=new Map(), files=new Map(), queue=[];
   let total=0;
+  // Over the cap, the error names the largest packages, each with the captured file whose imports reached it.
+  const tooLarge=()=>{
+    const mib=bytes=>`${(bytes/(1<<20)).toFixed(1)} MiB`;
+    const largest=[...staged.values()].sort((a,b)=>b.bytes-a.bytes).slice(0,3)
+      .map(p=>`${p.name} ${mib(p.bytes)} (${p.via ? `through ${p.via}, ` : ''}from ${p.source})`);
+    return new Error(`package declarations exceed 64 MiB: ${largest.join(', ')}. The type check stages the declarations of every package a .ts or .js file in the app folder imports, whether or not app.ts reaches the file; a folder that is not the app's (a web page's source) belongs outside the app folder, or in a folder at its root whose name starts with a dot`);
+  };
   // Where `name`, needed by a file in `dir` on disk, is found and placed.
   const find=(name,dir,root,owner)=>{
     for (let at=dir;;) {
@@ -323,7 +357,8 @@ export function stagePackages(stage) {
       at=up;
     }
   };
-  const need=(text,dir,root,owner)=>{
+  // `source`: the captured file whose imports led here, as the app names it.
+  const need=(text,dir,root,owner,source)=>{
     for (const [, , spec] of text.matchAll(SPECIFIER)) {
       const name=packageName(spec);
       if (!name) continue;
@@ -333,8 +368,8 @@ export function stagePackages(stage) {
         const known=staged.get(found.place)?.real;
         if (known && known!==found.real) throw new Error(`package declarations: two copies of ${wanted} (${known}, ${found.real}); install one`);
         if (known) continue;
-        staged.set(found.place,found);
-        copy(found.real,found.place,{at:found.place,from:found.real,installed:found.installed,modules:found.modules});
+        staged.set(found.place,Object.assign(found,{name:wanted,via:owner?.name,source,bytes:0}));
+        copy(found.real,found.place,{at:found.place,from:found.real,installed:found.installed,modules:found.modules,name:wanted,source,staged:found});
       }
     }
   };
@@ -345,12 +380,13 @@ export function stagePackages(stage) {
       const kind=entry.isSymbolicLink() ? statSync(path,{throwIfNoEntry:false}) : entry;
       if (kind?.isDirectory()) copy(path,join(place,name),owner);
       else if (kind?.isFile() && (name==='package.json' || DECLARATION.test(name))) {
-        const bytes=readFileSync(path);
+        const bytes=DECLARATION.test(name) ? unreferenced(readFileSync(path)) : readFileSync(path);
         total+=bytes.length;
-        if (total>64<<20) throw new Error('package declarations exceed 64 MiB');
+        owner.staged.bytes+=bytes.length;
+        if (total>64<<20) throw tooLarge();
         // Recorded where it is installed: a link retargeted is a change there.
         files.set(join(place,name),[join(owner.installed,relative(owner.from,path)),bytes]);
-        if (DECLARATION.test(name)) queue.push([bytes.toString('utf8'),dirname(realpathSync(path)),null,owner]);
+        if (DECLARATION.test(name)) queue.push([bytes.toString('utf8'),dirname(realpathSync(path)),null,owner,owner.source]);
       }
     }
   };
@@ -364,7 +400,7 @@ export function stagePackages(stage) {
       else if (entry.isDirectory()) sources(path);
       else if (entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name) && !entry.name.startsWith('__exact_') && path!==resolve(stage,'app.js')) {
         const root=roots.find(([at])=>within(path,at));
-        need(readFileSync(path,'utf8'),dirname(resolve(root[1],relative(root[0],path))),root,null);
+        need(readFileSync(path,'utf8'),dirname(resolve(root[1],relative(root[0],path))),root,null,slash(relative(stage,path)));
       }
     }
   };
@@ -393,7 +429,7 @@ export function stagePackages(stage) {
   if (!existsSync(recordPath) || readFileSync(recordPath,'utf8')!==record) writeFileSync(recordPath,record);
 }
 
-// Package code ("Package code"). A package's JavaScript is
+// Package code (LLP 1027 D5, "Package code"). A package's JavaScript is
 // captured file by file as the bundle reaches it: each import is resolved
 // from where its importer really is (Node's lookup, a package's `exports`,
 // `main` and `browser` fields, as a browser bundle resolves them), and the
@@ -408,6 +444,9 @@ export function stagePackages(stage) {
 // unguarded use of the DOM or of Node's globals are refused by package and
 // file: no executor has them.
 const RECORD='__exact_packages.json';
+/** The bundle's sites that run code from a string, a JSON list of warnings each producer says (the web build,
+ * js/bake/src/lib.rs `bake_in`). */
+export const CODE_WARNINGS='__exact_code_warnings.json';
 const BUILTIN=new Set(builtinModules);
 const builtin=(spec)=>spec.startsWith('node:') || BUILTIN.has(spec) || BUILTIN.has(spec.split('/')[0]);
 // npm's package names (with the old capitals) and versions: a place in the
@@ -447,7 +486,7 @@ const kindOf=(options)=>options?.kind==='require-call' ? 'require' : 'import';
 // the page and Hermes run the same file of a package; `process.env.NODE_ENV`
 // is the constant packages test.
 export const bundleOptions={platform:'browser',transform:{define:{'process.env.NODE_ENV':'"production"'}}};
-// An async function resumes under the answer it began in,
+// An async function resumes under the answer it began in (LLP 1133.002 D14),
 // so a call it makes after an `await` is that answer's, even when it awaited
 // a promise another answer made. No engine carries context across a native
 // `await`, so a data module's bundles lower `async` to generators
@@ -464,7 +503,7 @@ export const asyncContextHelper=`export default function _asyncToGenerator(fn) {
     return new Promise(function (resolve, reject) {
       var gen = fn.apply(self, args);
       function step(key, arg) {
-        // A live answer's step that a module turn settled runs in that answer's own turn
+        // A live answer's step that a module turn settled runs in that answer's own turn (LLP 1146 D2)
         if (context && context.route && context.route(at, step, key, arg)) return;
         var before = context ? context.swap(at) : undefined, info;
         try { info = gen[key](arg); } catch (error) { if (context) context.swap(before); reject(error); return; }
@@ -493,7 +532,9 @@ export const dataBundle=(stage)=>({...bundleOptions, transform:{...bundleOptions
  * is refused by file and line, into `refusals` when given, else thrown. */
 export function capturedSources(stage, refusals=null) {
   stage=realpathSync.native(stage);
-  const files=new Map(), roots=new Map(), edges=new Map(), area=join(stage,'node_modules','.packages');
+  const files=new Map(), roots=new Map(), edges=new Map(), stray=new Map(), area=join(stage,'node_modules','.packages');
+  // Each site that runs code from a string, once (`packageRefusals`): written beside the stage at the build's end.
+  const warned=new Set();
   let total=0;
   // Staged declarations and captured package code sit under a `node_modules` in the stage.
   const staged=(id)=>within(id,stage) && relative(stage,id).split(sep).includes('node_modules');
@@ -501,6 +542,11 @@ export function capturedSources(stage, refusals=null) {
     const file=files.get(id);
     if (!file) return slash(relative(stage,id))+at;
     return `${file.package.key} (${slash(relative(file.package.root,file.real))}${at})`;
+  };
+  // A diagnostic's file: the app's path, or the package's name, version and path in it (`zod@4.6.7/v4/core/util.js`).
+  const place=(id,at='')=>{
+    const file=files.get(id);
+    return (file ? `${file.package.key}/${slash(relative(file.package.root,file.real))}` : slash(relative(stage,id)))+at;
   };
   const copy=(from,to,pkg)=>{
     if (files.has(to)) return;
@@ -511,7 +557,7 @@ export function capturedSources(stage, refusals=null) {
     if (!existsSync(to) || !readFileSync(to).equals(bytes)) { mkdirSync(dirname(to),{recursive:true}); writeFileSync(to,bytes); }
     files.set(to,{real:from,package:pkg,sha256:createHash('sha256').update(bytes).digest('hex')});
   };
-  // The files a package's exact.json declares in `web.assets`, with that declaration: captured with its
+  // The files a package's exact.json declares in `web.assets` (LLP 1154 D2), with that declaration: captured with its
   // code, so its digest covers their bytes and the web build serves them from the capture (host/web-js/build.mjs).
   const assets=(pkg)=>{
     const at=join(pkg.root,'exact.json');
@@ -594,9 +640,27 @@ export function capturedSources(stage, refusals=null) {
     },
     transform(code, id) {
       id=physicalId(id);
-      const parse=(c,o)=>this.parse(c,o), js=/\.[cm]?js$/.test(id) && within(id,stage);
-      // The app's own JavaScript is checked as package code is, and for the clock as the app's TypeScript is.
-      report([...(files.has(id) ? [] : ambientRefusals(stage,id,code,parse)), ...strayReads(id,code,parse,(at)=>label(id,at),files.has(id)), ...(js ? packageRefusals(code,(at)=>label(id,at),parse) : [])]);
+      const parse=(c,o)=>this.parse(c,o), js=/\.[cm]?js$/.test(id) && within(id,stage), inPackage=files.has(id);
+      const reads=envReads(id,code,parse,(at)=>label(id,at),inPackage);
+      // The app's own JavaScript is checked as package code is, and for the clock as the app's TypeScript is. Every other
+      // module that runs, the app's TypeScript and a package's TypeScript or JSX, is checked only for code from a string.
+      const fromStrings=[], other=!js && within(id,stage) && /\.[cm]?[jt]sx?$/.test(id) && !/\.d\.[cm]?ts$/.test(id);
+      if (other) packageRefusals(code,(at)=>label(id,at),parse,fromStrings,/\.[cm]?tsx$/.test(id) ? 'tsx' : /\.jsx$/.test(id) ? 'jsx' : 'ts',(at)=>place(id,at));
+      report([...(inPackage ? [] : ambientRefusals(stage,id,code,parse)), ...(inPackage ? [] : reads.map(r=>r.why)), ...(js ? packageRefusals(code,(at)=>label(id,at),parse,fromStrings,'js',(at)=>place(id,at)) : [])]);
+      for (const why of fromStrings) warned.add(why);
+      if (!inPackage || !reads.length) return null;
+      // A package's read of a setting is a read only if the bundle keeps it: each becomes a global of the same length,
+      // which tree-shaking drops with the code around it, and `renderChunk` refuses any the output still holds. A
+      // global's read may throw, so the bundle keeps at least the code the read would have kept.
+      for (const {start,end,why} of reads) {
+        const marker=`__exact_env${stray.size.toString(36)}`;
+        stray.set(marker,why);
+        code=code.slice(0,start)+marker.padEnd(end-start)+code.slice(end);
+      }
+      return {code,map:null};
+    },
+    renderChunk(code) {
+      report([...stray].filter(([marker])=>new RegExp(`\\b${marker}\\b`).test(code)).map(([,why])=>why));
       return null;
     },
     buildEnd() {
@@ -616,6 +680,7 @@ export function capturedSources(stage, refusals=null) {
       });
       const path=resolve(stage,RECORD);
       if (!existsSync(path) || readFileSync(path,'utf8')!==record) writeFileSync(path,record);
+      writeFileSync(resolve(stage,CODE_WARNINGS),JSON.stringify([...warned].sort()));
     },
   };
 }
@@ -665,155 +730,15 @@ export function replayCaptured(stage, allowed=[]) {
     },
   };
 }
-// What package code, and the app's own JavaScript, may not use: the DOM,
-// which no data module has, Node's globals, and code made from a string.
-// Both executors lack the first two alike (js/src/prelude.js defines none;
-// host/web-js/ts-fetch.js hides the page's), so a test of one (`typeof
-// window`) answers the same everywhere; a use that test does not guard is
-// refused here, by name. This keeps a module portable; it is no security
-// boundary: on the web the module runs in the page's realm.
-const DOM=['window','frames','parent','top','opener','document','navigator','location','history','localStorage','sessionStorage','indexedDB','HTMLElement','Element','getComputedStyle','customElements','alert'];
-// The global object's names for itself, through which a member reaches the page.
-const HOSTS=['globalThis','self','window','frames','parent','top','opener'];
-// Code from a string: the bundle cannot capture it, and on the page it runs outside the module's bindings.
-const CODE=['Function','eval'];
-const NODE=['process','Buffer','global','__dirname','__filename','require'];
-const SCOPES=['Program','BlockStatement','StaticBlock','SwitchStatement','ForStatement','ForInStatement','ForOfStatement','CatchClause','ClassExpression'];
-const NOT_REFERENCES={MemberExpression:'property',Property:'key',MethodDefinition:'key',PropertyDefinition:'key',LabeledStatement:'label',BreakStatement:'label',ContinueStatement:'label',ImportSpecifier:'imported',ExportSpecifier:'exported',MetaProperty:'property'};
-const FUNCTIONS=['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression'];
-// The names a scope node declares itself: a function's parameters and its
-// hoisted `var`s and functions, a block's lexical declarations, a catch
-// clause's parameter, a named function or class expression's own name.
-function declares(node) {
-  const names=new Set();
-  const pattern=(p)=>{
-    if (!p) return;
-    if (p.type==='Identifier') names.add(p.name);
-    else if (p.type==='ObjectPattern') p.properties.forEach(q=>pattern(q.type==='RestElement' ? q.argument : q.value));
-    else if (p.type==='ArrayPattern') p.elements.forEach(pattern);
-    else if (p.type==='AssignmentPattern') pattern(p.left);
-    else if (p.type==='RestElement') pattern(p.argument);
-  };
-  const lexical=(statements)=>{
-    for (let s of statements ?? []) {
-      if (['ExportNamedDeclaration','ExportDefaultDeclaration'].includes(s.type)) s=s.declaration ?? s;
-      if (s.type==='VariableDeclaration' && s.kind!=='var') s.declarations.forEach(d=>pattern(d.id));
-      if (['FunctionDeclaration','ClassDeclaration'].includes(s.type) && s.id) names.add(s.id.name);
-      if (s.type==='ImportDeclaration') s.specifiers.forEach(x=>names.add(x.local.name));
-    }
-  };
-  const vars=(n)=>{
-    if (!n || typeof n!=='object') return;
-    if (Array.isArray(n)) { n.forEach(vars); return; }
-    if (FUNCTIONS.includes(n.type) || n.type==='ClassExpression' || n.type==='ClassDeclaration') return;
-    if (n.type==='VariableDeclaration' && n.kind==='var') n.declarations.forEach(d=>pattern(d.id));
-    for (const key in n) if (key!=='parent' && n[key] && typeof n[key]==='object') vars(n[key]);
-  };
-  if (node.type==='Program') { lexical(node.body); vars(node.body); }
-  else if (FUNCTIONS.includes(node.type)) {
-    node.params.forEach(pattern);
-    if (node.type==='FunctionExpression' && node.id) names.add(node.id.name);
-    if (node.body?.type==='BlockStatement') { lexical(node.body.body); vars(node.body.body); }
-  }
-  else if (node.type==='ClassExpression' && node.id) names.add(node.id.name);
-  else if (['BlockStatement','StaticBlock'].includes(node.type)) lexical(node.body);
-  else if (node.type==='SwitchStatement') node.cases.forEach(c=>lexical(c.consequent));
-  else if (['ForStatement','ForInStatement','ForOfStatement'].includes(node.type)) { const d=node.init ?? node.left; if (d?.type==='VariableDeclaration' && d.kind!=='var') d.declarations.forEach(x=>pattern(x.id)); }
-  else if (node.type==='CatchClause') pattern(node.param);
-  return names;
-}
-/** The DOM and Node globals a JavaScript file uses, as `label(at)`'s
- * `…: why`: each use of a name no enclosing scope binds, not guarded by a
- * `typeof` test of it that dominates the use (`typeof x !== 'undefined' &&
- * x.y`, its `if` or `?:`, or an earlier `if (typeof x …) return`), and each
- * such member of `globalThis`, `self`, `window` or `global`. Static: a use
- * behind an alias still reaches an executor without the name. */
-export function packageRefusals(code, label, parse) {
-  const ast=parse(code,{lang:'js'}), found=[], at=lineColumn(code);
-  // Whether `node` tests `typeof name` (or `typeof globalThis.name`).
-  const tests=(node,name)=>{
-    if (!node || typeof node!=='object') return false;
-    if (Array.isArray(node)) return node.some(n=>tests(n,name));
-    if (node.type==='UnaryExpression' && node.operator==='typeof') {
-      const a=bare(node.argument);
-      return a?.type==='Identifier' ? a.name===name : propertyName(a)===name;
-    }
-    if (FUNCTIONS.includes(node.type)) return false;
-    for (const key in node) if (key!=='parent' && tests(node[key],name)) return true;
-    return false;
-  };
-  const exits=(s)=>s && (['ReturnStatement','ThrowStatement'].includes(s.type) || (s.type==='BlockStatement' && exits(s.body.at(-1))));
-  // Whether a use of `name`, under the ancestors `path` (outermost first), is guarded.
-  const guarded=(name,path)=>path.some(([node,key,index],i)=>{
-    if (['IfStatement','ConditionalExpression'].includes(node.type) && key!=='test' && tests(node.test,name)) return true;
-    if (node.type==='LogicalExpression' && key==='right' && tests(node.left,name)) return true;
-    // An earlier statement of an enclosing block leaves when the name is absent.
-    const list=key==='body' || key==='consequent' ? node[key] : null;
-    return Array.isArray(list) && list.slice(0,index).some(s=>s.type==='IfStatement' && tests(s.test,name) && exits(s.consequent));
-  });
-  const refuse=(name,node)=>{
-    const where=label(':'+at(node.start));
-    if (CODE.includes(name) || name==='import()') found.push(where+` loads code from a string ('${name}'), which a bundle cannot capture`);
-    else if (HOSTS.includes(name) && !DOM.includes(name)) found.push(where+` uses the page's '${name}' through the global object: a data module has no page`);
-    else if (DOM.includes(name)) found.push(where+` uses the DOM's '${name}': a data module has no DOM`);
-    else if (name==='require') found.push(where+' loads a module by a computed name, which a bundle cannot capture');
-    else found.push(where+` uses Node's '${name}': a data module runs on Hermes and in the browser, which have no Node APIs`);
-  };
-  const scopes=[], path=[];
-  const free=(name)=>!scopes.some(s=>s.has(name));
-  const walk=(node,parent,key)=>{
-    if (!node || typeof node!=='object') return;
-    if (Array.isArray(node)) { node.forEach((n,i)=>{ path.push([parent,key,i]); walk(n,parent,key); path.pop(); }); return; }
-    if (node.type==='UnaryExpression' && node.operator==='typeof') return;
-    const pushed=SCOPES.includes(node.type) || FUNCTIONS.includes(node.type);
-    if (pushed) scopes.push(declares(node));
-    if (node.type==='Identifier' && !(NOT_REFERENCES[parent?.type]===key && !parent.computed) && free(node.name)) {
-      const name=node.name, grand=path.at(-2)?.[0];
-      const constant=name==='process' && parent?.type==='MemberExpression' && key==='object' && propertyName(parent)==='env' && grand?.type==='MemberExpression' && propertyName(grand)==='NODE_ENV';
-      const literal=name==='require' && parent?.type==='CallExpression' && key==='callee'
-        && ['Literal','TemplateLiteral'].includes(parent.arguments[0]?.type) && !parent.arguments[0].expressions?.length;
-      if ((DOM.includes(name) || NODE.includes(name)) && !constant && !literal && !guarded(name,path)) refuse(name,node);
-      // `Function`, and `eval` direct or not, however reached as a name.
-      else if (CODE.includes(name)) refuse(name,node);
-    }
-    if (node.type==='MemberExpression') {
-      const object=bare(node.object), name=propertyName(node);
-      if (object?.type==='Identifier' && HOSTS.includes(object.name) && free(object.name)
-        && (DOM.includes(name) || NODE.includes(name) || HOSTS.includes(name) || CODE.includes(name)) && !guarded(name,path)) refuse(name,node);
-    }
-    // `import(x)` of a computed name, like a computed `require`.
-    if (node.type==='ImportExpression' && !(['Literal','TemplateLiteral'].includes(node.source?.type) && !node.source.expressions?.length)) refuse('import()',node);
-    for (const k in node) if (k!=='parent' && node[k] && typeof node[k]==='object') {
-      if (!Array.isArray(node[k])) path.push([node,k]);
-      walk(node[k],node,k);
-      if (!Array.isArray(node[k])) path.pop();
-    }
-    if (pushed) scopes.pop();
-  };
-  walk(ast,null,null);
-  return found;
-}
 
-// Time and seeds are source arguments: every executor refuses the clock, randomness and every
-// timer but an answer's own `setTimeout` when they are used, with these words (js/src/prelude.js,
+// Time and seeds are source arguments (LLP 1027.000): every executor refuses the clock, randomness and every
+// timer but an answer's own `setTimeout` (D1) when they are used, with these words (js/src/prelude.js,
 // js/src/binary.js, host/web-js/ts-fetch.js). A direct use in the app's own code is refused here too, at
 // build, by file and line, so a test that runs the module under Bun, which has no such guard, cannot hide it.
 const ambient=(api)=>api+' is unavailable in data sources; pass time or a random seed as an argument';
 const timers=(api)=>api+' is unavailable in data sources: an answer waits with setTimeout; pass time as an argument';
 const TIMERS=['setInterval','requestAnimationFrame','requestIdleCallback'];
 const GLOBALS=['globalThis','self','window','global'];
-// `x!`, `(x)` and `x?.y` as written, down to the expression they wrap.
-const bare=(node)=>{ while (node && ['TSNonNullExpression','ParenthesizedExpression','ChainExpression','TSAsExpression','TSSatisfiesExpression','TSTypeAssertion'].includes(node.type)) node=node.expression; return node; };
-// A literal bracket key names the same property as dot access. Dynamic
-// keys and aliases stay with the runtime guard; do not evaluate them here.
-const propertyName=(node)=>{
-  if (node?.type!=='MemberExpression') return null;
-  const property=bare(node.property);
-  if (!node.computed) return property?.type==='Identifier' ? property.name : null;
-  if (property?.type==='Literal' && typeof property.value==='string') return property.value;
-  if (property?.type==='TemplateLiteral' && !property.expressions.length) return property.quasis[0].value.cooked;
-  return null;
-};
 // The global `name`: the bare identifier, or a global object's property.
 const ambientGlobal=(node,name,local)=>{
   node=bare(node);
@@ -835,65 +760,8 @@ function refusal(node,local) {
   if (node.type==='NewExpression' && ambientGlobal(node.callee,'Date',local) && !node.arguments.length) return ambient('new Date()');
   return null;
 }
-const VALUES=['FunctionDeclaration','VariableDeclaration','ClassDeclaration','ExpressionStatement','TSEnumDeclaration','TSImportEqualsDeclaration'];
-function instantiated(ns) {
-  const body=ns.body;
-  if (!body) return false;
-  if (body.type==='TSModuleDeclaration') return instantiated(body);
-  return (body.body ?? []).some(statement=>{
-    const s=['ExportNamedDeclaration','ExportDefaultDeclaration'].includes(statement.type) ? statement.declaration : statement;
-    if (!s || s.declare || (s.type==='TSEnumDeclaration' && s.const)) return false;
-    return VALUES.includes(s.type) || (s.type==='TSModuleDeclaration' && instantiated(s));
-  });
-}
-// The names the module binds itself, anywhere (a parameter, a variable, a
-// function, class or import): such a `Date` is not the guarded global, so
-// it is left alone; the runtime's refusal still guards the global behind it.
-function bound(ast) {
-  const names=new Set();
-  const pattern=(p)=>{
-    p=bare(p);
-    if (!p) return;
-    if (p.type==='Identifier') names.add(p.name);
-    else if (p.type==='ObjectPattern') p.properties.forEach(q=>pattern(q.type==='RestElement' ? q.argument : q.value));
-    else if (p.type==='ArrayPattern') p.elements.forEach(pattern);
-    else if (p.type==='AssignmentPattern') pattern(p.left);
-    else if (p.type==='RestElement') pattern(p.argument);
-    else if (p.type==='TSParameterProperty') pattern(p.parameter);
-  };
-  // Only bindings that exist at run time: a `declare` or type-only one is
-  // erased, and the global is what runs.
-  const walk=(node,typeOnly)=>{
-    if (!node || typeof node!=='object') return;
-    if (Array.isArray(node)) { node.forEach(n=>walk(n,typeOnly)); return; }
-    if (node.declare) return;
-    if (node.type==='VariableDeclarator') pattern(node.id);
-    if (['FunctionDeclaration','FunctionExpression','ClassDeclaration','ClassExpression'].includes(node.type) && node.id) names.add(node.id.name);
-    if (['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression'].includes(node.type)) node.params?.forEach(pattern);
-    if (node.type==='CatchClause') pattern(node.param);
-    // A namespace emits a value only when it holds one (an empty or
-    // type-only one is erased, and the global runs).
-    if (node.type==='TSModuleDeclaration' && node.id?.type==='Identifier' && instantiated(node)) names.add(node.id.name);
-    if (node.type==='TSImportEqualsDeclaration' && node.importKind!=='type') names.add(node.id.name);
-    if (node.type==='ImportDeclaration') typeOnly=node.importKind==='type';
-    if (['ImportSpecifier','ImportDefaultSpecifier','ImportNamespaceSpecifier'].includes(node.type) && !typeOnly && node.importKind!=='type') names.add(node.local.name);
-    for (const key in node) if (key!=='parent') walk(node[key],typeOnly);
-  };
-  walk(ast,false);
-  return names;
-}
-// `line:column` of an offset in `code`, by ECMAScript's line terminators:
-// LF, CR (CRLF is one), U+2028, U+2029.
-function lineColumn(code) {
-  const starts=[0];
-  for (let i=0;i<code.length;i++) {
-    const c=code.charCodeAt(i);
-    if (c===10 || c===0x2028 || c===0x2029 || (c===13 && code.charCodeAt(i+1)!==10)) starts.push(i+1);
-  }
-  return (offset)=>{ let lo=0, hi=starts.length; while (lo+1<hi) { const mid=(lo+hi)>>1; if (starts[mid]<=offset) lo=mid; else hi=mid; } return (lo+1)+':'+(offset-starts[lo]+1); };
-}
-/** The direct uses of the clock, randomness and timers in the captured
- * module `file`, as `path:line:col: why` with its path in the app: `parse`
+/** The direct uses of the global clock, randomness and timers where no enclosing
+ * scope binds them at run time, as `path:line:col: why` with `file`'s path in the app: `parse`
  * is Rolldown's (a plugin's `this.parse`, or `parseAst`), given TypeScript.
  * An early warning a Bun test cannot give, not the guard: an alias still
  * reaches the runtime's refusal. */
@@ -901,14 +769,9 @@ export function ambientRefusals(stage, file, code, parse) {
   if (!isAbsolute(file) || /\.d\.[cm]?ts$/.test(file) || !/\.[cm]?[jt]sx?$/.test(file)) return [];
   const lang=/\.[cm]?tsx?$/.test(file) ? (file.endsWith('x') ? 'tsx' : 'ts') : 'js';
   const label=relative(stage,file).split(sep).join('/'), found=[], at=lineColumn(code);
-  const ast=parse(code,{lang}), local=bound(ast);
-  const walk=(node)=>{
-    if (!node || typeof node!=='object') return;
-    if (Array.isArray(node)) { node.forEach(walk); return; }
+  walkRuntime(parse(code,{lang}),(node,local)=>{
     if (typeof node.type==='string') { const why=refusal(node,local); if (why) found.push(label+':'+at(node.start)+': '+why); }
-    for (const key in node) if (key!=='parent') walk(node[key]);
-  };
-  walk(ast);
+  });
   return found;
 }
 
@@ -1092,7 +955,7 @@ export function configure(stage, incremental=false, parse) {
   stagePackages(stage);
 }
 
-// A native module's names in data code: an `import … from
+// A native module's names in data code (LLP 1133.002 D13): an `import … from
 // "@exact/geolocation"` reaches a binding generated here from the package's
 // `exact.json`, never committed, so a published package and a `file:` one
 // read alike. Each interface installed above the app, the nearest first, is
@@ -1100,8 +963,8 @@ export function configure(stage, incremental=false, parse) {
 // `paths`, which the checker and Rolldown share. A call goes through the
 // runner's admission: the web runtime's `__exact_module`, else a native
 // request (`exact-native:`), whose answer the runner gives as the module's
-// declaration says, an error as `{code, message}`.
-// Members other interfaces declare on `name`'s names, by name, with their interface's shapes.
+// declaration says, an error as `{code, message}` (D1).
+// Members other interfaces declare on `name`'s names, by name, with their interface's shapes (LLP 1133.014 D10 item 1).
 const membersOf=(name, interfaces)=>interfaces.flatMap(i=>Object.entries(i.declaration.members ?? {}).filter(([o])=>o.split('#')[0]===name).flatMap(([o,m])=>Object.entries(m ?? {}).map(([option,spec])=>[o.split('#')[1],{ option, type: spec.type, answers: spec.answers, shapes: i.declaration.shapes ?? {} }]))).reduce((out,[fn,m])=>((out[fn] ??= []).push(m), out),{});
 function moduleBindings(stage, app) {
   // The target the build compiles, as an implementation's `targets` names it, or none (a loop serving several).
@@ -1110,7 +973,7 @@ function moduleBindings(stage, app) {
   const interfaces=moduleInterfaces(app); for (const {name,root,declaration,implementations} of interfaces) {
     const file='__exact_modules/'+name.replace(/^@/,'').replace(/\//g,'__')+'.ts';
     mkdirSync(resolve(stage,'__exact_modules'),{recursive:true});
-    // An interface the executor implements carries its own binding.
+    // An interface the executor implements carries its own binding (LLP 1133.007 D12).
     const own=Array.isArray(declaration.executor) && typeof declaration.binding==='string' ? readFileSync(resolve(root,declaration.binding),'utf8') : null;
     const text=own ?? moduleBinding(name,declaration,implementations.map(i=>i.json),names=>domDeclarations(app,names),membersOf(name,interfaces),target), at=resolve(stage,file);
     if (!existsSync(at) || readFileSync(at,'utf8')!==text) writeFileSync(at,text);
@@ -1149,8 +1012,8 @@ export function moduleInterfaces(app) {
   return [...out.values()];
 }
 
-/** The implementation bound to interface `iface` for `target`:
- * the one `app.json` names for the target, else the app's one direct
+/** The implementation bound to interface `iface` for `target` (LLP 1133.001
+ * D4): the one `app.json` names for the target, else the app's one direct
  * dependency that implements it there, else the one the interface carries;
  * `null` for none. Each choice is checked against the interface's version. */
 export function implementationFor(app, iface, target) {
@@ -1197,8 +1060,8 @@ function appText(app) {
   return [join(app,'app.ts'),...contracts(app)].map(f=>{ try { return readFileSync(f,'utf8'); } catch { return ''; } }).join('\n');
 }
 
-/** The packages the app imports, wherever it imports them: every Contract
- * file `app.contract` reaches
+/** The packages the app imports, wherever it imports them (LLP 1133.004
+ * stage 0, LLP 1133 D6 rule 6): every Contract file `app.contract` reaches
  * through relative `use … from "./…"`, and every TypeScript file `app.ts`
  * reaches through relative imports, each bare specifier taken to its
  * package's name. `text` is those files' text, where a literal option a
@@ -1231,19 +1094,24 @@ export function usedPackages(app) {
 }
 
 /** The Swift implementations the app's interfaces carry for `target` (`ios`,
- * `macos`, `tvos`), of the interfaces the app names in `app.contract` or
- * `app.ts`: each extension, its own Swift module's name,
- * its class, its source files, and the system frameworks it needs from an OS
- * version (`frameworks`). */
-export function appleImplementations(app, target) {
-  const { names: used, text } = usedPackages(app), named = `${text}\n${appText(app)}`;
-  return moduleInterfaces(app).filter(i=>used.has(i.name) || usesInterface(i,named)).flatMap(i=>{
+ * `macos`, `tvos`), of the `extensions` in the compiled plan (LLP 1133.001
+ * D4): each extension, its own Swift module's name,
+ * its class, its source files, what it adds to Info.plist (`plist`,
+ * `plistKeys`), and the system frameworks it needs from an OS version
+ * (`frameworks`, LLP 1133.016 D15). */
+export function appleImplementations(app, target, extensions, contractSources = []) {
+  const { text } = usedPackages(app), named = `${text}\n${appText(app)}\n${contractSources.map(path => readFileSync(path, 'utf8')).join('\n')}`;
+  return moduleInterfaces(app).filter(i=>extensions[i.name.split('/').at(-1)] === i.name).flatMap(i=>{
     const impl=implementationFor(app,i,target);
     const files=impl?.json.platform==='apple' && impl.json.sources?.swift;
     if (!impl || !files?.length || !impl.json.class) return [];
     const extension=i.name.split('/').at(-1);
-    // An Info.plist dictionary keyed by each literal strings key the app passes at `name.option`.
-    const plist=Object.entries(impl.json.plist ?? {}).map(([key,at])=>{
+    // An Info.plist dictionary keyed by each literal strings key the app passes at `name.option` (LLP 1133.002 D10).
+    // A literal value is `plistKeys`', which host/apple checks against its allow-list.
+    const declared=impl.json.plist ?? {};
+    if (typeof declared!=='object' || Array.isArray(declared)) throw new Error(`${extension}'s Apple implementation: its plist is not an object`);
+    const plist=Object.entries(declared).map(([key,at])=>{
+      if (typeof at!=='string' || !/^\w+\.\w+$/.test(at)) throw new Error(`${extension}'s Apple implementation: its plist gives ${key} ${JSON.stringify(at)}, not "<call>.<option>" (a literal value is plistKeys')`);
       const [name,option]=at.split('.'), keys=new Set();
       for (const [,inside] of named.matchAll(new RegExp(`\\b${name}\\s*\\(([^)]*)\\)`,'g')))
         for (const [,,value] of inside.matchAll(new RegExp(`\\b${option}\\s*[=:]\\s*(["'])([^"']+)\\1`,'g'))) keys.add(value);
@@ -1252,47 +1120,39 @@ export function appleImplementations(app, target) {
       for (const [,value] of rustSources(app).matchAll(new RegExp(`\\b${snake}\\s*:\\s*(?:Some\\()?"([^"]+)"`,'g'))) keys.add(value);
       return {key,keys:[...keys].sort()};
     }).filter(p=>p.keys.length);
-    // An interface that declares an authenticator entry: its class serves it in process.
+    // An interface that declares an authenticator entry (LLP 1133.010 D13): its class serves it in process.
     const authenticator=!!i.declaration?.authenticator?.apple;
     const events=(i.declaration.names ?? []).some(n=>n.event);
-    return [{extension,module:'ExactPkg_'+extension.replace(/\W/g,'_'),className:impl.json.class,sources:files.map(f=>resolve(impl.dir,f)),plist,views:packageViewTags(i,impl),authenticator,start:i.declaration?.start==='load',frameworks:impl.json.frameworks??{},activity:impl.json.apple?.activity??null}];
+    return [{extension,module:'ExactPkg_'+extension.replace(/\W/g,'_'),className:impl.json.class,sources:files.map(f=>resolve(impl.dir,f)),plist,plistKeys:impl.json.plistKeys ?? null,views:packageViewTags(i,impl),authenticator,start:i.declaration?.start==='load',frameworks:impl.json.frameworks??{},activity:impl.json.apple?.activity??null}];
   });
 }
 
-/** The view tags an implementation serves: every view its interface declares, and its own. */
+/** The view tags an implementation serves (LLP 1133.001 D1): every view its interface declares, and its own. */
 function packageViewTags(iface, impl) {
   const tags=v=>Array.isArray(v) ? v.filter(t=>typeof t==='string') : v && typeof v==='object' ? Object.keys(v) : [];
   return [...new Set([...tags(iface.declaration.views), ...tags(impl?.json.views)])].sort();
 }
 
-/** Whether `app` uses interface `i`: names it in a `use` or an import, or places a view it declares. */
-function usesInterface(i, named) {
-  if (named.includes(`"${i.name}"`) || named.includes(`'${i.name}'`)) return true;
-  return packageViewTags(i, null).some(tag => new RegExp(`(^|[^\\w-])${tag}([^\\w-]|$)`).test(named));
-}
-
-/** The Kotlin implementations bound for Android of the interfaces the app names: each extension,
+/** The Kotlin implementations bound for Android (LLP 1133.001 D4) of the compiled plan's `extensions`: each extension,
  * its class, its source directories, which join the APK's Kotlin, and the Maven coordinates it names, which join the
- * one locked Gradle graph. */
-export function androidImplementations(app) {
-  const { names: used, text } = usedPackages(app), named = `${text}\n${appText(app)}`;
-  return moduleInterfaces(app).filter(i=>used.has(i.name) || usesInterface(i,named)).flatMap(i=>{
+ * one locked Gradle graph (LLP 1133.008 D8 item 5). */
+export function androidImplementations(app, extensions) {
+  return moduleInterfaces(app).filter(i=>extensions[i.name.split('/').at(-1)] === i.name).flatMap(i=>{
     const impl=implementationFor(app,i,'android'), dirs=impl?.json.platform==='android' && impl.json.sources?.kotlin;
     if (!impl || !dirs?.length || !impl.json.class) return [];
-    return [{extension:i.name.split('/').at(-1),className:impl.json.class,dirs:dirs.map(d=>resolve(impl.dir,d)),views:packageViewTags(i,impl),maven:Array.isArray(impl.json.maven) ? impl.json.maven : [],manifest:impl.json.manifest ?? null,start:i.declaration?.start==='load'}];
+    return [{extension:i.name.split('/').at(-1),className:impl.json.class,dirs:dirs.map(d=>resolve(impl.dir,d)),views:packageViewTags(i,impl),mavenSource:resolve(impl.dir,'exact.json'),maven:impl.json.maven === undefined ? [] : impl.json.maven,manifest:impl.json.manifest ?? null,start:i.declaration?.start==='load'}];
   });
 }
 
-/** Each used interface's package configuration for `target`: extension name to the
+/** Each used interface's package configuration for `target` (LLP 1133.021 §9 item 7): extension name to the
  * values `app.json` gives under `packages.<interface>.<target>`, for the keys the interface's `config` declares. A
  * key typed `env` names a variable (`{"env": "NAME"}`) whose value is read here and never written to the repo. A
  * required key that is absent throws its declared code; one required only at `release` throws only for a release. */
-export function packageConfig(app, target, { release = false } = {}) {
-  const { names: used, text } = usedPackages(app), named = `${text}\n${appText(app)}`;
+export function packageConfig(app, target, { extensions, release = false }) {
   let manifest = {};
   try { manifest = JSON.parse(readFileSync(resolve(app, 'app.json'), 'utf8')); } catch { /* a plain Contract directory */ }
   const out = new Map();
-  for (const i of moduleInterfaces(app).filter(i => used.has(i.name) || usesInterface(i, named))) {
+  for (const i of moduleInterfaces(app).filter(i => extensions[i.name.split('/').at(-1)] === i.name)) {
     const declared = i.declaration?.config?.[target];
     if (!declared) continue;
     const given = manifest.packages?.[i.name]?.[target] ?? {}, config = {};
@@ -1311,22 +1171,22 @@ export function packageConfig(app, target, { release = false } = {}) {
   return out;
 }
 
-/** Each extension's web implementation, as bound:
+/** Each extension's web implementation, as bound (LLP 1133.001 D4):
  * extension name to the implementation's JavaScript entry. */
-export function webImplementations(app) {
+export function webImplementations(app, extensions) {
   const out=new Map();
-  for (const iface of moduleInterfaces(app)) {
+  for (const iface of moduleInterfaces(app).filter(i => extensions[i.name.split('/').at(-1)] === i.name)) {
     const web=implementationFor(app,iface,'web'), file=web?.json.sources?.javascript?.[0];
     if (file) out.set(iface.name.split('/').at(-1),resolve(web.dir,file));
   }
   return out;
 }
 
-/** The declarations of the DOM's `names` (WebAuthn's JSON dictionaries),
- * and of each type they name, copied from the TypeScript
+/** The declarations of the DOM's `names` (WebAuthn's JSON dictionaries, LLP
+ * 1133.011 D10), and of each type they name, copied from the TypeScript
  * compiler's own `lib.dom.d.ts`, which the data module's libraries leave
  * out: the binding is in the stage, so the check reads them there. A name
- * the library lacks is an opaque object. */
+ * the library lacks is an opaque JSON value, narrowed by the caller. */
 function domDeclarations(app, names) {
   let text='';
   // The compiler above the app, else exact2's own (an app outside the repo installs none).
@@ -1343,7 +1203,7 @@ function domDeclarations(app, names) {
     const n=queue.shift();
     if (found.has(n)) continue;
     const decl=declared(n);
-    found.set(n, decl ? 'export '+decl : `export type ${n} = Record<string, unknown>;`);
+    found.set(n, decl ? 'export '+decl : `export type ${n} = unknown;`);
     if (decl) for (const [ref] of decl.slice(decl.indexOf(n)+n.length).matchAll(/\b[A-Z][A-Za-z0-9]*\b/g)) if (!found.has(ref) && declared(ref)) queue.push(ref);
   }
   return [...found.values()];
@@ -1351,7 +1211,7 @@ function domDeclarations(app, names) {
 
 /** A name that is not a source (`Result<'posted'>`, a mutation's slot) fails
  * as "does not satisfy the constraint 'keyof SourceMap'", which lists none:
- * say which there are. */
+ * say which there are (sb4 farm wave 7, E3: 061 and 066, 15 minutes). */
 function sourceNames(stage,diagnostics) {
   if(!/constraint 'keyof SourceMap'/.test(diagnostics))return '';
   let text='';
@@ -1365,6 +1225,53 @@ function sourceNames(stage,diagnostics) {
 // (not an RSS cap); explicit user settings always win.
 const checkEnv={GOGC:'300',GOMEMLIMIT:'128MiB',GOMAXPROCS:'4',...process.env};
 
+/** Value exports of the configured module namespace, including CommonJS re-exports. */
+export async function valueExports(stage, libraries) {
+  const module = resolve(stage, 'app.ts');
+  const compiler = createRequire(resolve(libraries, 'tsc')).resolve('typescript/unstable/async');
+  const { API } = await import(pathToFileURL(compiler).href);
+  const api = new API({ cwd: stage });
+  try {
+    const config = resolve(stage, '__exact_tsconfig.json');
+    const snapshot = await api.updateSnapshot({ openProjects: [config] });
+    try {
+      const { program, checker } = snapshot.getProject(config);
+      checkFiles(stage, libraries, await program.getSourceFileNames());
+      const file = await program.getSourceFile(module);
+      const type = await checker.getTypeAtLocation(file);
+      return (await checker.getPropertiesOfType(type)).map(symbol => symbol.name);
+    } finally { await snapshot.dispose(); }
+  } finally { await api.close(); }
+}
+
+/** Select the native canvas seam before checking or bundling, so CommonJS namespaces cannot retain an unused recorder. */
+export async function prepareCanvas(stage, libraries) {
+  const path = resolve(stage, '__exact_entry.ts'), before = readFileSync(path, 'utf8');
+  const marker = '// __exact_canvas_entry\n';
+  if (!before.includes(marker)) return;
+  const exported = await valueExports(stage, libraries);
+  const draws = exported.includes('draw');
+  if (draws !== exported.includes('surfaces'))
+    throw new Error('app.ts exports `draw` and `surfaces` together, or neither (LLP 1056 D1)');
+  const entry = draws ? `import { canvasSeam } from './__exact_canvas.js';
+export const abi = 2;
+export const surfacesJson = JSON.stringify(app.surfaces);
+const seam = canvasSeam(app.draw);
+export const drawCanvas = (request: string, host?: unknown): string => seam.draw(JSON.parse(request), host);
+export const retireCanvases = (retired: string): void => seam.retire(JSON.parse(retired));
+` : 'export const abi = 1;\n';
+  writeFileSync(path, before.replace(marker, entry));
+}
+
+function checkFiles(stage, libraries, files) {
+  stage = realpathSync.native(stage);
+  libraries = realpathSync.native(libraries);
+  const allowed = path => within(path, stage) || (within(path, libraries) && configuredLibrary(relative(libraries, path)));
+  for (const path of files) {
+    if (path && !allowed(realpathSync.native(path))) throw new Error('module outside captured app: ' + path);
+  }
+}
+
 /** Type-check a configured stage with the native compiler `tsc` (whose
  * standard libraries are in `libraries`): its diagnostics, or the compiler's
  * actual resolved graph, type-only imports included, must stay inside the
@@ -1375,8 +1282,6 @@ export function check(stage, tsc, libraries) {
   // TypeScript expands Windows short paths; compare the same physical names
   // for the capture, libraries and files, including directory junctions.
   stage=realpathSync.native(stage);
-  libraries=realpathSync.native(libraries);
-  const allowed = path => within(path,stage) || (within(path,libraries) && configuredLibrary(relative(libraries,path)));
   // A package's JavaScript entry (`typescript/bin/tsc`, an `EXACT_TSC`
   // override) keeps its Node shebang: run it through Bun, as the one-shot
   // producer runs its tools (js/bake/src/lib.rs `run`).
@@ -1395,9 +1300,8 @@ export function check(stage, tsc, libraries) {
         const refusal=mutationFailure ? "\nnote: a Snapback mutation returning {ok:false} leaves failure(slot) empty; throw refused({code: 'YOUR_CODE', message: 'Explain the refusal'}) instead. Annotate successful helpers with Result<'source'>, or keep ok:true literal with `as const`.\n" : '';
         return fail(new Error(diagnostics+sourceNames(stage,diagnostics)+refusal+String(stderr??'') || String(error.message)));
       }
-      for(const path of stdout.trim().split(/\r?\n/)) {
-        if(path && !allowed(realpathSync.native(path)))return fail(new Error('module outside captured app: '+path));
-      }
+      try { checkFiles(stage, libraries, stdout.trim().split(/\r?\n/)); }
+      catch (error) { return fail(error); }
       done();
     }));
 }

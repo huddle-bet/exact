@@ -1,4 +1,4 @@
-//! A route that paints its boot document first: the page
+//! A route that paints its boot document first (LLP 1048.005): the page
 //! with its answers still to come goes before the render waits, its head's
 //! fields in the head; the settled page follows, hiding it and removing it
 //! before the runtime adopts.
@@ -85,7 +85,7 @@ impl DataSource for Cards {
 /// A browser's navigation of `target`: the page's bytes as they came, and
 /// how long until its boot document (the bytes up to `data-boot`'s `</div>`)
 /// had arrived, if it had one.
-fn navigate(addr: std::net::SocketAddr, target: &str) -> (String, Option<Duration>) {
+pub(super) fn navigate(addr: std::net::SocketAddr, target: &str) -> (String, Option<Duration>) {
     let started = Instant::now();
     let mut stream = TcpStream::connect_timeout(&addr, BOUND).unwrap();
     stream.set_read_timeout(Some(BOUND)).unwrap();

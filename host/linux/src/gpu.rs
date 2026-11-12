@@ -4,8 +4,11 @@
 //! display already consume. The device is created at boot; vello's
 //! pipelines are compiled then, behind a wgpu pipeline cache persisted to
 //! disk where the driver supports one (Vulkan), so only the first launch on
-//! a machine pays for the shaders. wgpu is the one GPU API on every host;
-//! compiling shaders on the boot path is a deliberate trade.
+//! a machine pays for the shaders.
+//!
+//! @ref LLP 1015 §2 (r2: the GPU painter); LLP 1009 D1 (wgpu is the one
+//! GPU API on every host) and D5 (shaders — here on the boot path, the
+//! trade Charlie took 2026-08-29)
 
 #![allow(unsafe_code)]
 
@@ -60,11 +63,11 @@ pub struct Gpu {
     /// Image brushes by the picture's address, each entry holding the
     /// picture so the address cannot be reused while the brush is cached.
     images: ImageCache,
-    /// 2D canvas snapshots as image brushes, by snapshot identity: a new
-    /// revision is a new `Arc`, so a new upload.
+    /// 2D canvas snapshots as image brushes, by snapshot identity (LLP 1056
+    /// D7): a new revision is a new `Arc`, so a new upload.
     canvas_brushes: std::collections::HashMap<usize, (Arc<Pixmap>, vello::peniko::ImageBrush)>,
     /// The clip and opacity layers open in the scene (a backdrop flush
-    /// pushes them again).
+    /// pushes them again, LLP 1053.000 D2).
     layers: Vec<backdrop::Layer>,
     rows: rows::Rows,
     /// The adapter's name.
@@ -501,7 +504,7 @@ impl Backend for Gpu {
         self.scene.fill(Fill::NonZero, a, color(c), None, &shape(s));
     }
 
-    // An SVG shape: fill under stroke.
+    // @ref LLP 1055 D4 — an SVG shape: fill under stroke.
     fn svg_path(&mut self, s: &crate::paint::SvgPaint<'_>, ts: Transform) {
         let mut p = BezPath::new();
         for seg in &s.path.0 {
@@ -517,12 +520,12 @@ impl Backend for Gpu {
             }
         }
         let a = self.affine(ts);
-        // A gradient is a peniko brush in the path's
+        // @ref LLP 1055.000 D7 — a gradient is a peniko brush in the path's
         // space, interpolated unpremultiplied as Chrome's SVG gradients are.
         let brush = |ink: &crate::paint::Ink<'_>| -> (vello::peniko::Brush, Option<Affine>) {
             match ink {
                 crate::paint::Ink::Solid(c) => (color(*c).into(), None),
-                // A pattern's tile as a repeating image brush.
+                // @ref LLP 1055.000 D7 — a pattern's tile as a repeating image brush.
                 crate::paint::Ink::Pattern {
                     tile,
                     transform: t,
@@ -657,11 +660,13 @@ impl Backend for Gpu {
         };
         let a = self.affine(ts);
         // Vello samples the ramp at integer device coordinates; CSS uses
-        // pixel centres. Shift the repeating brush, not its clipped shape.
-        let placed = if g.repeat {
-            Some(a.inverse() * Affine::translate((-0.5, -0.5)) * a)
-        } else {
-            placed
+        // pixel centres. Shift the repeating or radial brush, not its
+        // clipped shape.
+        let centre = a.inverse() * Affine::translate((-0.5, -0.5)) * a;
+        let placed = match (g.repeat, g.geometry) {
+            (true, _) => Some(centre),
+            (false, Geometry::Radial { .. }) => placed.map(|p| centre * p),
+            _ => placed,
         };
         self.scene.fill(
             Fill::NonZero,
@@ -766,9 +771,10 @@ impl Backend for Gpu {
         if nw <= 0.0 || nh <= 0.0 || dst.2 <= 0.0 || dst.3 <= 0.0 {
             return;
         }
-        // A snapshot no painter holds any more is dropped with its brush.
+        // The entry and its brush's Pixels each own an Arc. Cloned blobs
+        // share Pixels, so only counts above two have another snapshot owner.
         self.canvas_brushes
-            .retain(|_, (pixels, _)| Arc::strong_count(pixels) > 1);
+            .retain(|_, (pixels, _)| Arc::strong_count(pixels) > 2);
         let brush = self
             .canvas_brushes
             .entry(Arc::as_ptr(image) as usize)
@@ -797,11 +803,19 @@ impl Backend for Gpu {
         }
     }
 
+    /// Glyphs draw sharp here: only a painter that blurs them as it draws
+    /// them takes the sigma (LLP 1077 D15).
+    fn text_blur(&mut self, _sigma: f32) {}
+
     fn surface_image(&mut self, image: Arc<Pixmap>, dst: Rect4) {
         self.island_image(image, dst, Transform::identity(), 0);
     }
 
-    // An island in its element's user space.
+    // @ref LLP 1055.000 D14 — an island in its element's user space.
+    fn supports_island_image(&self) -> bool {
+        true
+    }
+
     fn island_image(&mut self, image: Arc<Pixmap>, dst: Rect4, ts: Transform, mode: u8) {
         let clips: &[Shape] = &[];
         struct Pixels(Arc<Pixmap>);
@@ -828,7 +842,7 @@ impl Backend for Gpu {
         let place = a
             * Affine::translate((dst.0 as f64, dst.1 as f64))
             * Affine::scale_non_uniform(dst.2 as f64 / nw, dst.3 as f64 / nh);
-        // `mix-blend-mode`, as a blended layer.
+        // @ref LLP 1055.000 D19 — `mix-blend-mode`, as a blended layer.
         if mode != 0 {
             use vello::peniko::Mix as M;
             let mix = [
@@ -947,34 +961,14 @@ impl Backend for Gpu {
         true
     }
 
-    // An SVG clip: its shapes as one clip layer
-    // (a union under one rule), its own clip a layer inside it.
+    // @ref LLP 1055.000 D10 — children union under their own rules;
+    // a clip on the clipPath itself intersects that union.
     fn push_svg_clip(&mut self, clip: &exact_kernel::svg::scene::Clip, ts: Transform) -> usize {
         let a = self.affine(ts);
         let mut pushed = 0;
         let mut level = Some(clip);
         while let Some(c) = level {
-            let mut b = BezPath::new();
-            for shape in &c.shapes {
-                for seg in &shape.path.0 {
-                    match *seg {
-                        exact_kernel::svg::Seg::Move(x, y) => b.move_to((x as f64, y as f64)),
-                        exact_kernel::svg::Seg::Line(x, y) => b.line_to((x as f64, y as f64)),
-                        exact_kernel::svg::Seg::Cubic(p, q, r, s, x, y) => b.curve_to(
-                            (p as f64, q as f64),
-                            (r as f64, s as f64),
-                            (x as f64, y as f64),
-                        ),
-                        exact_kernel::svg::Seg::Close => b.close_path(),
-                    }
-                }
-            }
-            let rule = if !c.shapes.is_empty() && c.shapes.iter().all(|s| s.even_odd) {
-                Fill::EvenOdd
-            } else {
-                Fill::NonZero
-            };
-            self.push_recorded(backdrop::Layer::Clip(rule, a, b));
+            self.push_recorded(backdrop::Layer::svg_clip(c, a));
             pushed += 1;
             level = c.then.as_deref();
         }
@@ -1074,5 +1068,40 @@ impl Backend for Gpu {
     }
     fn layer_end(&mut self) {
         self.keep_layer();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a native GPU adapter; run explicitly in native validation"]
+    fn canvas_brushes_release_replaced_snapshots_and_reuse_live_ones() {
+        let mut gpu = Gpu::new().expect("native GPU adapter");
+        let live = Arc::new(Pixmap::new(8, 8).unwrap());
+        let live_key = Arc::as_ptr(&live) as usize;
+        let mut snapshots = Vec::new();
+        let mut live_brush = None;
+        for _ in 0..100 {
+            gpu.begin(16., 8., 1.);
+            gpu.canvas(&live, (0., 0., 8., 8.), &[], Transform::identity());
+            let brush = gpu.canvas_brushes[&live_key].1.image.data.id();
+            assert_eq!(*live_brush.get_or_insert(brush), brush);
+
+            let snapshot = Arc::new(Pixmap::new(8, 8).unwrap());
+            snapshots.push(Arc::downgrade(&snapshot));
+            gpu.canvas(&snapshot, (8., 0., 8., 8.), &[], Transform::identity());
+        }
+        gpu.begin(16., 8., 1.);
+        gpu.canvas(&live, (0., 0., 8., 8.), &[], Transform::identity());
+        assert_eq!(gpu.canvas_brushes.len(), 1);
+        assert!(snapshots
+            .iter()
+            .all(|snapshot| snapshot.upgrade().is_none()));
+        assert_eq!(
+            gpu.canvas_brushes[&live_key].1.image.data.id(),
+            live_brush.unwrap()
+        );
     }
 }

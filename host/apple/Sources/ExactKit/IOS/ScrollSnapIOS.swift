@@ -1,4 +1,4 @@
-// CSS scroll snap on UIKit ("Horizontal scroll snap"): UIKit
+// CSS scroll snap on UIKit (LLP 1008, "Horizontal scroll snap"): UIKit
 // projects where a drag comes to rest; the nearest captured snap position
 // replaces it.
 #if os(iOS) || os(tvOS)
@@ -9,6 +9,15 @@ extension NodeView {
     /// the projected resting offset and owns the resulting deceleration.
     package func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
         guard scrollView === self.scrollView else { return }
+        // `scrolldragend` (Charlie, 2026-11-10): UIKit's velocity, points per
+        // millisecond and positive as the offset grows, as the web's
+        // scrollLeft/scrollTop, and the rest decided below, in those coordinates.
+        defer {
+            if handlers.contains("scrolldragend"), velocity.x.isFinite, velocity.y.isFinite {
+                let rest = targetContentOffset.pointee
+                presenter?.scrollDrag(id, (velocity, CGPoint(x: rest.x, y: rest.y + scrollTopInset(scrollView))))
+            }
+        }
         #if os(iOS)
         // A painted swipe row's full swipe decides where it rests (PaintedSwipesIOS.swift).
         defer { if swipeOwner { presenter?.swipeActions.painted.willEnd(self, scrollView, target: targetContentOffset) } }
@@ -46,9 +55,21 @@ extension NodeView {
             }
         }
         visit(scrollView)
+        func nearer(_ a: CGFloat, _ b: CGFloat) -> Bool {
+            let da = abs(a - proposed.x), db = abs(b - proposed.x)
+            return da < db || (da == db && a < b)
+        }
+        let mounted = positions.min(by: nearer)
+        let distance = mounted.map { abs($0 - proposed.x) } ?? .infinity
+        if distance > 0, targetPositions.isEmpty,
+           presenter?.collections.entries[id]?.snapshot.horizontal == true,
+           let position = presenter?.session?.runtime.collectionSnap(id, proposed: Double(proposed.x),
+                port: Double(scrollView.bounds.width), maximum: Double(maximum), distance: Double(distance)) {
+            positions.append(CGFloat(position))
+        }
         let choices = targetPositions.isEmpty ? positions : targetPositions
         var result = proposed
-        if let nearest = choices.min(by: { abs($0 - proposed.x) < abs($1 - proposed.x) }) { result.x = nearest }
+        if let nearest = choices.min(by: nearer) { result.x = nearest }
         if let origin, targetPositions.isEmpty { result.x = CGFloat(SnapStop.limit(Double(result.x), from: Double(origin), areas: areas)) }
         return result
     }

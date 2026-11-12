@@ -1,22 +1,23 @@
-//! Answers that keep coming, natively: a streamed `fetch` whose body is
-//! server-sent events, opened by the worker that owns the transport and read on
-//! a thread of its own, so an open stream holds no I/O worker. Each event is
-//! one `Outcome::Message` to the ticket; anything that ends the body ends the
-//! stream. The host never reconnects on its own.
+//! Answers that keep coming, natively (LLP 1016.000 D3; LLP 1069.004 slice
+//! 2): a streamed `fetch` whose body is server-sent events, opened by the
+//! worker that owns the transport and read on a thread of its own, so an
+//! open stream holds no I/O worker (LLP 1067 D3). Each event is one
+//! `Outcome::Message` to the ticket; anything that ends the body ends the
+//! stream. The host never reconnects on its own (1069.004 slice 2).
 //!
-//! A `ws:` or `wss:` URL is a WebSocket instead, admitted
+//! A `ws:` or `wss:` URL is a WebSocket instead (1069.004 slice 3), admitted
 //! by `net.websocket`: each text message is one `Message`, and the far
 //! side's close, a binary message or one over the ceiling ends it. Nothing
 //! is sent: the request's method, headers and body are not used, as a
 //! browser's `WebSocket` could not send them either. A request that says
-//! `socket` owns a two-way socket instead (`socket.rs`).
+//! `socket` owns a two-way socket instead (LLP 1016.000 D7; `socket.rs`).
 //! A request that says `bytes` reads a 2xx body that is not
 //! `text/event-stream` as a byte stream instead of one answer (`bytes.rs`).
 //! An upload (`upload_progress`) delivers the body's bytes sent as they go
 //! and then its reply, read whole, as the one answer that ends it.
 use super::{
     check_headers, complete, failed, fetch_failure, fetch_request, has_ready, wake, Completed,
-    Deadline, Shared, MAX_BODY,
+    Deadline, Quiet, Shared, MAX_BODY,
 };
 use exact_runner::{FailureKind, HttpScheduling, Message, Outcome, Request, Response};
 use ibex2::stdlib::{
@@ -36,12 +37,12 @@ enum Opened {
     Events(StreamingResponse, usize),
     Bytes(StreamingResponse, usize),
     Socket(Box<dyn MessageSource>, usize),
-    /// A long poll, asked by its own loop: its first request and per-reply ceiling.
+    /// A long poll (LLP 1016.000 D8), asked by its own loop: its first request and per-reply ceiling.
     LongPoll(Request, usize),
 }
 pub(super) use socket::{close as close_sockets, release, Socket};
 
-/// A WebSocket's URL (the scheme is the whole spelling).
+/// A WebSocket's URL (the scheme is the whole spelling: LLP 1069.004).
 pub(super) fn is_socket(url: &str) -> bool {
     let scheme = url.split(':').next().unwrap_or("");
     scheme.eq_ignore_ascii_case("ws") || scheme.eq_ignore_ascii_case("wss")
@@ -75,6 +76,9 @@ fn opened(
     abort: AbortController,
     mut held: Option<upload::Held>,
 ) {
+    if let Some(outcome) = super::cache::missing(&request, forced) {
+        return complete(shared, ticket, outcome);
+    }
     // Retirement aborts every stream, as it does every job.
     let _retiring = {
         let abort = abort.clone();
@@ -83,7 +87,7 @@ fn opened(
     if shared.abort.signal().aborted() {
         abort.abort();
     }
-    // A local listener, on this thread until it is let go.
+    // A local listener (LLP 1133.005), on this thread until it is let go.
     if request.listen.is_some() {
         return listen::run(shared, ticket, request, grants, abort);
     }
@@ -92,6 +96,14 @@ fn opened(
     let timeout = request.timeout_ms.filter(|_| request.upload_progress);
     let deadline = match timeout.map(|ms| Deadline::arm(ms, &abort)).transpose() {
         Ok(deadline) => deadline,
+        Err(why) => return complete(shared, ticket, failed(FailureKind::Refused, why)),
+    };
+    // A socket's idle timeout counts from here, its opening included (LLP 1016.000 D11).
+    let quiet = match (request.idle_timeout_ms)
+        .map(|ms| Quiet::arm(ms, &abort))
+        .transpose()
+    {
+        Ok(quiet) => quiet,
         Err(why) => return complete(shared, ticket, failed(FailureKind::Refused, why)),
     };
     let sent = (request.upload_progress).then(|| progress(shared, ticket, abort.signal()));
@@ -118,7 +130,7 @@ fn opened(
                 Ok((Opened::LongPoll(request.clone(), limit), b))
             }
             Ok(b) if is_socket(&request.url) => open_socket(&b, request, &abort).map(|s| (s, b)),
-            // A body from an app file, read as the stream opens.
+            // A body from an app file, read as the stream opens (LLP 1108 D6 R2).
             Ok(b) => {
                 super::body::resolve(shared.roots_for(&request), grants, &mut request, &|| {
                     abort
@@ -132,7 +144,7 @@ fn opened(
                     if let Some(held) = held.as_mut() {
                         held.keep(request.body.len().saturating_mul(COPIES));
                     }
-                    open(Ok(&b), request, forced, &abort, sent)
+                    open(Ok(&b), request, forced, &abort, sent, shared)
                 })
                 .map(|opened| (opened, b))
             }
@@ -142,7 +154,12 @@ fn opened(
     .unwrap_or_else(|_| Err(failed(FailureKind::Aborted, "the stream opener panicked")));
     drop(held);
     let passed = deadline.as_ref().is_some_and(Deadline::passed);
-    let opened = opened.map_err(|end| timed_out(end, passed, timeout.unwrap_or(0)));
+    let opened = opened
+        .map_err(|end| timed_out(end, passed, timeout.unwrap_or(0)))
+        .map_err(|end| Quiet::finish(quiet.as_ref(), end));
+    if let (Ok(_), Some(quiet)) = (&opened, &quiet) {
+        quiet.heard();
+    }
     match opened {
         // The bindings live as long as the body they opened.
         Ok((Opened::Events(response, limit), _bindings)) => {
@@ -152,9 +169,11 @@ fn opened(
             bytes::read(shared, ticket, response, limit, abort)
         }
         Ok((Opened::Socket(socket, limit), _bindings)) if two_way => {
-            socket::read(shared, ticket, socket, limit, abort)
+            socket::read(shared, ticket, socket, limit, abort, quiet)
         }
-        Ok((Opened::Socket(socket, _), _bindings)) => read_socket(shared, ticket, socket, abort),
+        Ok((Opened::Socket(socket, _), _bindings)) => {
+            read_socket(shared, ticket, socket, abort, quiet)
+        }
         Ok((Opened::LongPoll(request, limit), bindings)) => {
             long_poll::run(shared, ticket, request, forced, &bindings, limit, abort)
         }
@@ -172,8 +191,11 @@ fn open_socket(
         HttpScheduling::Ordered => MAX_BODY,
         HttpScheduling::Independent { max_response_bytes } => max_response_bytes as usize,
     };
+    request
+        .check_protocols()
+        .map_err(|e| failed(FailureKind::Refused, e))?;
     b.websocket
-        .open(&request.url, limit, &abort.signal())
+        .open_with_protocols(&request.url, limit, &abort.signal(), &request.protocols)
         .map(|socket| Opened::Socket(socket, limit))
         .map_err(|e| fetch_failure(e, abort))
 }
@@ -184,12 +206,18 @@ fn read_socket(
     ticket: u64,
     mut socket: Box<dyn MessageSource>,
     abort: AbortController,
+    quiet: Option<Quiet>,
 ) {
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
-        match socket.next() {
+        let next = socket.next();
+        if let (Ok(Incoming::Text(_)), Some(quiet)) = (&next, &quiet) {
+            quiet.heard();
+        }
+        match next {
             Ok(Incoming::Text(data)) => {
                 let m = Message {
                     data,
+                    protocol: socket.protocol().into(),
                     ..Message::default()
                 };
                 if !message(shared, ticket, m) {
@@ -218,19 +246,21 @@ fn read_socket(
         }
     }))
     .unwrap_or_else(|_| failed(FailureKind::Aborted, "the stream reader panicked"));
+    // Its end is settled before the socket is dropped, which may take a while.
+    let run = Quiet::finish(quiet.as_ref(), run);
     drop(socket);
     complete(shared, ticket, run);
 }
 
 /// One message of the open stream `ticket`, false once nobody wants more
 /// (forgotten, retired, ended). The newest undelivered message per ticket is
-/// kept and the ones it replaces are counted on it: display
+/// kept and the ones it replaces are counted on it (LLP 1016.000 D4): display
 /// data coalesces, and a log sees the gap and re-asks from its cursor.
 fn message(shared: &Shared, ticket: u64, message: Message) -> bool {
     deliver(shared, ticket, message, false)
 }
 
-/// A long poll's reply that is no event: a message of the
+/// A long poll's reply that is no event (LLP 1016.000 D8): a message of the
 /// reserved event `LONG_POLL_REPLY`, which never takes an event's place nor
 /// counts as one dropped, and which an event that follows replaces.
 fn reply(shared: &Shared, ticket: u64) -> bool {
@@ -260,7 +290,7 @@ fn deliver(shared: &Shared, ticket: u64, mut message: Message, reply: bool) -> b
         return false;
     };
     // An upload's start is never folded into another message, nor another
-    // into it: it says the upload reached the network.
+    // into it (LLP 1016.000 D10): it says the upload reached the network.
     let start =
         |done: &Completed| matches!(&done.outcome, Outcome::Message(m) if m.upload_started());
     let waiting = (state.completed[lane].iter_mut())
@@ -269,10 +299,12 @@ fn deliver(shared: &Shared, ticket: u64, mut message: Message, reply: bool) -> b
     match waiting {
         Some(done) if reply => {
             done.elapsed_ms = elapsed_ms;
+            done.finished_at = std::time::Instant::now();
         }
         Some(done) if done.reply => {
             done.outcome = Outcome::Message(message);
             done.elapsed_ms = elapsed_ms;
+            done.finished_at = std::time::Instant::now();
             done.reply = false;
         }
         Some(done) => {
@@ -284,8 +316,11 @@ fn deliver(shared: &Shared, ticket: u64, mut message: Message, reply: bool) -> b
             }
             done.outcome = Outcome::Message(message);
             done.elapsed_ms = elapsed_ms;
+            done.finished_at = std::time::Instant::now();
         }
         None => state.completed[lane].push_back(Completed {
+            cached: false,
+            finished_at: std::time::Instant::now(),
             elapsed_ms,
             ticket,
             outcome: Outcome::Message(message),
@@ -326,6 +361,7 @@ fn open(
     forced: bool,
     abort: &AbortController,
     sent: Option<Sent>,
+    shared: &Arc<Shared>,
 ) -> Result<Opened, Outcome> {
     if abort.signal().aborted() {
         return Err(failed(FailureKind::Aborted, "native request aborted"));
@@ -341,6 +377,7 @@ fn open(
     let upload = request.upload_progress;
     let timeout = request.timeout_ms.filter(|_| upload);
     let mut req = fetch_request(request, forced);
+    super::cache::observe(shared, &mut req);
     if !upload && !req.headers.has("accept") {
         req.headers.set("accept", "text/event-stream");
     }
@@ -515,6 +552,7 @@ impl EventStream {
                 id: self.id.clone(),
                 data,
                 coalesced: 0,
+                protocol: Box::default(),
                 binary: None,
             }));
         }
@@ -556,3 +594,11 @@ mod upload;
 #[cfg(test)]
 #[path = "executor_stream_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "executor_stream_timeout_tests.rs"]
+mod timeout_tests;
+
+#[cfg(test)]
+#[path = "executor_protocol_tests.rs"]
+pub(crate) mod protocol_tests;

@@ -1,4 +1,4 @@
-//! Form controls, activated: a press on a
+//! Form controls, activated (LLP 1069.001 D4, D7, D9): a press on a
 //! checkbox toggles it, as a click does on the web, and reports the new
 //! state as HTML's `input` then `change`.
 use super::*;
@@ -24,7 +24,7 @@ fn fixed_painted_size(kind: exact_kernel::ControlKind) -> Option<(f32, f32)> {
 
 /// Whether the kernel sizes `kind` from the look's rows as it lays it out,
 /// with nothing reported over that: under the neutral look a mark, sized by
-/// its font, and under the Material look its checkbox
+/// its font (LLP 1115.000 D17), and under the Material look its checkbox
 /// and radio, Material's (`paint/material.rs`).
 fn kernel_sized(kind: exact_kernel::ControlKind) -> bool {
     use exact_kernel::ControlKind::{Checkbox, Radio, Range, Switch};
@@ -47,7 +47,52 @@ impl<D: DataSource> Presenter<D> {
         self.toggle_control_with_press(id, now_ms, press, false)
     }
 
-    pub(crate) fn click_control(&mut self, id: ViewId, now_ms: f64, press: Option<ViewId>) -> bool {
+    /// Whether a date or time control's press opens the platform's picker:
+    /// where a shell takes requests (LLP 1115.001.000 D1), or the agent
+    /// holds one.
+    pub(crate) fn date_picks(&self) -> bool {
+        self.has_shell() || self.agent
+    }
+
+    /// A key's default action at a focused control that a key clicks: what
+    /// a click does there, its `press` and then its default. Space toggles
+    /// a checkbox or a switch, and Enter does not, as in Chrome and the
+    /// WAI-ARIA Authoring Practices' checkbox and switch patterns
+    /// (https://www.w3.org/WAI/ARIA/apg/patterns/checkbox/; LLP 1069.001 D7:
+    /// "Keyboard: Space toggles"); Space or Enter opens a file, date or
+    /// time control's picker, as the browser's button in it takes them.
+    /// False when the key clicks nothing at `id`.
+    pub(crate) fn key_click(&mut self, id: ViewId, name: &str, now_ms: f64) -> bool {
+        use exact_kernel::ControlKind;
+        let Some(node) = self.host.kernel().node(id) else {
+            return false;
+        };
+        let clicks = match ControlKind::of(node.node_type, node.props) {
+            Some(ControlKind::Checkbox | ControlKind::Switch) => name == " ",
+            Some(ControlKind::File) => matches!(name, " " | "Enter"),
+            Some(ControlKind::Date | ControlKind::Time | ControlKind::DateTimeLocal) => {
+                self.date_picks() && matches!(name, " " | "Enter")
+            }
+            _ => false,
+        };
+        if !clicks {
+            return false;
+        }
+        let press = (self.host.runner().handlers_of(id))
+            .contains(&EventKind::Press)
+            .then_some(id);
+        self.click_control(id, now_ms, press, false)
+    }
+
+    /// A click at `id`, a control: its `press` (a pointer's when
+    /// `pointer`), then its default action.
+    pub(crate) fn click_control(
+        &mut self,
+        id: ViewId,
+        now_ms: f64,
+        press: Option<ViewId>,
+        pointer: bool,
+    ) -> bool {
         use exact_kernel::ControlKind;
         let Some(node) = self.host.kernel().node(id) else {
             return false;
@@ -67,7 +112,7 @@ impl<D: DataSource> Presenter<D> {
                 return true;
             }
             let key = node.key;
-            self.dispatch_control_press(press, now_ms, true);
+            self.dispatch_control_press(press, now_ms, pointer);
             // Picker and menu defaults read the committed control, which its
             // click may have removed, disabled or replaced.
             let Some(node) = self.host.kernel().node_by_key(key).filter(|node| {
@@ -78,7 +123,7 @@ impl<D: DataSource> Presenter<D> {
             };
             return self.toggle_control_with_press(node.id, now_ms, None, false);
         }
-        self.toggle_control_with_press(id, now_ms, press, true)
+        self.toggle_control_with_press(id, now_ms, press, pointer)
     }
 
     fn toggle_control_with_press(
@@ -94,15 +139,16 @@ impl<D: DataSource> Presenter<D> {
         if node.node_type != NodeType::Control {
             return false;
         }
-        // A native button presses as any button does; a
-        // progress takes no press, as a box does.
+        // A native button presses as any button does (LLP 1069.011 D3); a
+        // progress takes no press, as a box does (LLP 1069.001, amended
+        // 2026-10-07).
         if matches!(node.props.str(PropId::Type), Some("button" | "progress")) {
             return false;
         }
         if node.props.bool(PropId::Disabled) == Some(true) {
             return true;
         }
-        // A visible file input's press opens its picker.
+        // A visible file input's press opens its picker (LLP 1069.002 D1).
         if node.props.str(PropId::Type) == Some("file") {
             match node.props.str(PropId::Id).map(str::to_owned) {
                 Some(name) => self.show_picker(&name),
@@ -110,28 +156,27 @@ impl<D: DataSource> Presenter<D> {
             }
             return true;
         }
-        // A date or time control's press opens the platform's picker where a
-        // shell takes requests, or holds one for the agent.
-        if (self.has_shell() || self.agent)
-            && matches!(
-                exact_kernel::ControlKind::of(node.node_type, node.props),
-                Some(
-                    exact_kernel::ControlKind::Date
-                        | exact_kernel::ControlKind::Time
-                        | exact_kernel::ControlKind::DateTimeLocal
-                )
+        // A date or time control's press opens the platform's picker; where
+        // none opens (desktop Linux, Windows) it has no default action.
+        if matches!(
+            exact_kernel::ControlKind::of(node.node_type, node.props),
+            Some(
+                exact_kernel::ControlKind::Date
+                    | exact_kernel::ControlKind::Time
+                    | exact_kernel::ControlKind::DateTimeLocal
             )
-        {
-            self.pick(id);
+        ) {
+            if self.date_picks() {
+                self.pick(id);
+            }
             return true;
         }
-        // A select's press opens its menu.
+        // A select's press opens its menu (D7).
         if node.props.str(PropId::Type) == Some("select") {
-            self.menu = Some(id);
-            self.dirty = true;
+            self.open_menu(id);
             return true;
         }
-        // A radio checks, and only checks.
+        // A radio checks, and only checks (x2apps survey #2).
         if exact_kernel::ControlKind::of(node.node_type, node.props)
             == Some(exact_kernel::ControlKind::Radio)
         {
@@ -191,7 +236,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// A control's value set as the platform would on a choice or a
-    /// release: HTML's `input` then `change`, each
+    /// release (LLP 1069.001 D4, D9): HTML's `input` then `change`, each
     /// where the node hears it; the runner's refusal (a value no option
     /// has) is the error.
     pub(crate) fn set_control_value(&mut self, id: ViewId, value: &str) -> Result<String, String> {
@@ -200,7 +245,7 @@ impl<D: DataSource> Presenter<D> {
             return Err(format!("view {id} is disabled"));
         }
         // A radio takes `true`, checked as a click checks it; HTML has no
-        // way to uncheck one but checking another.
+        // way to uncheck one but checking another (x2apps survey #2).
         if self.is_radio(id) {
             match value {
                 "true" => {
@@ -250,7 +295,7 @@ impl<D: DataSource> Presenter<D> {
             ));
         }
         // A select takes an enabled option's value, else its one label
-        // (Playwright's `selectOption`).
+        // (Playwright's `selectOption`; kanban F17, shop F10).
         let mut value = value.to_owned();
         if node.props.str(PropId::Type) == Some("select") {
             let choices = self.host.kernel().select_choices(id);
@@ -274,15 +319,28 @@ impl<D: DataSource> Presenter<D> {
                 ));
             }
         }
-        let value = value.as_str();
-        self.menu = None;
+        self.commit_control_value(id, &value, &[EventKind::Input, EventKind::Change])
+    }
+
+    /// `value` chosen at control `id`: each of `kinds`, HTML's `input` and
+    /// `change` in that order, where the node hears it; then the choice
+    /// kept until the bound value changes. The agent's answer, or the
+    /// dispatch's error.
+    pub(crate) fn commit_control_value(
+        &mut self,
+        id: ViewId,
+        value: &str,
+        kinds: &[EventKind],
+    ) -> Result<String, String> {
+        self.close_menu();
         let now = self.host.now();
         let mut error = None;
         let mut dispatched = false;
-        for (event, kind) in [
-            (Event::Input(value.into()), EventKind::Input),
-            (Event::Change(value.into()), EventKind::Change),
-        ] {
+        for &kind in kinds {
+            let event = match kind {
+                EventKind::Input => Event::Input(value.into()),
+                _ => Event::Change(value.into()),
+            };
             // A control its input disabled loses the focus before its change.
             if dispatched {
                 error = error.or(self.blur_disabled_now());
@@ -303,7 +361,8 @@ impl<D: DataSource> Presenter<D> {
             .and_then(|n| n.props.str(PropId::Value).map(str::to_owned))
             .unwrap_or_default();
         // A date, range or select keeps the choice until its bound value
-        // changes, as the web build's does (`paint::control::choice`).
+        // changes, as the web build's does (`paint::control::choice`; LLP
+        // 1069.001 D4, amended 2026-10-04; kanban2 #5).
         self.forget_replaced_choices();
         if shown != value {
             self.host.values.watch(id, Some(shown.clone()));
@@ -323,34 +382,11 @@ impl<D: DataSource> Presenter<D> {
         ))
     }
 
-    /// A press on a range moves its thumb to the pointer: the value
-    /// there, `input` then `change`. False when `id` is not a range.
-    pub(crate) fn press_range(&mut self, id: ViewId, x: f32) -> bool {
-        let Some(node) = self.host.kernel().node(id) else {
-            return false;
-        };
-        if node.node_type != NodeType::Control || node.props.str(PropId::Type) != Some("range") {
-            return false;
-        }
-        let range = exact_kernel::Range::of(node.props);
-        let Some(b) = self.boxes.iter().find(|b| b.id == id).copied() else {
-            return true;
-        };
-        let (bx, _, bw, _) = b.rect;
-        let t = if bw > 16.0 {
-            ((x - bx - 8.0) / (bw - 16.0)).clamp(0.0, 1.0) as f64
-        } else {
-            0.5
-        };
-        let value = range.min + t * (range.max - range.min);
-        if let Err(e) = self.set_control_value(id, &value.to_string()) {
-            self.host.log(format!("range: {e}"));
-        }
-        true
-    }
-
     /// The open menu's rows and panel, under its select's painted box (above
-    /// it when it would leave the viewport), as wide as the widest label.
+    /// it when it would leave the viewport), as wide as the widest label. A
+    /// menu longer than the room on either side takes the roomier and
+    /// scrolls, as WinUI's `ComboBox` and Android's `Spinner` hold theirs to
+    /// the window.
     fn menu_geometry(&self) -> Option<(ViewId, crate::paint::control::MenuPaint)> {
         use crate::paint::control::{accent, MenuPaint, MENU_PAD};
         let id = self.menu?;
@@ -358,8 +394,6 @@ impl<D: DataSource> Presenter<D> {
         let b = self.boxes.iter().find(|b| b.id == id)?;
         let style = node.computed_style(exact_kernel::StyleMask::INHERITED);
         let choices = self.host.kernel().select_choices(id);
-        let picked = crate::paint::control::choice(&node, self.chosen.get(&id));
-        let chosen = self.host.kernel().select_chosen(id).map(|c| c.view);
         let mut text = self.text.borrow_mut();
         let mut width = b.rect.2;
         let mut row = 0f32;
@@ -369,29 +403,37 @@ impl<D: DataSource> Presenter<D> {
             row = row.max(p.height + 8.0);
         }
         if crate::paint::look::neutral() {
-            // The look's menu row is no shorter than this.
+            // The look's menu row is no shorter than this (LLP 1115.000 D17).
             use exact_kernel::generated::metric::MENU_ROW_HEIGHT;
             row = row.max(crate::paint::look::px(MENU_ROW_HEIGHT, style.font_size));
         }
-        let height = row * choices.len() as f32 + 2.0 * MENU_PAD;
+        let full = row * choices.len() as f32 + 2.0 * MENU_PAD;
         let (x, y, _, h) = b.rect;
         let below = y + h + 2.0;
-        let top = if below + height > self.viewport.1 {
-            (y - 2.0 - height).max(0.0)
+        let (room_below, room_above) = ((self.viewport.1 - below).max(0.0), (y - 2.0).max(0.0));
+        let (top, mut height) = if full <= room_below {
+            (below, full)
+        } else if full <= room_above {
+            (y - 2.0 - full, full)
+        } else if room_below >= room_above {
+            (below, room_below)
         } else {
-            below
+            (0.0, room_above)
         };
+        // With less than a row's room on either side, the window's height.
+        if height < full.min(row + 2.0 * MENU_PAD) {
+            height = full.min(self.viewport.1);
+        }
+        let top = top.clamp(0.0, (self.viewport.1 - height).max(0.0));
         Some((
             id,
             MenuPaint {
                 rect: (x.min(self.viewport.0 - width).max(0.0), top, width, height),
                 row,
-                chosen: match picked {
-                    Some(v) => choices.iter().position(|c| c.value == v),
-                    None => choices.iter().position(|c| Some(c.view) == chosen),
-                },
+                offset: self.menu_scroll.clamp(0.0, full - height),
+                chosen: self.menu_row.or_else(|| self.selected_row(id)),
                 rows: choices.into_iter().map(|c| (c.label, c.disabled)).collect(),
-                // In the select's scheme, else the app's.
+                // In the select's scheme (LLP 1034 §8), else the app's.
                 accent: accent(&node, node.color_scheme_dark().unwrap_or(self.brush.dark)),
                 style,
             },
@@ -407,14 +449,14 @@ impl<D: DataSource> Presenter<D> {
     /// is open.
     pub(crate) fn menu_press(&mut self, x: f32, y: f32) -> Option<ViewId> {
         let (id, menu) = self.menu_geometry().or_else(|| {
-            self.menu = None;
+            self.close_menu();
             None
         })?;
-        self.menu = None;
-        self.dirty = true;
-        let (mx, my, mw, _) = menu.rect;
-        let row = ((y - my - crate::paint::control::MENU_PAD) / menu.row).floor();
-        if x >= mx && x < mx + mw && row >= 0.0 && (row as usize) < menu.rows.len() {
+        self.close_menu();
+        let (mx, my, mw, mh) = menu.rect;
+        let row = ((y - my - crate::paint::control::MENU_PAD + menu.offset) / menu.row).floor();
+        let inside = x >= mx && x < mx + mw && y >= my && y < my + mh;
+        if inside && row >= 0.0 && (row as usize) < menu.rows.len() {
             let (_, disabled) = &menu.rows[row as usize];
             if !disabled {
                 let value = self.host.kernel().select_choices(id)[row as usize]
@@ -429,7 +471,7 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// Each control's painted size, which Linux reports as the other hosts
-    /// do. Fixed painted widgets use the geometry their
+    /// do (LLP 1069.001 D3). Fixed painted widgets use the geometry their
     /// painter was designed for; fields measure the text they paint.
     pub(crate) fn size_controls(&mut self) {
         if !self.host.kernel().has_type(NodeType::Control) {
@@ -467,7 +509,9 @@ impl<D: DataSource> Presenter<D> {
                 }
                 // And its date fields are the kernel's size for one, the
                 // browser's own control's, which the value drawn here fits.
+                let bare = node.style.appearance == exact_kernel::Appearance::None;
                 if neutral
+                    && !bare
                     && matches!(
                         kind,
                         exact_kernel::ControlKind::Date
@@ -475,6 +519,7 @@ impl<D: DataSource> Presenter<D> {
                             | exact_kernel::ControlKind::DateTimeLocal
                     )
                 {
+                    forgotten.push(id);
                     continue;
                 }
                 // Native buttons measure synchronously through TextMeasurer before layout.
@@ -482,7 +527,7 @@ impl<D: DataSource> Presenter<D> {
                     continue;
                 }
                 // A select fits its widest option; a date control its widest
-                // painted value.
+                // painted value (LLP 1069.001 D3).
                 let labels: Vec<String> = match kind {
                     exact_kernel::ControlKind::Select => kernel
                         .select_choices(id)
@@ -503,9 +548,23 @@ impl<D: DataSource> Presenter<D> {
                     w = w.max(p.width);
                     h = h.max(p.height);
                 }
+                if bare {
+                    // Only the value is painted; padding and border belong to the author's box.
+                    let height = if h == 0.0 {
+                        style
+                            .line_height
+                            .resolve(style.font_size)
+                            .unwrap_or(style.font_size * 1.2)
+                    } else {
+                        h
+                    };
+                    // The intrinsic-size API requires positive dimensions, even with no options.
+                    sizes.push((id, (w.ceil().max(1.0), height.ceil().max(1.0))));
+                    continue;
+                }
                 if neutral {
-                    // The look's select, as the page's sheet sizes it: the
-                    // control's line round its widest
+                    // The look's select, as the page's sheet sizes it (LLP
+                    // 1115.000 D17): the control's line round its widest
                     // option, a field's padding before it and room for the
                     // caret after, on the select's own line.
                     use crate::paint::look::{number, px};
@@ -777,6 +836,51 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// Where no picker opens (desktop Linux, Windows), a press on a date or
+    /// time control has no default action: it is no checkbox to toggle.
+    #[test]
+    fn a_date_or_time_press_without_a_picker_does_nothing() {
+        use super::*;
+        let source = r#"component App
+  state seen = ""
+  action edited(v)
+    seen = `${seen}input `
+  action changed(v)
+    seen = `${seen}change `
+  view
+    column
+      input type="date" testId="day" value="2026-10-19" input=edited change=changed width=160 height=40
+      input type="time" testId="at" value="10:00" change=changed width=160 height=40
+      input type="datetime-local" testId="when" value="2026-10-19T10:00" change=changed width=160 height=40
+      text seen testId="seen"
+"#;
+        let (mut p, error) = Presenter::boot_with(
+            &crate::test_plan(source),
+            (),
+            (300., 300.),
+            1.,
+            PathBuf::new(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        p.agent = false;
+        assert!(!p.date_picks());
+        let id = |p: &Presenter<()>, name| {
+            let k = p.host.kernel();
+            k.node_by_key(k.find_by_test_id(name)[0]).unwrap().id
+        };
+        for (i, name) in ["day", "at", "when"].into_iter().enumerate() {
+            let (x, y, w, h) = p.rect_of(id(&p, name)).unwrap();
+            let t = 1000. * i as f64;
+            p.pointer_down(x + w / 2., y + h / 2., t + 1.).unwrap();
+            p.pointer_up(x + w / 2., y + h / 2., t + 2.).unwrap();
+        }
+        let k = p.host.kernel();
+        let seen = k.node(id(&p, "seen")).unwrap().props.str(PropId::Text);
+        assert_eq!((seen, &p.controls), (Some(""), &BTreeMap::new()));
+    }
+
     #[test]
     fn fixed_controls_report_the_geometry_linux_paints() {
         assert_eq!(
@@ -803,7 +907,7 @@ mod tests {
         );
     }
 
-    /// A progress is painted as one still
+    /// LLP 1069.001, amended 2026-10-07: a progress is painted as one still
     /// frame of UIKit's spokes in its `color`, centred in its box, and a
     /// press on it is its ancestor's, as on a box.
     #[test]
@@ -847,10 +951,10 @@ mod tests {
         );
     }
 
-    /// A determinate progress is painted as UIKit's progress
+    /// LLP 1116 D8: a determinate progress is painted as UIKit's progress
     /// view: a 4 px track across its box, centred, filled with the accent
-    /// to its value; as wide as its column and `1em` tall
-    /// (HTML's box); a press is its ancestor's.
+    /// to its value; as wide as its column and `1em` tall (LLP 1115.000
+    /// D10.2: 160 by 16 before, HTML's box); a press is its ancestor's.
     #[test]
     fn a_progress_bar_paints_its_value_in_the_accent_and_takes_no_press() {
         let app = "component App\n  view\n    column width=200 height=100 background-color=\"#ffffff\" align-items=\"flex-start\"\n      progress testId=\"bar\" value=3 max=4 accent-color=\"#ff0000\"\n";
@@ -894,3 +998,11 @@ mod tests {
 #[cfg(test)]
 #[path = "material_tests.rs"]
 mod material_tests;
+
+#[cfg(test)]
+#[path = "range_tests.rs"]
+mod range_tests;
+
+#[cfg(test)]
+#[path = "select_tests.rs"]
+mod select_tests;

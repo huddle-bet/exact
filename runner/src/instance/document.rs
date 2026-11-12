@@ -1,4 +1,4 @@
-//! The instance tree as a document's nodes, with no kernel.
+//! The instance tree as a document's nodes, with no kernel (LLP 1048.004).
 //!
 //! A render whose runner mirrors no kernel (a detached one, whose updates
 //! build no style or prop ops, [`Update::discard`]) writes its document from
@@ -34,6 +34,8 @@ pub struct DocNode {
     pub style: Rc<StyleProps>,
     /// Its props.
     pub props: PropList,
+    /// Whether its plan site has host-known state looks (LLP 1121 D8).
+    pub has_looks: bool,
     /// Whether it is a root.
     pub is_root: bool,
     /// The plan node it realizes; `None` for a virtualized list's spacer or
@@ -105,6 +107,7 @@ impl DocTree {
             node_type: node.node_type,
             style: &node.style,
             props: &node.props,
+            has_looks: node.has_looks,
             is_root: node.is_root,
             inline_run,
             symbol_color: self.symbol_color(node),
@@ -226,7 +229,7 @@ impl Tree {
         let _batch = exact_kernel::style::wide::Batch::open();
         build.children(&self.children, None, 0)?;
         // Its styles' wide colours, kept while the tree lives: it is no
-        // kernel's.
+        // kernel's (LLP 1121 stage 4).
         let nodes = &build.doc.nodes;
         build.doc.kept = exact_kernel::style::wide::Keep::of(|m| {
             for node in nodes {
@@ -328,6 +331,11 @@ impl Build<'_> {
             children,
             style,
             props,
+            has_looks: self
+                .plan
+                .looks
+                .binary_search_by_key(&n.node.0, |look| look.node.0)
+                .is_ok(),
             is_root: parent.is_none(),
             site: Some(n.node),
         });
@@ -363,6 +371,7 @@ impl Build<'_> {
                 children: roots.map(roots_of).unwrap_or_default(),
                 style: Rc::new(style),
                 props,
+                has_looks: false,
                 is_root: false,
                 site: None,
             });
@@ -482,8 +491,8 @@ impl Build<'_> {
         }
         if !plan.axes.is_empty() || !plan.theme.is_empty() && patch.mask.has(StyleId::ColorScheme) {
             // A token's slice is the tuple around the node and a mode
-            // boundary's implied rows, which the instance tree keeps;
-            // the fold doesn't.
+            // boundary's implied rows, which the instance tree keeps
+            // (LLP 1121 D7); the fold doesn't.
             return Err(DocTreeError::Unsupported(
                 "a design's modes or a themed scheme boundary",
             ));

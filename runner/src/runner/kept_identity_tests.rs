@@ -1,5 +1,5 @@
-//! A kept answer's identity read from another resource: `feeds(gen,
-//! account)`, where `account` reads the store.
+//! A kept answer's identity read from another resource (LLP 1027.005 D3,
+//! 2026-10-10): `feeds(gen, account)`, where `account` reads the store.
 use super::*;
 use crate::{Answer, Outcome, Request, Store};
 use exact_kernel::{Kernel, NodeType};
@@ -294,16 +294,17 @@ fn a_refused_kept_answer_is_journaled_with_why() {
     );
     let lines: Vec<_> = r
         .journal()
-        .filter(|l| l.contains("refused its kept answer"))
+        .filter(|l| l.contains("did not use its kept answer"))
         .collect();
     assert!(
-        lines.iter().any(|l| l
-            .ends_with("account refused its kept answer: kept for [1], this launch asks for [0]")),
+        lines.iter().any(|l| l.ends_with(
+            "account did not use its kept answer: kept for [1], this launch asks for [0]"
+        )),
         "{lines:?}"
     );
     assert!(
         lines.iter().any(|l| l.ends_with(
-            "feeds refused its kept answer: kept for [0,\"nobody\"], this launch's arguments read a store reader still on its fallback"
+            "feeds did not use its kept answer: kept for [0,\"nobody\"], this launch's arguments read a store reader still on its fallback"
         )),
         "{lines:?}"
     );
@@ -314,7 +315,7 @@ fn a_refused_kept_answer_is_journaled_with_why() {
     settle_requests(&mut r);
     let after = r
         .journal()
-        .filter(|l| l.contains("refused its kept answer"))
+        .filter(|l| l.contains("did not use its kept answer"))
         .count();
     assert_eq!(after, 2);
 }
@@ -324,5 +325,5 @@ fn a_kept_entry_that_no_longer_decodes_is_journaled() {
     let r = launch(false, vec![(kept::kept_name("account"), vec![1, 2, 3])]);
     assert!(r
         .journal()
-        .any(|l| l.ends_with("account refused its kept answer: it no longer decodes or fits")));
+        .any(|l| l.ends_with("account did not use its kept answer: it no longer decodes or fits")));
 }

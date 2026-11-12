@@ -1,6 +1,7 @@
-// The resident loop's long steps, said as they start and end. The JS loop keeps the latest `phase: ` line and answers a native
+// The resident loop's long steps, said as they start and end (dtool2's pass
+// 3 #8). The JS loop keeps the latest `phase: ` line and answers a native
 // client's envelope request with it while the resident starts, as
-// `application/vnd.exact.dev-status+json`;
+// `application/vnd.exact.dev-status+json` (llp/1023.001-serving-stage-1.spec.md);
 // a `phase: failed: ` line before the first plan is the error it answers.
 import { spawnSync } from 'node:child_process';
 import { closeSync, mkdtempSync, openSync, readSync, rmSync } from 'node:fs';
@@ -28,6 +29,16 @@ export function gist(error) {
 /** Say that a step failed, and why, as one phase line. */
 export function failedPhase(error, log = console.log) {
   log(`${FAILED}${gist(error)}`);
+}
+
+/** An edit during compilation supersedes the candidate and its diagnostics. */
+export function acceptModuleReply(line, request, run, log = console.error) {
+  const reply = JSON.parse(line);
+  if (!request || reply.id !== request.id) throw new Error('unexpected module producer response');
+  if (request.id !== run) return null;
+  if (!reply.ok) throw new Error(reply.error || 'module producer refused the candidate');
+  for (const warning of reply.warnings) log(warning);
+  return reply;
 }
 
 /**

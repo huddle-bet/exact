@@ -1,10 +1,15 @@
-// The app's one AVAudioSession owner: the
+// @ref LLP 1096 D8, LLP 1133.009 D7. The app's one AVAudioSession owner: the
 // only `setCategory` caller, so the sound arm, a video with sound, a canvas's
 // audio and a package's capture all run in one session the owner composes.
 // iOS and tvOS only: AVAudioSession is unavailable on the Mac, where the arm
 // starts its engine with no category and a capture's claim composes nothing.
 //
-// A capture (a microphone) claims the session: while any claim
+// The app holds `.ambient`, `.playback`, or `.playback` with `.mixWithOthers`
+// (`playback-mix`). With no holder or claim it returns to `.ambient`. Before
+// a GPU module makes a surface, an unclaimed session takes `.ambient` without
+// activation, so an output opened before its `exact:audio` request mixes.
+//
+// A capture (a microphone, LLP 1133.009) claims the session: while any claim
 // is held the category is `.playAndRecord`, with the mode and options of the
 // claim that started the running capture, so the app's own sound still plays
 // (`.record` would silence it); the category changes when the first claim
@@ -13,7 +18,7 @@
 // route changes, observed once for the process on the main queue; so does
 // each holder of sound that listens (the sound arm).
 //
-// Speech claims too: a queue that speaks holds one, of a
+// Speech claims too (LLP 1133.012 D4): a queue that speaks holds one, of a
 // spoken type, and the process's speech configuration is the strongest held
 // (`playback` over `transient-solo` over `transient`), all `.playback`. The
 // session changes for speech only while no other I/O runs (no capture, no
@@ -24,14 +29,14 @@
 // session is given up with `.notifyOthersOnDeactivation`, so what a prompt
 // ducked or interrupted comes back.
 //
-// A call claims too, made by `@exact/calls` when CallKit
+// A call claims too (LLP 1133.033 D10), made by `@exact/calls` when CallKit
 // starts or answers a call: `.playAndRecord` in `.voiceChat` (`.videoChat`
 // for a video call), set before the action is fulfilled, and never
 // activated here: the system activates a call's session
 // (`provider(_:didActivate:)`), and an app that activates first blocks the
-// phone session. While a call claim is held no other path sets the category
-// or activates: a capture joins in the call's configuration, and the app's
-// own sound plays in it. The claim lasts while any call does; when the last
+// phone session. While a call claim is held no other path changes the
+// category or activation: captures and the app's own sound use the call's
+// configuration. The claim lasts while any call does; when the last
 // ends, the app's category comes back at the deactivation that follows, or
 // at once, without activating, when the session is already inactive.
 #if os(iOS) || os(tvOS)
@@ -41,10 +46,18 @@ import UIKit
 
 package enum AudioSession {
     /// `app.json`'s `audio_session`, baked into the Info.plist as
-    /// `ExactAudioSession`: `.ambient` unless the app asks for `playback`
-    /// (the ring/silent switch then no longer mutes it). Settable for tests.
-    nonisolated(unsafe) static var category: AVAudioSession.Category =
-        Bundle.main.object(forInfoDictionaryKey: "ExactAudioSession") as? String == "playback" ? .playback : .ambient
+    /// `ExactAudioSession`. Both playback values ignore the ring/silent
+    /// switch; `playback-mix` also leaves other apps' audio at its level.
+    struct Configuration {
+        let category: AVAudioSession.Category
+        let options: AVAudioSession.CategoryOptions
+        init(_ value: String?) {
+            category = value == "playback" || value == "playback-mix" ? .playback : .ambient
+            options = value == "playback-mix" ? [.mixWithOthers] : []
+        }
+    }
+    /// The app's category and options, settable together for tests.
+    nonisolated(unsafe) static var configuration = Configuration(Bundle.main.object(forInfoDictionaryKey: "ExactAudioSession") as? String)
     /// What wants the app's category now: the sound arm and a canvas's audio
     /// for as long as they run, and each video while it has sound. A want
     /// whose activation failed (during a call) stays, and is activated again
@@ -68,10 +81,10 @@ package enum AudioSession {
     nonisolated(unsafe) private static var captures: [UInt64: Capture] = [:]
     nonisolated(unsafe) private static var nextCapture: UInt64 = 0
     /// The claim whose mode and options the session took: the first of the
-    /// claims held now.
+    /// claims held now (LLP 1133.009 D3, D7).
     nonisolated(unsafe) private static var configuring: Capture?
 
-    /// A queue's speech claim: its spoken type and what it is told.
+    /// A queue's speech claim (LLP 1133.012 D4): its spoken type and what it is told.
     struct Speech {
         let type: String, events: (UInt32) -> Void
     }
@@ -90,24 +103,34 @@ package enum AudioSession {
     static let spokenTypes = ["transient", "transient-solo", "playback"]
 
     /// The process keeps running in the background with `audio` in
-    /// `UIBackgroundModes` and either a `playback` session, so
-    /// a sequence plays on with the screen locked, or a capture
-    /// claim that may run in the background.
+    /// `UIBackgroundModes` and either playback value (LLP 1096 D8), so
+    /// a sequence plays on with the screen locked (LLP 1125 D4), or a capture
+    /// claim that may run in the background (LLP 1133.009 D7).
     static var playsInBackground: Bool {
         guard (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? []).contains("audio") else { return false }
-        return category == .playback || captures.values.contains { $0.background }
+        return configuration.category == .playback || captures.values.contains { $0.background }
             || (spoken == "playback" && speeches.values.contains { $0.type == "playback" })
     }
     /// For tests: the next activation fails with this, as it can during a call.
     nonisolated(unsafe) static var nextHoldFailure: Error?
 
-    /// Set the app's category and activate the session, for good (a
+    /// Prepare for a GPU module opening output before its `exact:audio`
+    /// request. No activation, and no change to a held or claimed session.
+    /// The driver's frozen clock opens no output; platform timing does.
+    package static func prepareForSurface() {
+        guard !ExactEnv.agentFreezes, holders.isEmpty, captures.isEmpty, configuring == nil,
+              speeches.isEmpty, spoken == nil, !inCall, !callActive else { return }
+        guard AVAudioSession.sharedInstance().category != .ambient else { return }
+        try? apply(Configuration(nil))
+    }
+
+    /// Set the app's category and options and activate the session, for good (a
     /// canvas's audio).
     package static func activate() throws {
         try hold(ObjectIdentifier(forever))
     }
 
-    /// `holder` plays sound: the session takes the app's category and is
+    /// `holder` plays sound: the session takes the app's category and options and is
     /// active while anything wants it. A failure to activate throws, and the
     /// want stays for the interruption's end to activate.
     package static func hold(_ holder: ObjectIdentifier) throws {
@@ -117,16 +140,17 @@ package enum AudioSession {
     }
 
     /// `holder` no longer plays sound. With nothing left wanting it, a
-    /// `playback` app goes back to `.ambient`, which mixes with other apps'
+    /// playback app goes back to `.ambient`, which mixes with other apps'
     /// audio, as Bluesky's player does on re-mute. A muted player keeps
     /// running, so the session itself is given up (telling other apps they
-    /// may resume) only once no player is left. A capture's category stays.
+    /// may resume) only once no player is left. A capture's category stays;
+    /// a call keeps its category and activation.
     package static func release(_ holder: ObjectIdentifier) {
-        guard holders.remove(holder) != nil, holders.isEmpty, captures.isEmpty else { return }
+        guard holders.remove(holder) != nil, holders.isEmpty, captures.isEmpty, !inCall else { return }
         // A boundary at which nothing may run: speech takes its configuration, or gives it up.
         if !speeches.isEmpty || spoken != nil { return composeSpeech() }
-        guard category != .ambient else { return }
-        try? AVAudioSession.sharedInstance().setCategory(.ambient)
+        guard configuration.category != .ambient else { return }
+        try? apply(Configuration(nil))
         giveUpIfIdle()
     }
 
@@ -138,14 +162,14 @@ package enum AudioSession {
     /// A media player exists, muted or not.
     package static func playerCame(_ player: ObjectIdentifier) { players.insert(player) }
     /// A media player is gone; with no player and no holder left, a
-    /// `playback` app's session is given up.
+    /// playback app's session is given up unless a claim keeps it.
     package static func playerWent(_ player: ObjectIdentifier) {
         guard players.remove(player) != nil else { return }
         if !speeches.isEmpty || spoken != nil { return composeSpeech() }
         giveUpIfIdle()
     }
 
-    /// A queue's speech claim of `type`, one of
+    /// A queue's speech claim (LLP 1133.012 D4) of `type`, one of
     /// `spokenTypes`. 0 when the session would not activate (a call).
     package static func claimSpeech(type: String, events: @escaping (UInt32) -> Void) -> UInt64 {
         observe()
@@ -175,7 +199,7 @@ package enum AudioSession {
         speeches.values.compactMap { spokenTypes.firstIndex(of: $0.type) }.max().map { spokenTypes[$0] }
     }
 
-    /// What the session takes for a spoken type.
+    /// What the session takes for a spoken type (D4's table).
     static func speechConfiguration(_ type: String) -> (AVAudioSession.Mode, AVAudioSession.CategoryOptions) {
         switch type {
         case "transient": (.voicePrompt, [.duckOthers, .interruptSpokenAudioAndMixWithOthers])
@@ -232,7 +256,7 @@ package enum AudioSession {
         try session.setActive(true)
     }
 
-    /// A capture claims the session: `.playAndRecord`
+    /// A capture claims the session (LLP 1133.009 D7): `.playAndRecord`
     /// from the first claim, activated. 0 when the session would not
     /// activate (a call), and then nothing is held.
     package static func claimCapture(mode: AVAudioSession.Mode, options: AVAudioSession.CategoryOptions, background: Bool,
@@ -266,7 +290,7 @@ package enum AudioSession {
         restoreAfterCaptures()
     }
 
-    /// The category the app's own sound wants, or the session given up.
+    /// The configuration the app's own sound wants, or the session given up.
     private static func restoreAfterCaptures() {
         guard !inCall else { return }
         let session = AVAudioSession.sharedInstance()
@@ -275,10 +299,10 @@ package enum AudioSession {
             if holders.isEmpty { return composeSpeech() }
         }
         if holders.isEmpty {
-            try? session.setCategory(.ambient)
+            try? apply(Configuration(nil))
             if players.isEmpty { try? session.setActive(false, options: .notifyOthersOnDeactivation) }
         } else {
-            try? session.setCategory(category)
+            try? apply(configuration)
             try? session.setActive(true)
         }
     }
@@ -319,14 +343,14 @@ package enum AudioSession {
         if !active && calls.isEmpty { restoreAfterCall() }
     }
 
-    /// The app's category back, without activating: activation waits for
-    /// the app's next sound or an interruption's end.
+    /// The app's category and options back, without activating: activation waits for
+    /// the app's next sound or an interruption's end (D10).
     private static func restoreAfterCall() {
         let session = AVAudioSession.sharedInstance()
         if !captures.isEmpty, let claim = configuring {
             try? session.setCategory(.playAndRecord, mode: claim.mode, options: claim.options)
         } else {
-            try? session.setCategory(holders.isEmpty ? .ambient : category)
+            try? apply(holders.isEmpty ? Configuration(nil) : configuration)
         }
     }
 
@@ -351,13 +375,23 @@ package enum AudioSession {
         guard !holders.isEmpty || !captures.isEmpty, !inCall else { return }
         if let failure = nextHoldFailure { nextHoldFailure = nil; throw failure }
         let session = AVAudioSession.sharedInstance()
-        // A sound started during speech plays in the configuration in force.
-        if captures.isEmpty, spoken == nil, session.category != category { try session.setCategory(category) }
+        // A sound started during speech plays in the configuration in force (LLP 1133.012 D4).
+        if captures.isEmpty, spoken == nil { try apply(configuration) }
         try session.setActive(true)
     }
 
+    private static func apply(_ configuration: Configuration) throws {
+        let session = AVAudioSession.sharedInstance()
+        // Ambient mixes inherently; its implicit mix bit is not an app option.
+        let options = configuration.category == .ambient ? session.categoryOptions.subtracting(.mixWithOthers) : session.categoryOptions
+        guard session.category != configuration.category || options != configuration.options else { return }
+        // Reasserting a category or its options can stop a running engine.
+        try session.setCategory(configuration.category, options: configuration.options)
+    }
+
     private static func giveUpIfIdle() {
-        guard holders.isEmpty, players.isEmpty, captures.isEmpty, speeches.isEmpty, category != .ambient else { return }
+        guard holders.isEmpty, players.isEmpty, captures.isEmpty, speeches.isEmpty,
+              !inCall, configuration.category != .ambient else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -366,7 +400,7 @@ package enum AudioSession {
         for claim in Array(speeches.values) { claim.events(event) }
     }
 
-    /// What a holder of sound hears of the session: the owner observes
+    /// What a holder of sound hears of the session (D7): the owner observes
     /// once for the process and tells each, before the claims.
     package enum Heard {
         /// An interruption began, or ended with or without the system's recommendation to resume.
@@ -395,7 +429,7 @@ package enum AudioSession {
     /// An interruption ended. The session is taken back only with
     /// `shouldResume`: without it the person started other audio, and the
     /// next want activates the session instead; a capture's tracks hear the
-    /// end either way, and its recorders stay paused for the app.
+    /// end either way, and its recorders stay paused for the app (D8).
     private static func resumable(_ resume: Bool) {
         if resume { try? reconcile() }
         heard(.interruption(began: false, resume: resume))
@@ -408,7 +442,7 @@ package enum AudioSession {
     /// replace the interruption notification
     /// ([AVAudioSession](https://developer.apple.com/documentation/avfaudio/avaudiosession)).
     /// A media-services reset restores a capture's configuration without
-    /// activating it.
+    /// activating it (D7).
     private static func observe() {
         guard !observing else { return }
         observing = true

@@ -5,10 +5,11 @@ import {mkdirSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {platform} from 'node:os';
 import {open} from '../../scripts/agent.mjs';
+import { fileURLToPath } from 'node:url';
 const args=process.argv.slice(2);
 const outputIndex=args.indexOf('--out');
 assert.ok(outputIndex<0 || args[outputIndex+1],'--out needs a writable directory');
-const output=outputIndex<0?new URL('./target/',import.meta.url).pathname:resolve(args[outputIndex+1]);
+const output=outputIndex<0?fileURLToPath(new URL('./target/',import.meta.url)):resolve(args[outputIndex+1]);
 const positional=outputIndex<0?args:args.filter((_,i)=>i!==outputIndex && i!==outputIndex+1);
 const host=positional[0] ?? 'web';
 const lanes=Number(positional[1] ?? (host==='web'?128:6));
@@ -60,7 +61,7 @@ try {
   // Navigation forgot the old tickets, and every host lets go of their
   // work: the held reads are aborted and the queued ones never sent, so a
   // full-capacity cohort is admitted again with nothing released, and
-  // `clock settle` is not held by them.
+  // `clock settle` is not held by them (LLP 1016 D5).
   let oldRelease=null;
   {
     const deadline=Date.now()+20000;

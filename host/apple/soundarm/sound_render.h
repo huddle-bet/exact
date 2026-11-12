@@ -1,11 +1,12 @@
-// The sound arm's mixer: a C render callback, so the realtime thread runs no
-// Swift (AVAudioSourceNodeRenderBlockRealtimeSafe is Swift-unavailable),
-// with no allocation and no lock in it. Swift pushes `Play` and `End` ops
-// onto a single-producer, single-consumer ring; each render applies every op
-// in the ring, then sums every live voice from its first frame to its end
-// frame, times its gain. A voice reads its sound at its playback rate, from
-// a fractional position by linear interpolation, and a panned one is placed
-// by the Web Audio StereoPannerNode's equal-power algorithm. Times are host
+// @ref LLP 1096 D8, LLP 1125 D10. The sound arm's mixer: a C render
+// callback, so the realtime thread runs no Swift
+// (AVAudioSourceNodeRenderBlockRealtimeSafe is Swift-unavailable), with no
+// allocation and no lock in it. Swift pushes `Play` and `End` ops onto a
+// single-producer, single-consumer ring; each render applies every op in the
+// ring, then sums every live voice from its first frame to its end frame,
+// times its gain. A voice reads its sound at its playback rate, from a
+// fractional position by linear interpolation, and a panned one is placed by
+// the Web Audio StereoPannerNode's equal-power algorithm. Times are host
 // seconds on CACurrentMediaTime's timebase: when the voice should reach the
 // speaker.
 #ifndef EXACT_SOUND_RENDER_H
@@ -16,7 +17,7 @@
 #include <CoreAudioTypes/CoreAudioTypes.h>
 
 /// Voices in slots at once: the runner bounds the voices sounding at any
-/// start to 32 and those waiting to 256. A Play that finds
+/// start to 32 and those waiting to 256 (LLP 1125 D3). A Play that finds
 /// no free slot takes one whose voice ends inside the buffer, that voice's
 /// remaining frames mixed first, so retriggers cut within one buffer need
 /// no more.
@@ -39,7 +40,7 @@ void exact_sound_set(ExactMixer *mixer, uint32_t index, const float *planes, uin
 /// (Web Audio's `playbackRate`, 1 the file's own) and placed at `pan` (−1
 /// left to 1 right; 0 is the voice as it was, unpanned), on a mono output
 /// panned in stereo and then down-mixed as Web Audio does; kind 2 ends voice
-/// `id` at `at` (an end for a slot already freed is ignored; one at or
+/// `id` at `at`, replacing its previous end (a freed slot is ignored; one at or
 /// before a voice's start that has not started frees its slot); kind 3 ends
 /// every voice now. False when the ring is full: the op is dropped and counted.
 bool exact_sound_push(ExactMixer *mixer, uint32_t kind, uint64_t id, uint32_t sound, double at, float gain, float rate, float pan);
@@ -47,7 +48,7 @@ bool exact_sound_push(ExactMixer *mixer, uint32_t kind, uint64_t id, uint32_t so
 /// counts a drop.
 uint32_t exact_sound_room(const ExactMixer *mixer);
 /// The source node's `outputPresentationLatency`: the delay from a buffer's
-/// render time (its `mHostTime`) to the speaker.
+/// render time (its `mHostTime`) to the speaker (LLP 1096 D6).
 void exact_sound_latency(ExactMixer *mixer, double seconds);
 /// Ops the ring dropped, plays no slot took, and voices started late (their
 /// first frame already past), since the mixer was made.

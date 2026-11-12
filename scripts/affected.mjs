@@ -16,7 +16,7 @@
  * app, a package or another platform's host does so to build or drive what its caller asks for (the CLI builds any app
  * for any host), so in it only a path into one app or package counts; and a module that another unit imports is
  * loaded, not driven: its imports count, and of its names only those its top level reads. `GLOBAL` lists the files
- * every suite reads, and `suites` lists by hand the roots of the XCTests, touch smoke, Apple compiles, Harmony and
+ * every suite reads, and `suites` lists by hand the roots of the XCTests, touch smoke, Apple compiles and
  * conformance, from the scripts that run them. Code other than a test names a directory of tests to run the tests
  * there, and the suite that runs them has that directory among its roots, so in such code the name does not count; a
  * file there that it names (a fixture, a script) does. An XCTest suite selected by its own Swift files alone runs only
@@ -53,6 +53,11 @@ const ROOT = resolve(import.meta.dir, '..');
  * Bun's manifest and lock. */
 export const GLOBAL = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'package.json', 'bun.lock', 'bunfig.toml'];
 
+/** The parity smokes whose Linux leg the async lane runs (`scripts/smoke.mjs`): each drives `<smoke>-gallery`. */
+export const PARITY = ['svg', 'motion'];
+/** A parity smoke's Linux leg, as a shell line: the gallery's development build, then the smoke on a fresh web build. */
+export const parityLeg = smoke => `cargo build --profile host-dev -p ${smoke}-gallery-linux && EXACT_PARITY_REBUILD=1 bun scripts/smoke.mjs ${smoke} --hosts linux`;
+
 /** The apps the async lane's conformance steps drive (`host/web-js/conform.mjs`). */
 export const WEB_APPS = ['realworld', 'weatherlight', 'completion-storm', 'video-player', 'caltrain', 'typetour', 'carousel', 'sparkline', 'svg-gallery', 'spark', 'markdown-stress', 'reflow', 'textflow', 'canvas-gallery', 'duo-lab', 'update-lab', 'native-fixture', 'photo-editor', 'recorder', 'fieldnotes', 'markdown', 'messages', 'interaction-gallery', 'motion-gallery'];
 
@@ -70,8 +75,8 @@ export const stepEnv = step => Object.fromEntries(LANE_DISTS.filter(d => d.steps
 /** Scripts that check every file of the checkout by design: a suite that runs one reads them all. */
 const WHOLE = new Set(['scripts/caps.mjs', 'scripts/metrics.mjs']);
 
-/** The Cargo workspaces whose packages' tests run: the root's, and the two kept apart from it. */
-const WORKSPACES = ['Cargo.toml', 'game/Cargo.toml', 'apps/harmony/app/Cargo.toml'];
+/** The Cargo workspaces whose packages' tests run: the root's, and the game's, kept apart from it. */
+const WORKSPACES = ['Cargo.toml', 'game/Cargo.toml'];
 
 /** The hosts an app's crate directory serves; the directory is the platform's name. */
 const APP_HOSTS = { web: ['web'], apple: ['macos', 'ios'], linux: ['linux'], windows: ['windows'], android: ['android'] };
@@ -114,8 +119,8 @@ export function xctestClasses(root, host, because) {
  *   `xctest`   the Swift host tests (`host`: macos or ios), `build.mjs --test`
  *   `touch`    real touches on an iOS simulator, `smoke-touch.mjs --build`
  *   `compile`  the tvOS or watchOS build (`host`), installed on nothing
- *   `harmony`  Harmony's end-to-end tests (`memory-backend-test.mjs`) and its workspace's check
  *   `conform`  the web JS target against the wasm runner and the Linux host, for one app (`app`)
+ *   `parity`   a gallery (`app`) painted by the Linux host against Chrome's picture of it, `smoke.mjs <smoke> --hosts linux`
  */
 export function suites(repo) {
   const out = [];
@@ -145,11 +150,15 @@ export function suites(repo) {
   const caltrain = appBuild(repo, 'apps/caltrain', ['apple']);
   out.push({ id: 'touch:ios', kind: 'touch', host: 'ios', roots: [...apple, 'js:scripts/smoke-touch.mjs', 'test:host/apple/link.test.mjs', ...caltrain] });
   for (const host of ['tvos', 'watchos']) out.push({ id: `compile:${host}`, kind: 'compile', host, roots: [...apple, ...caltrain] });
-  out.push({ id: 'harmony', kind: 'harmony', roots: ['app:apps/harmony', 'js:scripts/memory-backend-test.mjs', 'platform:web', 'pkg:exact-web-js', 'pkg:contract'] });
   for (const app of WEB_APPS) {
     const dir = repo.appNames.get(app);
     if (!dir) continue;
     out.push({ id: `conform:${app}`, kind: 'conform', app, roots: ['js:host/web-js/conform.mjs', ...appBuild(repo, dir, ['web', 'linux']), 'platform:web', 'platform:linux', 'pkg:exact-web-js', 'pkg:exact-linux', 'pkg:contract'] });
+  }
+  for (const smoke of PARITY) {
+    const app = `${smoke}-gallery`, dir = repo.appNames.get(app);
+    if (!dir) continue;
+    out.push({ id: `parity:${smoke}`, kind: 'parity', smoke, app, roots: ['js:scripts/smoke.mjs', `js:scripts/${smoke}parity.mjs`, 'dir:scripts/fixtures', ...appBuild(repo, dir, ['web', 'linux']), 'platform:web', 'platform:linux', 'pkg:exact-web-js', 'pkg:exact-linux', 'pkg:contract'] });
   }
   return out;
 }
@@ -221,9 +230,8 @@ export class Repo {
     this.packages = new Map();
     for (const manifest of WORKSPACES) {
       if (!listed.has(manifest)) continue;
-      // The root's packages are resolved (a `[patch]`ed crate is a path package there); the others are read from
-      // their manifests alone (`--no-deps`), their path dependencies with them.
-      const data = metadata?.[manifest] ?? cargoMetadata(root, manifest, manifest === 'Cargo.toml');
+      // Resolved metadata includes path dependencies outside either workspace, including patched crates.
+      const data = metadata?.[manifest] ?? cargoMetadata(root, manifest, true);
       this.#addWorkspace(data, manifest);
     }
     // A file belongs to the deepest package whose directory holds it.
@@ -248,9 +256,6 @@ export class Repo {
       if (members.has(p.id) && !pkg.manifest) pkg.manifest = manifest;
       this.packages.set(p.name, pkg);
       byId.set(p.id, pkg);
-      if (!data.resolve && !known) {
-        for (const d of p.dependencies) if (d.path) pkg.deps.push({ name: d.name, kinds: [d.kind ?? 'normal'] });
-      }
     }
     for (const node of data.resolve?.nodes ?? []) {
       const pkg = byId.get(node.id);
@@ -801,7 +806,7 @@ export function commands(selected) {
     else if (s.kind === 'xctest') out.push(['bun', 'host/apple/build.mjs', '--test', ...(s.host === 'ios' ? ['--ios'] : []), ...(only ? ['--only', only.join(',')] : [])]);
     else if (s.kind === 'touch') out.push(['bun', 'scripts/smoke-touch.mjs', '--build']);
     else if (s.kind === 'compile') out.push(['bun', 'host/apple/build.mjs', `--${s.host}`, '--no-install']);
-    else if (s.kind === 'harmony') out.push(['bun', 'scripts/memory-backend-test.mjs', 'apps/harmony/app'], ['cargo', 'check', '--manifest-path', 'apps/harmony/app/Cargo.toml', '--all-targets', '--keep-going']);
+    else if (s.kind === 'parity') out.push(['sh', '-c', parityLeg(s.smoke)]);
   }
   const conform = selected.filter(s => s.suite.kind === 'conform').map(s => s.suite.app);
   if (conform.length) out.push(['bun', 'host/web-js/conform.mjs', ...conform, '--synthetic', '--build', '--linux']);
@@ -906,7 +911,8 @@ if (import.meta.main) {
     let status = 0;
     for (const command of commands([{ suite }])) {
       console.error(`audit ${suite.id}: ${denied.length} units unreadable; ${command.map(quote).join(' ')}`);
-      status ||= spawnSync('sandbox-exec', ['-f', file, ...command], { cwd: repo.root, stdio: 'inherit' }).status ?? 1;
+      const result = spawnSync('sandbox-exec', ['-f', file, ...command], { cwd: repo.root, stdio: 'inherit' });
+      status ||= result.status ?? 1;
     }
     process.exit(status);
   }
@@ -931,14 +937,15 @@ if (import.meta.main) {
     process.exit(0);
   }
   const counts = kind => `${selected.filter(s => s.suite.kind === kind).length} of ${catalogue.filter(s => s.kind === kind).length}`;
-  console.log(`${changed.length} changed files select ${selected.length} of ${catalogue.length} suites: Cargo packages ${counts('cargo')}, Bun files ${counts('bun')}, app tests ${counts('app')}, Apple ${['xctest', 'touch', 'compile'].map(counts).join(' + ')}, Harmony ${counts('harmony')}, conformance ${counts('conform')}`);
+  console.log(`${changed.length} changed files select ${selected.length} of ${catalogue.length} suites: Cargo packages ${counts('cargo')}, Bun files ${counts('bun')}, app tests ${counts('app')}, Apple ${['xctest', 'touch', 'compile'].map(counts).join(' + ')}, conformance ${counts('conform')}, parity ${counts('parity')}`);
   const run = commands(selected);
   for (const c of run) console.log(`  ${c.map(quote).join(' ')}`);
   if (!argv.includes('--run')) process.exit(0);
   let status = 0;
   for (const c of run.filter(c => (c[0] === 'cargo' && c[1] === 'test') || (c[0] === 'bun' && c[1] === 'test'))) {
     console.log(`\n$ ${c.map(quote).join(' ')}`);
-    status ||= spawnSync(c[0], c.slice(1), { cwd: repo.root, stdio: 'inherit' }).status ?? 1;
+    const result = spawnSync(c[0], c.slice(1), { cwd: repo.root, stdio: 'inherit' });
+    status ||= result.status ?? 1;
   }
   process.exit(status);
 }

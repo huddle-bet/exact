@@ -1,4 +1,4 @@
-// Every verb of an app's exact.mjs answers `--help` at once and starts nothing; the scripts it
+// LLP 1116 D4: every verb of an app's exact.mjs answers `--help` at once and starts nothing; the scripts it
 // runs answer `--help` and refuse a flag they do not take; and each verb's help names exactly the flags its
 // script parses (so it never names one that does not exist). `bun test ./scripts/help.test.mjs`.
 import { test } from 'bun:test';
@@ -13,7 +13,7 @@ import { HELP, helpText, indexText, knownFlags } from './help.mjs';
 import { scriptFlags } from './help-parity.mjs';
 
 const ROOT = resolve(import.meta.dir, '..');
-const APP_VERBS = ['status', 'web', 'web-build', 'serve', 'test', 'agent', 'verify', 'ios', 'mac', 'share', 'linux', 'windows', 'android', 'update', 'lock', 'contract', 'tamber', 'hatch', 'snapback', 'backend', 'pattern', 'docs', 'feedback'];
+const APP_VERBS = ['status', 'web', 'web-build', 'serve', 'test', 'agent', 'verify', 'ios', 'mac', 'share', 'linux', 'windows', 'android', 'update', 'lock', 'add', 'contract', 'tamber', 'hatch', 'snapback', 'backend', 'pattern', 'docs', 'feedback'];
 const timed = (args, options) => {
   const t = performance.now(), r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 15_000, ...options });
   return { ...r, ms: performance.now() - t };
@@ -34,7 +34,7 @@ test('each verb of a new app\'s exact.mjs, and no verb, answers help from exact2
       mkdirSync(resolve(sdk, file, '..'), { recursive: true });
       writeFileSync(resolve(sdk, file), `require('node:fs').appendFileSync(${JSON.stringify(started)}, ${JSON.stringify(file)} + '\\n');`);
     }
-    const exact = (...args) => timed([resolve(dir, 'exact.mjs'), ...args], { cwd: dir, env: { ...process.env, EXACT2: sdk } });
+    const exact = (...args) => timed([resolve(dir, 'exact.mjs'), ...args], { cwd: dir, env: { ...process.env, EXACT: sdk } });
     for (const verb of APP_VERBS) {
       const lead = verb === 'test' || verb === 'verify' ? ['ios'] : verb === 'agent' ? ['web', 'tree'] : [];
       for (const args of [[verb, '--help'], [verb, ...lead, '-h'], ['help', verb], [verb, '--help', 'all']]) {
@@ -51,9 +51,8 @@ test('each verb of a new app\'s exact.mjs, and no verb, answers help from exact2
       for (const verb of [...APP_VERBS, 'seed']) assert.match(r.stdout, new RegExp(`^  ${verb} +\\S`, 'm'), `the index names ${verb}`);
       assert.match(r.stdout, /seed +app\.json commands: bun seed\.mjs/);
     }
-    // Every help form the index and
-    // the helps name runs as written, and `all` with no verb is the index, never a verb (`help --help all` and
-    // `--help all` are the index, not "no verb all").
+    // LLP 1116.010 D2 (weather, round 12: `help --help all` and `--help all` reported "no verb all"): every help form the index and
+    // the helps name runs as written, and `all` with no verb is the index, never a verb.
     const own = { seed: ['bun', 'seed.mjs'] }, index = indexText({ verbs: APP_VERBS, own }), forms = new Set();
     for (const text of [index, ...APP_VERBS.map((v) => helpText(v))]) for (const [, form] of text.matchAll(/bun exact\.mjs ((?:[\w<>-]+ )?(?:--help|-h)(?: all)?|help(?: all)?)(?=[:\s]|$)/g)) forms.add(form);
     assert.ok(forms.has('<verb> --help') && forms.has('<verb> --help all'), `the forms named: ${[...forms]}`);
@@ -98,6 +97,10 @@ test('the scripts a verb runs answer --help and refuse a flag they do not take, 
   }
 });
 
+test('tamber help lists every binding language', () => {
+  assert.match(helpText('tamber'), /gen ts\|rust\|swift\|kotlin <app>/);
+});
+
 test('each verb\'s help names exactly the flags its script parses, in a short text', () => {
   // The verbs' scripts and the flags each parses, read as caps.mjs reads them before a push (help-parity.mjs).
   for (const [verb, flags] of scriptFlags(ROOT)) assert.deepEqual([...knownFlags(verb).keys()].sort(), flags, `${verb}: the help's flags (documented and internal) against its script's`);
@@ -107,7 +110,19 @@ test('each verb\'s help names exactly the flags its script parses, in a short te
   }
 });
 
-// The helps a small web app reads first (web, test, agent) say what a first build
+test('contract help names the build and verify flags with their arguments and restrictions', () => {
+  const text = helpText('contract');
+  for (const [command, flags] of [
+    ['build', ['[--stdin]', '[-o <file.plan>]', '[--json]', '[--errors-only]', '[--map (requires -o)]', '[--entry <kind> (requires -o; no --map or --stdin)]']],
+    ['verify', ['[--runner-only]', '[--js]', '[--walks N]', '[--steps M]', '[--walk-seed N]', '[--confirm N]', '[--types]', '[--prove <Module>]']],
+  ]) {
+    const line = text.split('\n').find(line => line.startsWith(`  ${command} <file.contract>`));
+    assert.ok(line, `contract help names ${command}`);
+    for (const flag of flags) assert.ok(line.includes(flag), `${command} help omits ${flag}: ${line}`);
+  }
+});
+
+// LLP 1116.003 D5: the helps a small web app reads first (web, test, agent) say what a first build
 // needs; `--help all` names every flag the short text leaves out, and the ports.
 test('a first build\'s helps are short, and --help all has every flag', () => {
   for (const verb of ['web', 'test', 'agent']) {
@@ -120,16 +135,16 @@ test('a first build\'s helps are short, and --help all has every flag', () => {
     assert.match(all, /^Ports {4}/m, `${verb} --help all says its ports`);
     assert.doesNotMatch(all, /^More /m);
   }
-  // Web's help does not teach a background dev server (builders followed it into five steps).
+  // LLP 1116.008 D2: web's help does not teach a background dev server (builders followed it into five steps).
   assert.match(helpText('web', { all: true }), /The dev loop is for a person watching\n\s+the app change: verify, test and agent build and serve their own copy, so checking\n\s+the app needs no dev server\./);
   assert.doesNotMatch(helpText('web', { all: true }), /web\.log| &\s|background|\$!/);
-  // A builder parses `agent` output, so the short text says --json is one object per line.
+  // LLP 1116.007 D2: a builder parses `agent` output, so the short text says --json is one object per line.
   assert.match(helpText('agent'), /^ {2}--json +one compact JSON object per op reply, one per line/m);
-  // `state <name>` is a state or resource read down a dotted path; a big one prints its sizes.
+  // LLP 1116.007 D3.9: `state <name>` is a state or resource read down a dotted path; a big one prints its sizes.
   assert.match(helpText('agent'), /^ {2}state \[<name>\] \[--full\] +a state, resource or field, dotted: groceries\.0\.done; >8 KB: sizes/m);
 });
 
-// Builders read `help` and then four or five verbs' `--help`, each a step carried to the end of the build.
+// LLP 1116.009 D6: builders read `help` and then four or five verbs' `--help`, each a step carried to the end of the build.
 // The index is the one read: each verb, then the forms a build uses, in one screen, and every flag a form names is one its
 // verb's script parses (a form never names a flag that does not exist).
 test('help is the one read: the verbs and the forms a build uses, in one screen, naming only flags the verbs parse', () => {

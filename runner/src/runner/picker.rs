@@ -1,6 +1,6 @@
-//! The file picker's runner half: the element a
-//! `showPicker(id)` names, the hold an agent answers in its place,
-//! the `app:/tmp/picked/` names a host copies into, and
+//! The file picker's runner half (LLP 1069.002): the element a
+//! `showPicker(id)` names, the hold an agent answers in its place (LLP
+//! 1069.007 D3, D4), the `app:/tmp/picked/` names a host copies into, and
 //! the `change` payload a host reports. The runner never sees the bytes.
 //!
 //! The payload (host event kind 26) is one line per file, tab-separated:
@@ -55,7 +55,7 @@ impl Picked {
     }
 
     /// [`Picked::payload`] for files under `dir` (`app:/tmp/shared/` for a
-    /// share's).
+    /// share's, LLP 1133.024 D3).
     pub fn payload_under(payload: &str, dir: &str) -> Option<Vec<Picked>> {
         let number = |s: &str| {
             let n = exact_num::parse_f64(s).ok()?;
@@ -124,7 +124,7 @@ pub struct PickerRequest {
 
 impl PickerRequest {
     /// `{"view":…,"accept":[…],"multiple":…}`: what a host presents from,
-    /// and, less the view, the hold's inspection summary.
+    /// and, less the view, the hold's inspection summary (LLP 1069.007 D3).
     pub fn json(&self, id: &str, with_view: bool) -> String {
         let mut s = String::from("{");
         if with_view {
@@ -165,10 +165,14 @@ pub fn mime_for(name: &str) -> &'static str {
         "heif" => "image/heif",
         "avif" => "image/avif",
         "tif" | "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/vnd.microsoft.icon",
         "mp4" => "video/mp4",
         "mov" => "video/quicktime",
         "m4v" => "video/x-m4v",
         "webm" => "video/webm",
+        "pdf" => "application/pdf",
         "json" => "application/json",
         "md" | "markdown" => "text/markdown",
         "txt" | "log" => "text/plain",
@@ -198,7 +202,7 @@ pub fn accepts(accept: &[String], name: &str, mime: &str) -> bool {
     })
 }
 
-/// iOS Safari's rule, on every host: a HEIC or HEIF
+/// iOS Safari's rule, on every host (LLP 1069.002 D6): a HEIC or HEIF
 /// photo is delivered as JPEG when `accept` names images but not HEIC;
 /// otherwise as it is.
 pub fn delivered_type<'a>(mime: &'a str, accept: &[String]) -> &'a str {
@@ -233,8 +237,8 @@ pub fn answer_paths(value: &str) -> Vec<String> {
 
 impl<D: DataSource> Runner<D> {
     /// A picker's answer, checked before the hold is consumed: at least one
-    /// file, one unless `multiple`, each of a type `accept` takes once
-    /// converted — what the real picker would have let the person
+    /// file, one unless `multiple`, each of a type `accept` takes once D6
+    /// has converted it — what the real picker would have let the person
     /// choose.
     pub(super) fn check_pick(&self, node: Option<ViewId>, value: &str) -> Result<(), String> {
         let n = node
@@ -292,7 +296,7 @@ impl<D: DataSource> Runner<D> {
         })
     }
 
-    /// `showPicker(id)` under the agent: hold a `pick`
+    /// `showPicker(id)` under the agent (LLP 1069.002 D9): hold a `pick`
     /// request for the agent; the OS is never asked. A second while one is
     /// held for the same input does nothing and says so, as on a device.
     pub fn hold_picker(&mut self, id: &str) -> Result<u64, String> {
@@ -320,7 +324,7 @@ impl<D: DataSource> Runner<D> {
     }
 
     /// A fresh `app:/tmp/picked/<id>.<ext>`: `<id>` from the launch seed
-    /// and a counter, never the user's file name.
+    /// and a counter (LLP 1027.000), never the user's file name.
     pub fn picked_path(&mut self, name: &str) -> String {
         self.picked_count += 1;
         format!(
@@ -335,6 +339,48 @@ impl<D: DataSource> Runner<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_picker_accepts_svg_bmp_and_ico_by_type() {
+        for (name, mime) in [
+            ("logo.svg", "image/svg+xml"),
+            ("scan.BMP", "image/bmp"),
+            ("icon.ico", "image/vnd.microsoft.icon"),
+            ("photo.png", "image/png"),
+            ("scan.tiff", "image/tiff"),
+        ] {
+            for accept in ["image/*", mime] {
+                let source = format!(
+                    "component App\n  view\n    input type=\"file\" accept=\"{accept}\" id=\"one\"\n"
+                );
+                let mut runner = Runner::boot(
+                    contract::compile(&source).unwrap(),
+                    (),
+                    exact_kernel::Kernel::with_monospace(),
+                    Default::default(),
+                    "/",
+                )
+                .unwrap();
+                let ticket = runner.hold_picker("one").unwrap();
+                assert!(runner
+                    .answer_hold(ticket, &crate::HoldAnswer::Value("/a/notes.txt".into()))
+                    .is_err());
+                runner
+                    .answer_hold(ticket, &crate::HoldAnswer::Value(format!("/a/{name}")))
+                    .unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(mime_for(name), mime);
+                assert!(runner.device_holds().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_pdf_has_its_mime_type_and_is_not_an_image() {
+        let mime = mime_for("report.PDF");
+        assert_eq!(mime, "application/pdf");
+        assert!(accepts(&["application/pdf".into()], "report.PDF", mime));
+        assert!(!accepts(&["image/*".into()], "report.PDF", mime));
+    }
 
     #[test]
     fn a_payload_round_trips_and_refuses_a_path_outside_picked() {

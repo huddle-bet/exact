@@ -1,4 +1,4 @@
-// Staged capabilities: the production web artifact is split
+// Staged capabilities (LLP 1047.000 §9): the production web artifact is split
 // into a core and one module per staged capability, which the glue loads
 // before the capability's first use.
 //
@@ -13,13 +13,14 @@
 // assertion that a gate was bypassed, never a fallback.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { devNull, tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { withLock } from './build-lock.mjs';
 
 /** The staged capabilities and their seam entries, demangled. */
 export const STAGES = [
-  // Inspection: the agent API's reads. Host::agent calls the hook
+  // Inspection (LLP 1012): the agent API's reads. Host::agent calls the hook
   // `HostLinks::of` installs; the glue's `ask` is its only caller.
   { name: 'inspection', seam: /^exact_runner::agent::handle::</ },
 ];
@@ -28,7 +29,7 @@ export const STAGES = [
  * builds unsplit rather than guess. */
 export const BINARYEN = 'version 132';
 /** Where the pinned binaryen comes from on a machine without a package
- * manager: the release tarball, unpacked, its `bin/` on PATH. */
+ * manager (LLP 1054 O2): the release tarball, unpacked, its `bin/` on PATH. */
 export const BINARYEN_DOWNLOAD = `https://github.com/WebAssembly/binaryen/releases/tag/${BINARYEN.replace(' ', '_')}`;
 const FEATURES = ['--enable-bulk-memory', '--enable-nontrapping-float-to-int', '--enable-sign-ext', '--enable-mutable-globals', '--enable-reference-types'];
 
@@ -136,4 +137,40 @@ export function splitStages(named, stages = STAGES) {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+/** Optimize the app before capability splitting, reusing only a verified product of the same tool and inputs. */
+export function optimizeWasm(input, output, options, cache, tool = 'wasm-opt') {
+  // Bun's default lookup retains the startup PATH; the build adds its pinned Binaryen at runtime.
+  const executable = Bun.which(tool, { PATH: process.env.PATH });
+  const optimize = (command, source) => spawnSync(command, [...options, '-o', output, source], { stdio: 'inherit' });
+  if (!executable) return optimize(tool, input);
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  const bytes = readFileSync(input), path = realpathSync(executable), identity = sha(readFileSync(path));
+  const key = sha(JSON.stringify([sha(bytes), options, path, identity]));
+  mkdirSync(cache, { recursive: true });
+  return withLock(resolve(cache, 'lock'), () => {
+    const product = resolve(cache, 'optimized.wasm'), receipt = resolve(cache, 'receipt.json');
+    let kept = null;
+    try {
+      const card = JSON.parse(readFileSync(receipt, 'utf8'));
+      if (card.key === key) {
+        const candidate = readFileSync(product);
+        if (sha(candidate) === card.sha256) kept = candidate;
+      }
+    } catch { /* A missing or incomplete product is rebuilt. */ }
+    if (kept) { writeFileSync(output, kept); return { status: 0, cached: true }; }
+    // Cargo may replace the original while Binaryen runs; optimize the bytes whose digest keys this entry.
+    const snapshot = resolve(cache, 'input.wasm');
+    writeFileSync(snapshot, bytes);
+    let result;
+    try { result = optimize(path, snapshot); }
+    finally { rmSync(snapshot, { force: true }); }
+    if (result.status === 0 && sha(readFileSync(path)) === identity) {
+      const optimized = readFileSync(output);
+      writeFileSync(product, optimized);
+      writeFileSync(receipt, JSON.stringify({ key, sha256: sha(optimized) }) + '\n');
+    }
+    return result;
+  });
 }

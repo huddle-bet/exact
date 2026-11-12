@@ -1,7 +1,7 @@
 # GPU module ABI
 
 The host and module ship together. Before 1.0, missing required symbols refuse
-loading; there is no compatibility shim.
+loading; there is no compatibility shim. See LLP 1009 and LLP 1014.000.
 
 | Version / revision | Child delivery export | Contract |
 |---|---|---|
@@ -36,3 +36,58 @@ and optionally `EXACT_AGENT_WINDOW_TAP` to a launch button's test ID.
 `EXACT_AGENT_WINDOW_FULLSCREEN=1` uses borderless fullscreen;
 `EXACT_AGENT_WINDOW_UNPACED=1` removes pacing to measure rendering capacity.
 These switches require a bounded development run and are stripped in production.
+
+## Frame pacing and timing
+
+A surface that rests returns `false` from `render`; the host then asks for no
+frame until the canvas is dirty (an input, a bind, an asset), its box or scale
+changes, or the agent's clock moves. `Surface::max_fps` caps its drawn frames (0
+for none). Each display frame a pacing host asks `gpu_due(id, now_ms)` before it
+would render a canvas, and skips a canvas that is not due while still asking for
+the next frame: the deadline sits on the lattice of the cap's interval, so a cap
+of 30 on a 120 Hz display draws every fourth frame, a missed slot is skipped
+rather than caught up, and the first frame after a rest draws at once. Under the
+agent's clock (`gpu_seekable(true)`) every canvas is due. A cap below 5 draws
+5: a longer gap than the live clock carries in one frame (250 ms) would slow a
+world's ticks. `gpu_max_fps(id)`
+(native) reports the cap, which the Apple host uses to lower its `CADisplayLink`'s
+preferred rate while nothing else on screen asks for more.
+
+Before each frame `Surface::timing` receives a `FrameTiming`: the interval since
+the canvas's previous drawn frame (0 after a rest), the display period
+(`gpu_period`), the host's callback (`gpu_host_frame(raw_ms, callback_ms,
+fastest_period_ms, thermal)`: its own timestamp and when it began to run, on the
+frame clock, and the display's fastest period) and a `ThermalState` (0 unknown,
+1 nominal, 2 fair, 3 serious, 4 critical). Apple reports `ProcessInfo.thermalState`;
+the web, Android, Linux and Windows report unknown.
+
+| host | rests | caps | timing |
+|---|---|---|---|
+| web | yes | `gpu_due` in the `requestAnimationFrame` loop | callback times; thermal unknown |
+| iOS, tvOS, macOS | yes | capped `CADisplayLink` range and `gpu_due` per canvas | callback times, fastest period, thermal state |
+| Android | yes | `gpu_due` per canvas | none |
+| Linux, Windows (readback and window frame) | no: a rendered canvas repaints every display frame | no | none |
+
+## A module's own audio output
+
+A surface posts the string `"exact:audio"` through `Surface::messages` to ask
+for the app's audio session. The host consumes it without dispatching it to
+the app. On iOS and tvOS, ExactKit applies the app's `audio_session` category
+and options and activates the session. A first successful request sends
+nothing back. A failed activation sends `Lifecycle::Interrupted` to the
+host's surfaces; recovery sends `Lifecycle::Resumed`. Failure retries after
+300 live display-link frames, on a Hidden → Visible transition or a key/pointer
+gesture. An interruption ending without `shouldResume` blocks automatic
+retries, including repeated `exact:audio` requests, until visibility or input
+allows recovery. Hidden surfaces do not retry.
+
+Immediately before a GPU module makes a surface on iOS or tvOS, the owner
+sets an unclaimed session to `.ambient`, without activating it. Output opened
+before its request is handled therefore mixes with other apps' audio and
+obeys the ring/silent switch until the request takes the app's configuration.
+A held or claimed session stays as it is. This preparation does not run for
+Canvas 2D, an app with no GPU canvas, or the driver's frozen clock, which
+makes surfaces seekable and opens no output. Under `EXACT_AGENT_TIMING=platform`
+the owner prepares too: surfaces can open output, but the driver drops
+`exact:audio` requests, so they do not raise the prepared ambient session.
+macOS, the web and Linux consume the request without configuring a session.

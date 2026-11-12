@@ -1,6 +1,6 @@
-//! The executor's scripted stream: a fake transport whose body is fed by
-//! the test, so every message, gap, close and abort is the test's to
-//! make.
+//! The executor's scripted stream (LLP 1069.004 slices 1 and 2): a fake
+//! transport whose body is fed by the test, so every message, gap, close
+//! and abort is the test's to make.
 use super::super::{Core, INDEPENDENT, WORKERS};
 use super::EventStream;
 use exact_runner::{FailureKind, Message, Outcome, Request, RequestOut};
@@ -14,7 +14,7 @@ use ibex2::{
 use std::{
     sync::{
         mpsc::{channel, Receiver, RecvTimeoutError, Sender},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -48,6 +48,9 @@ impl BodySource for Fed {
 #[derive(Default)]
 struct Script {
     feeds: Mutex<Vec<Option<Feed>>>,
+    opened: Condvar,
+    /// Hold an upload after its start outcome, before registering its feed.
+    opening: Mutex<Option<Sender<Sender<()>>>>,
     aborted: Arc<Mutex<usize>>,
     /// Told when `/upload-burst` has reported all its bytes sent.
     reported: Mutex<Option<Sender<()>>>,
@@ -75,6 +78,7 @@ impl Transport for Scripted {
             headers.set_response("content-type", kind);
             let (tx, rx) = channel();
             self.0.feeds.lock().unwrap().push(Some(tx));
+            self.0.opened.notify_all();
             let aborted = self.0.aborted.clone();
             let registration = signal.register(move || *aborted.lock().unwrap() += 1);
             std::mem::forget(registration);
@@ -94,7 +98,7 @@ impl Transport for Scripted {
                 redirected: false,
             });
         }
-        // An upload, reporting its bytes sent as a
+        // An upload (LLP 1016.000 D10), reporting its bytes sent as a
         // platform does: `/upload` a quarter, a half and the whole, each when
         // the test feeds a step; `-burst` all three at once, then its reply
         // when fed; `-fails` a half, then a network failure; `-empty` none;
@@ -120,18 +124,25 @@ impl Transport for Scripted {
                     .map_err(|_| HostError::Failed("the test let go".into()))
             };
             let fed = || {
+                let opening = self.0.opening.lock().unwrap().clone();
+                if let Some(opening) = opening {
+                    let (release, released) = channel();
+                    opening.send(release).unwrap();
+                    released.recv().expect("the test releases the opening");
+                }
                 let (tx, rx) = channel();
                 self.0.feeds.lock().unwrap().push(Some(tx));
+                self.0.opened.notify_all();
                 rx
             };
             match kind {
                 "upload" => {
-                    let rx = fed();
                     {
                         let mut going = self.0.going.lock().unwrap();
                         going.0 += 1;
                         going.1 = going.1.max(going.0);
                     }
+                    let rx = fed();
                     let steps = (|| {
                         for loaded in [total / 4, total / 2, total] {
                             step(&rx)?;
@@ -230,6 +241,7 @@ fn stream(ticket: u64, path: &str, ceiling: u32) -> RequestOut {
         unreachable!()
     };
     RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket,
         target: "progress".into(),
         request,
@@ -237,7 +249,7 @@ fn stream(ticket: u64, path: &str, ceiling: u32) -> RequestOut {
     }
 }
 
-/// An upload: a POST stream of `size` bytes.
+/// An upload (LLP 1016.000 D10): a POST stream of `size` bytes.
 fn upload(ticket: u64, path: &str, size: usize) -> RequestOut {
     upload_within(ticket, path, size, 4096)
 }
@@ -253,6 +265,7 @@ fn upload_within(ticket: u64, path: &str, size: usize, ceiling: u32) -> RequestO
         unreachable!()
     };
     RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket,
         target: "upload".into(),
         request,
@@ -261,20 +274,17 @@ fn upload_within(ticket: u64, path: &str, size: usize, ceiling: u32) -> RequestO
 }
 
 fn feed(script: &Script, at: usize) -> Feed {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(feed) = script
-            .feeds
-            .lock()
-            .unwrap()
-            .get_mut(at)
-            .and_then(Option::take)
-        {
-            return feed;
-        }
-        assert!(Instant::now() < deadline, "stream {at} never opened");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    let feeds = script.feeds.lock().unwrap();
+    let (mut feeds, _) = script
+        .opened
+        .wait_timeout_while(feeds, Duration::from_secs(5), |feeds| {
+            feeds.get(at).is_none_or(Option::is_none)
+        })
+        .unwrap();
+    feeds
+        .get_mut(at)
+        .and_then(Option::take)
+        .unwrap_or_else(|| panic!("stream {at} never opened"))
 }
 
 fn next(core: &Core, woke: &Receiver<()>) -> (u64, Outcome) {
@@ -290,7 +300,7 @@ fn next(core: &Core, woke: &Receiver<()>) -> (u64, Outcome) {
 }
 
 /// The next outcome but an upload's start (`UPLOAD_SENDING`), which comes
-/// before its transport opens and a later message may fold in.
+/// before its transport opens and a later message may fold in (D4).
 fn after_start(core: &Core, woke: &Receiver<()>) -> (u64, Outcome) {
     loop {
         match next(core, woke) {
@@ -313,6 +323,18 @@ fn settled(core: &Core) -> bool {
 }
 
 #[test]
+fn protocols_on_an_http_stream_are_refused_before_opening() {
+    let (core, script, _) = setup();
+    let mut request = stream(1, "/plain", 4096);
+    request.request.protocols = vec!["events.v1".into()];
+    assert_eq!(
+        core.run_owned(request, None).unwrap_err(),
+        "exactProtocols: only a WebSocket stream takes protocols"
+    );
+    assert!(script.feeds.lock().unwrap().is_empty());
+}
+
+#[test]
 fn three_messages_then_a_close_and_the_worker_stays_free() {
     let (core, script, woke) = setup();
     core.run_owned(stream(1, "/events", 4096), None).unwrap();
@@ -330,6 +352,7 @@ fn three_messages_then_a_close_and_the_worker_stays_free() {
     for ticket in [2, 3] {
         core.run_owned(
             RequestOut {
+                class: exact_runner::RequestClass::Ordered,
                 ticket,
                 target: "read".into(),
                 request: Request::get("https://example.test/read").independent_http(4096),
@@ -360,7 +383,7 @@ fn three_messages_then_a_close_and_the_worker_stays_free() {
 }
 
 #[test]
-#[ignore = "waits 50 ms of wall clock for the reader to fold each message; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: waits 50 ms of wall clock for the reader to fold each message; bun scripts/async.mjs runs it"]
 fn undelivered_messages_coalesce_to_the_newest() {
     let (core, script, woke) = setup();
     core.run_owned(stream(1, "/events", 4096), None).unwrap();
@@ -448,6 +471,7 @@ fn a_stream_opens_while_every_independent_worker_holds_a_reply() {
     for ticket in 1..=INDEPENDENT as u64 {
         core.run_owned(
             RequestOut {
+                class: exact_runner::RequestClass::Ordered,
                 ticket,
                 target: "held".into(),
                 request: Request::get("https://example.test/hold").independent_http(4096),
@@ -482,6 +506,7 @@ fn streams_have_their_own_bound_beside_a_full_independent_lane() {
         let request = Request::get("https://example.test/read").independent_http(4096);
         core.run_owned(
             RequestOut {
+                class: exact_runner::RequestClass::Ordered,
                 ticket,
                 target: "read".into(),
                 request,
@@ -492,6 +517,7 @@ fn streams_have_their_own_bound_beside_a_full_independent_lane() {
         .unwrap();
     }
     let read = |ticket| RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket,
         target: "read".into(),
         request: Request::get("https://example.test/read").independent_http(4096),
@@ -541,6 +567,7 @@ fn the_parser_reads_lines_fields_and_cursors_as_html_does() {
                 id: "7".into(),
                 data: "{\"a\":\n1}".into(),
                 coalesced: 0,
+                protocol: Box::default(),
                 binary: None,
             },
             Message {
@@ -613,7 +640,7 @@ fn platform(port: u16) -> (Core, Receiver<()>) {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn a_local_event_stream_arrives_message_by_message_on_the_platform_transport() {
     let (port, _) = peer();
     let (core, woke) = platform(port);
@@ -640,7 +667,7 @@ fn a_local_event_stream_arrives_message_by_message_on_the_platform_transport() {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn forgetting_a_platform_stream_closes_its_connection() {
     let (port, gone) = peer();
     let (core, woke) = platform(port);
@@ -658,7 +685,7 @@ fn forgetting_a_platform_stream_closes_its_connection() {
     }
 }
 
-/// A local WebSocket peer: `/three` sends three text
+/// A local WebSocket peer (LLP 1069.004 slice 3): `/three` sends three text
 /// frames a little apart then closes; `/binary` sends a binary frame;
 /// `/hold` sends one and reports on `gone` when the client goes.
 fn socket_peer() -> (u16, Receiver<()>) {
@@ -728,7 +755,7 @@ fn socket_platform(port: u16, grants: &str) -> (Core, Receiver<()>) {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn a_local_socket_arrives_message_by_message_and_its_close_ends_it() {
     let (port, _) = socket_peer();
     let (core, woke) = socket_platform(port, "net.websocket ws://127.0.0.1:{port}");
@@ -755,7 +782,7 @@ fn a_local_socket_arrives_message_by_message_and_its_close_ends_it() {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn a_socket_needs_its_own_grant_and_takes_only_text() {
     let (port, _) = socket_peer();
     // A fetch grant for the same origin admits no socket.
@@ -775,7 +802,7 @@ fn a_socket_needs_its_own_grant_and_takes_only_text() {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn forgetting_a_socket_closes_its_connection() {
     let (port, gone) = socket_peer();
     let (core, woke) = socket_platform(port, "net.websocket ws://127.0.0.1:{port}");
@@ -921,7 +948,7 @@ fn a_byte_stream_with_no_body_is_one_answer_as_on_the_web() {
 }
 
 #[test]
-#[ignore = "waits 50 ms of wall clock for the reader to fold each message; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: waits 50 ms of wall clock for the reader to fold each message; bun scripts/async.mjs runs it"]
 fn a_server_event_named_as_the_long_poll_reply_is_an_ordinary_event() {
     let (core, script, woke) = setup();
     core.run_owned(stream(1, "/events", 4096), None).unwrap();
@@ -979,7 +1006,7 @@ fn an_upload_is_refused_where_it_could_send_no_body() {
 }
 
 #[test]
-#[ignore = "waits 50 ms of wall clock for an upload's deadline; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: waits 50 ms of wall clock for an upload's deadline; bun scripts/async.mjs runs it"]
 fn an_uploads_deadline_ends_it_as_a_timeout() {
     let (core, _script, woke) = setup();
     let mut held = upload(1, "/hold", 4000);
@@ -1080,7 +1107,7 @@ fn an_empty_upload_tells_no_progress_and_ends_with_its_reply() {
     assert!(matches!(next(&core, &woke).1, Outcome::Response(r) if r.status == 201));
 }
 
-/// Two bodies whose copies pass the test's 1 MiB budget
+/// LLP 1016.000 D10: two bodies whose copies pass the test's 1 MiB budget
 /// together; the second waits, unopened, until the first's exchange ends.
 #[test]
 fn an_upload_waits_for_room_in_its_executors_budget() {
@@ -1144,7 +1171,7 @@ fn file_upload(ticket: u64, path: &str, name: &str) -> RequestOut {
     out
 }
 
-/// A file's room is the most a file body may be until it
+/// LLP 1016.000 D10: a file's room is the most a file body may be until it
 /// is read, then its length; a second file waits for room before it is read.
 #[test]
 fn an_uploads_file_is_read_once_it_has_room() {
@@ -1187,69 +1214,10 @@ fn an_uploads_file_is_read_once_it_has_room() {
     );
 }
 
-/// Fifteen 2 MB photo uploads, in the budget a device
-/// has, go out three at a time, as upstream T3 Code sends them, and leave
-/// the app's other streams their places. An event stream opened before the
-/// burst and one opened after it both open at once, and every upload ends
-/// with its reply. Without the cap all fifteen would go out at once, since
-/// the budget and the lane have room for them, and with the first stream
-/// they would take all 16 places, so the second stream would be refused.
-/// (Fifteen, because the independent lane has room for no more of them at
-/// once on the asynchronous core, which counts a second copy of each body.)
-#[test]
-fn a_burst_of_photo_uploads_goes_three_at_a_time_and_leaves_other_streams_their_places() {
-    let (core, script, woke) = setup();
-    core.run_owned(stream(100, "/events", 1024), None).unwrap();
-    let before = feed(&script, 0);
-    for ticket in 1..=15 {
-        core.run_owned(upload(ticket, "/upload", 2 << 20), None)
-            .unwrap();
-    }
-    let going: Vec<Feed> = (1..=3).map(|at| feed(&script, at)).collect();
-    core.run_owned(stream(101, "/events", 1024), None)
-        .expect("a stream after the burst has its place");
-    let after = feed(&script, 4);
-    assert_eq!(
-        core.shared.uploads.waiting(),
-        (12, 3 * (2 << 20) * super::COPIES)
-    );
-    for (fed, ticket) in [(&before, 100), (&after, 101)] {
-        fed.send(format!("id: {ticket}\ndata: {ticket}\n\n").into_bytes())
-            .unwrap();
-        while !matches!(next(&core, &woke), (t, Outcome::Message(_)) if t == ticket) {}
-    }
-    // Feed each upload as it opens, whatever its order, until all fifteen replied.
-    let (mut fed, mut replies) = (going, 0);
-    let mut opened = 5;
-    while replies < 15 {
-        for step in fed.drain(..) {
-            for _ in 0..3 {
-                step.send(Vec::new()).unwrap();
-            }
-        }
-        if let (_, Outcome::Response(_)) = next(&core, &woke) {
-            replies += 1;
-        }
-        while let Some(more) = script
-            .feeds
-            .lock()
-            .unwrap()
-            .get_mut(opened)
-            .and_then(Option::take)
-        {
-            fed.push(more);
-            opened += 1;
-        }
-    }
-    assert_eq!(
-        script.going.lock().unwrap().1,
-        3,
-        "never more than three at once"
-    );
-    assert_eq!(core.shared.uploads.waiting(), (0, 0));
-}
+#[path = "executor_upload_burst_tests.rs"]
+mod upload_burst;
 
-/// An upload waiting in the queue holds no count or
+/// LLP 1016.000 D10: an upload waiting in the queue holds no count or
 /// bytes of its lane. Thirty with a 1 MiB reply ceiling, `maxResponseBytes`'s
 /// default, charged as they waited, would leave the independent lane's 64
 /// MiB no room for a fetch's ceiling, and the fetch would wait behind them
@@ -1265,6 +1233,7 @@ fn thirty_uploads_waiting_leave_an_independent_fetch_its_room() {
     let _going: Vec<Feed> = (0..3).map(|at| feed(&script, at)).collect();
     assert_eq!(core.shared.uploads.waiting().0, 27);
     let fetch = RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket: 100,
         target: "data".into(),
         request: Request::get("https://example.test/data").independent_http(1 << 20),
@@ -1276,7 +1245,7 @@ fn thirty_uploads_waiting_leave_an_independent_fetch_its_room() {
 
 /// The executor records each upload that has begun to go out, and tells
 /// the host which of those the runner let go (`let_go_started`); one let go
-/// while it waits in the queue never started. Once the
+/// while it waits in the queue never started (LLP 1016.000 D10). Once the
 /// three going out have ended, the independent lane holds nothing: the one
 /// let go as it waited took no count to give back, on either core.
 #[test]
@@ -1324,9 +1293,9 @@ fn the_uploads_let_go_that_had_started_are_told_once() {
     }
 }
 
-/// An upload waiting only for its lane's room starts as a
+/// LLP 1016.000 D10: an upload waiting only for its lane's room starts as a
 /// request let go gives it back, without the host's next pump. Three image
-/// GETs with 10 MiB ceilings fill the independent lane but for 4 MiB, which
+/// GETs with 22 MiB ceilings fill the independent lane but for under 2 MiB, which
 /// an upload with a 2 MiB reply ceiling does not fit; the person scrolls one
 /// image away, and as its aborted exchange ends the upload opens.
 #[test]
@@ -1334,9 +1303,10 @@ fn an_upload_waiting_for_its_lanes_room_starts_when_a_request_let_go_frees_it() 
     let (core, script, _woke) = setup();
     for ticket in 1..=3 {
         let image = RequestOut {
+            class: exact_runner::RequestClass::Ordered,
             ticket,
             target: "image".into(),
-            request: Request::get("https://example.test/hold").independent_http(10 << 20),
+            request: Request::get("https://example.test/hold").independent_http(22 << 20),
             forced: false,
         };
         core.run_owned(image, None).unwrap();
@@ -1353,7 +1323,7 @@ fn an_upload_waiting_for_its_lanes_room_starts_when_a_request_let_go_frees_it() 
     let _going = feed(&script, 0);
 }
 
-/// The inline bodies of uploads waiting are bounded; an
+/// LLP 1016.000 D10: the inline bodies of uploads waiting are bounded; an
 /// upload past the bound is refused, and one alone always waits.
 #[test]
 fn the_bodies_of_uploads_waiting_are_bounded() {
@@ -1373,7 +1343,7 @@ fn the_bodies_of_uploads_waiting_are_bounded() {
 
 /// An upload the grants do not admit is refused before it starts: no
 /// `exact:sending`, so the runner marks it as no upload asked, and
-/// `refresh` asks it again (local patch 23).
+/// `refresh` asks it again (LLP 1016.000 D10, local patch 23).
 #[test]
 fn an_upload_the_grants_refuse_never_starts() {
     let (core, _script, woke) = setup();
@@ -1395,32 +1365,12 @@ fn an_upload_the_grants_refuse_never_starts() {
     assert!(core.let_go_started(|_| false).is_empty());
 }
 
-#[test]
-fn a_reply_that_lands_as_the_deadline_passes_stands() {
-    use super::timed_out;
-    let reply = Outcome::Response(exact_runner::Response {
-        status: 201,
-        headers: Vec::new(),
-        body: Vec::new(),
-    });
-    assert!(matches!(timed_out(reply, true, 50), Outcome::Response(r) if r.status == 201));
-    let aborted = Outcome::Failed {
-        kind: FailureKind::Aborted,
-        message: "native request aborted".into(),
-    };
-    assert!(matches!(
-        timed_out(aborted.clone(), true, 50),
-        Outcome::Failed { kind: FailureKind::Timeout, message } if message == "the request timed out after 50 ms"
-    ));
-    assert_eq!(timed_out(aborted.clone(), false, 50), aborted);
-}
-
 /// URLSession end to end (local patch 23): a 16 MiB body from an app file
 /// (more than loopback's socket buffers take at once) a loopback server reads
 /// 256 KiB at a time, then answers 62 s later, past URLSession's 60 s without
 /// data, which the upload's deadline a second later lifts.
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), and a reply 62 s after its body; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), and a reply 62 s after its body; bun scripts/async.mjs runs it"]
 fn an_upload_through_urlsession_tells_its_progress_and_waits_out_a_slow_reply() {
     use std::io::{BufRead, BufReader, Read, Write};
     const SIZE: usize = 16 << 20;

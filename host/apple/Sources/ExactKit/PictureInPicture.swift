@@ -1,9 +1,9 @@
-// `requestPictureInPicture(id)`: an `image` floats in the platform's
+// @ref LLP 1042 §9. `requestPictureInPicture(id)`: an `image` floats in the platform's
 // picture-in-picture window, which shows each picture its `src` names next, until
 // `exitPictureInPicture()` or the window's own close; a failure is the image's
 // `pictureinpictureerror`. AVKit stays in the video arm
 // (`host/apple/videoarm/PictureInPicture.swift`); this side follows the node.
-// `presentation="window"` or `"panel"` floats it in Exact's own window on
+// `presentation="window"` or `"panel"` (LLP 1042 §9.1) floats it in Exact's own window on
 // macOS instead (`Mac/PictureInPictureWindowMac.swift`), which needs no arm.
 import Foundation
 
@@ -32,7 +32,7 @@ final class PictureInPictureHost {
     private(set) var window: PictureInPictureWindow?
     #endif
 
-    /// The request's options: `presentation=` and how Exact's window opens.
+    /// The request's options (LLP 1042 §9.1): `presentation=` and how Exact's window opens.
     struct Options: Equatable {
         /// `"window"` or `"panel"`, Exact's window; nil, the platform's.
         var presentation: String?
@@ -142,7 +142,7 @@ final class PictureInPictureHost {
         guard window != nil || handle != nil else { return }
         source = src
         // A file the image names, as it resolves one: the app's own (`app:/`) or a bundled asset.
-        let url = src.hasPrefix("app:/") ? AppFiles.url(src) : URL(string: src)?.scheme == nil ? node.presenter?.session?.app.resolveAsset(src) : nil
+        let url = src.hasPrefix("app:/") ? AppFiles.file(src) : URL(string: src)?.scheme == nil ? node.presenter?.session?.app.resolveAsset(src) : nil
         guard let path = url?.path else {
             // Before the window opens, an unreadable picture fails the request; after, the window keeps the last.
             if entered { node.presenter?.session?.log("requestPictureInPicture: \(src) is not a file the window can read") }

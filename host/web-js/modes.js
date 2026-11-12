@@ -1,4 +1,4 @@
-// The app's modes on the JS target, imported by an app's
+// The app's modes on the JS target (LLP 1121 D7), imported by an app's
 // module only when its plan has app axes, or a theme and a `color-scheme`
 // boundary (exact-web-js `modes.rs`). The page's rules declare each varying
 // token per full tuple, `[data-x-modes="axis=value,…"]`; this gives the root
@@ -6,8 +6,10 @@
 // (`data-x-pin`) over the tuple around it, and writes on the boundary every
 // inherited colour row it does not set, from the text of the nearest
 // ancestor's row when that row read a token, as the runner's implied rows
-// are (`instance/theme.rs`). It runs after each commit, a pin's change and
-// `setMode`. Like the runner's, the window's modes do not persist.
+// are (`instance/theme.rs`); a boundary that writes the colour again names
+// the state looks whose colour would reach it (`data-x-lc`), so it takes
+// theirs while one holds. It runs after each commit, a pin's change and
+// `setMode`. Like the runner's, the window's modes do not persist (§9 Q5).
 import { After, PropHooks, inflight, say } from "./rt.js";
 
 // The rows by bit (`modes.rs` `CHANNELS`).
@@ -15,7 +17,7 @@ const CH = ["color", "caret-color", "fill", "stroke", "accent-color", "text-shad
 // A value that sets no row: the row is the one around (`StyleValue::text_unsets`).
 const UNSETS = /^\s*(unset|inherit)?\s*$/i;
 let Axes = [], Classes = {}, Texts = [], Vars = {}, Accent = [], Names = {}, Win = [], Pending = false;
-// A development build's design digest: the base a live
+// A development build's design digest (LLP 1121 stage 4): the base a live
 // batch applies to. Null in a release build, which takes none.
 let Design = null, Structure = null, Rules = null, AccentRules = null;
 const key = d => Axes.map(([a, values], i) => `${a}=${values[d[i]]}`).join(",");
@@ -44,6 +46,23 @@ function channel(e, j) {
   }
   return null;
 }
+
+/** The state looks (`data-exact-looks`) whose `color` reaches `e`: its own
+ * and its ancestors', up to and with the nearest that sets its colour, as
+ * `channel` walks, space-separated. */
+function looking(e) {
+  const sets = [];
+  for (; e?.nodeType === 1; e = e.parentElement) {
+    const at = e.getAttribute("data-exact-looks");
+    if (at) sets.push(at);
+    if (e.$xi?.[0] !== undefined || [...e.classList].some(c => Classes[c]?.[0] !== undefined)) break;
+  }
+  return sets.join(" ");
+}
+/** A boundary that writes the colour around it again takes the colour of
+ * the looks `sets` names while one holds (the sheet's `[data-x-lc~=…]`
+ * rules, looks.rs `colour_below`), as its subtree would inherit it. */
+const mark = (b, sets) => { if (sets) { if (b.getAttribute("data-x-lc") !== sets) b.setAttribute("data-x-lc", sets); } else if (b.getAttribute("data-x-lc") != null) b.removeAttribute("data-x-lc"); };
 
 /** The boundaries under `root`, in document order (the render DOM has no
  * selectors). */
@@ -83,8 +102,9 @@ function apply() {
     const own = Number(b.getAttribute("data-x-b")), was = b.$xs ??= [];
     for (let j = 0; j < CH.length; j++) {
       // Its own row stands, from its CSS or a binding that sets it now.
-      if (own & 1 << j || b.$xi?.[j] !== undefined) { was[j] = undefined; continue; }
+      if (own & 1 << j || b.$xi?.[j] !== undefined) { was[j] = undefined; if (j === 0) mark(b, ""); continue; }
       const text = channel(b.parentElement, j);
+      if (j === 0) mark(b, text == null ? "" : looking(b.parentElement));
       if (was[j] === text) continue;
       write(b, j, was[j], text);
       was[j] = text;
@@ -205,7 +225,7 @@ const tupleKey = t => {
   for (let i = Axes.length - 1; i >= 0; i--) { const [a, values] = Axes[i]; pins.unshift(`${a}=${values[t % values.length]}`); t = Math.floor(t / values.length); }
   return pins.join(",");
 };
-/** A live batch or snapshot: each changed token's
+/** A live batch or snapshot (LLP 1121 stage 4): each changed token's
  * property set again in every tuple's rule, in one style update. Stale when
  * its base is not this page's design. */
 function design(frame) {
@@ -226,8 +246,8 @@ function design(frame) {
   if (frame.design === Design || !frame.tokens?.length) return { live: "applied" };
   return mark ? still(() => setTokens(frame)) : setTokens(frame);
 }
-/** A scrub's frame shows with no transition, as the tool drags it: every
- * transition off while its values are set and styled, then back
+/** A scrub's frame shows with no transition, as the tool drags it (LLP 1121
+ * D13): every transition off while its values are set and styled, then back
  * on, with nothing left to move. */
 function still(apply) {
   const root = document.documentElement;
@@ -254,7 +274,7 @@ function setTokens(frame) {
   for (const t of frame.tokens.flatMap(t => t.parts ?? [t])) {
     if (!t.prop || !Array.isArray(t.css)) continue;
     // The tint's override: the theme's `:root` rule, under an authored
-    // `accent-color`'s redeclaration.
+    // `accent-color`'s redeclaration (LLP 1121 stage 5).
     if (t.root) { themeRule(t.prop)?.style.setProperty(t.prop, t.css[0]); continue; }
     t.css.forEach((css, i) => {
       rules.get(tupleKey(i))?.style.setProperty(t.prop, css);
@@ -265,7 +285,7 @@ function setTokens(frame) {
     });
   }
   Design = (globalThis.exact ??= {}).designDigest = frame.design;
-  globalThis.exact.repaintPress?.(); // a held press eases over the new values (input-glue.js)
+  globalThis.exact.repaintPress?.(); // a held press eases over the new values (LLP 1121 D8, input-glue.js)
   // A symbol sized by a type token's property redraws its mask, as the
   // build channel's scheme pin asks it (symbols.js listens for a resize).
   if (frame.tokens.some(t => t.parts) && typeof dispatchEvent === "function") dispatchEvent(new Event("resize"));
@@ -318,7 +338,7 @@ export function modes(axes, classes, texts, vars, accent, names, devDesign, devS
     command: args => {
       const [a, v] = args;
       if (args.length === 2 && typeof a === "string" && typeof v === "string" && !refused([[a, v]])) {
-        // (A development page may hold the axis over the app's own: kept as asked, applied when handed back.)
+        // (A development page may hold the axis over the app's own, LLP 1122 T7: kept as asked, applied when handed back.)
         const x = globalThis.exact, apply = () => x.modes.set([[a, v]]);
         (x.asked ??= {})[`mode:${a}`] = { value: v, apply };
         return void (x.held?.[`mode:${a}`] ? x.onAsked?.() : apply());

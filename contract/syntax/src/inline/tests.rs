@@ -9,6 +9,34 @@ use std::collections::BTreeMap;
 
 const NAMES: [&str; 4] = ["a", "b", "o", "p"];
 
+#[test]
+fn expansion_refuses_a_file_without_a_component() {
+    for src in [
+        "",
+        "shape Data\n  n: number\nfn one(): number = 1\n",
+        "always \"a is one\"\n  expect state a == 1\n",
+    ] {
+        let file = crate::parse(src).unwrap();
+        let expected = crate::SyntaxError {
+            id: "analyze-no-component",
+            message: "a file needs a component".into(),
+            span: Span::point(1, 1),
+        };
+        assert_eq!(super::expand(&file).unwrap_err(), expected);
+        assert_eq!(super::expand_mapped(&file).unwrap_err(), expected);
+        assert_eq!(super::inline(&file).unwrap_err(), expected);
+        for errors in [
+            super::expand_all(&file, false).1,
+            super::expand_all(&file, true).1,
+            super::expand_checked(&file, false).1,
+            super::expand_checked(&file, true).1,
+            super::expand_typed(&file).1,
+        ] {
+            assert_eq!(errors, vec![expected.clone()]);
+        }
+    }
+}
+
 struct Rng(u64);
 
 impl Rng {
@@ -294,7 +322,7 @@ fn a_shared_derive_is_evaluated_exactly_where_its_readers_evaluated_it() {
     );
 }
 
-/// A statement `let` binds for the rest of its block:
+/// A statement `let` (LLP 1035.005.000 D2) binds for the rest of its block:
 /// a replacement that mentions its name renames it apart there, and the
 /// statements before it and after its block keep the outer name.
 #[test]
@@ -352,7 +380,7 @@ fn a_statement_let_is_renamed_apart_from_a_replacement_for_the_rest_of_its_block
     assert_eq!(out[2], assign("x", id("a")));
 }
 
-/// A tab panel's contents are one arm in typed
+/// A tab panel's contents are one arm (LLP 1075.003 §9.14) in typed
 /// expansion as in ordinary: a role passed as a typed prop reaches the
 /// element ascribed, and is still the literal `"tabpanel"`.
 #[test]

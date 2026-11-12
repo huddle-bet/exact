@@ -1,6 +1,78 @@
 use super::*;
 
-/// A bound colour naming a theme entry or an
+#[test]
+fn a_native_buttons_cleared_display_matches_the_wasm_face() {
+    let plan = contract::compile(
+        r#"component App
+  state visible = true
+  view
+    button appearance="auto" display=(visible ? "flex" : "none")
+      text "Lock"
+      image "symbol:lock"
+"#,
+    )
+    .unwrap();
+    let js = crate::emit::emit(&plan, false, false).unwrap().js;
+    let start = js.find("v=>v===\"none\"?\"none\":\"grid\"").unwrap();
+    let arguments = js[start..].split("));").next().unwrap();
+    let mapped = include_str!("../../rt.js")
+        .lines()
+        .find_map(|line| line.strip_prefix("export const mapped = "))
+        .unwrap()
+        .trim_end_matches(';');
+    let actual = run(
+        &format!("v=>({mapped})(v,{arguments})"),
+        &["", " \t", "flex", "none"],
+    );
+    let sites = crate::emit::Sites::new(&plan).unwrap();
+    let (mut kernel, _) = static_tree(&plan, &sites).unwrap();
+    let mut patch = exact_kernel::StyleProps::default();
+    patch.written.set(StyleId::Display);
+    kernel
+        .apply(
+            1,
+            2,
+            &[Op::SetStyle {
+                id: 1,
+                patch: Box::new(patch),
+            }],
+        )
+        .unwrap();
+    let css = exact_web::host::template::parts(&kernel, &plan, 1)
+        .unwrap()
+        .css;
+    let display = css
+        .split(';')
+        .filter_map(|d| d.strip_prefix("display:"))
+        .next_back()
+        .unwrap();
+    assert_eq!(display, "grid");
+    assert_eq!(
+        actual,
+        serde_json::json!([display, display, display, "none"])
+    );
+}
+
+#[test]
+fn mapped_css_clears_leave_timeline_companions_absent() {
+    let plan = contract::compile(
+        "component App\n  state c = \"\"\n  view\n    view cursor=c animation-timeline=c testId=\"v\"\n",
+    )
+    .unwrap();
+    let js = crate::emit::emit(&plan, false, false).unwrap().js;
+    for (name, clear) in [
+        ("\"cursor\"", true),
+        ("\"--exact-animation-timeline\"", false),
+        ("\"animation-play-state\"", false),
+    ] {
+        let at = js.find(name).unwrap_or_else(|| panic!("{name}:\n{js}"));
+        let write = js[at..].split(";S").next().unwrap();
+        assert!(write.contains("mapped(("), "{name}: {write}");
+        assert_eq!(write.contains(",\"unset\")"), clear, "{name}: {write}");
+    }
+}
+
+/// @ref LLP 1095 D4 — a bound colour naming a theme entry or an
 /// overridden role writes the entry's CSS, as the literal path does.
 #[test]
 fn a_bound_theme_name_writes_its_entry() {
@@ -32,7 +104,7 @@ fn a_bound_theme_name_writes_its_entry() {
             "#123456",
             // The tint's role stays itself, under an authored accent too;
             // no name is read inside a colour function but a synthetic
-            // token's, which the view wrote.
+            // token's, which the view wrote (LLP 1121 D3).
             run(&SYSTEM_COLOR_MAP, &["AccentColor"])[0].clone(),
             "light-dark(#c8102eff, #000000ff)",
             "light-dark(rgb(0 0 0 / calc((1))), brand)",
@@ -41,7 +113,7 @@ fn a_bound_theme_name_writes_its_entry() {
     );
 }
 
-/// A design's dotted name and a synthetic token's
+/// LLP 1121 D3 — a design's dotted name and a synthetic token's
 /// expression, bound, read their folded colours as the kernel does.
 #[test]
 fn a_bound_design_name_and_synthetic_token_write_their_values() {
@@ -208,7 +280,7 @@ fn balanced_wrap_writes_the_same_property_for_bound_values() {
     assert_eq!(writes[0].map, None);
 }
 
-/// WebKit's and Chromium's name, bound or not.
+/// LLP 1019 D12: WebKit's and Chromium's name, bound or not.
 #[test]
 fn bound_font_smoothing_writes_the_prefixed_property() {
     let writes = style_writes(StyleId::FontSmoothing as u16, false, true).unwrap();
@@ -219,7 +291,57 @@ fn bound_font_smoothing_writes_the_prefixed_property() {
     assert!(writes[1].map.unwrap().contains("grayscale"));
 }
 
-/// A bound `::placeholder` colour writes css.rs's
+/// The write of `property` on the node with test id `v` in `view`, a view
+/// line under `state s = ""`.
+fn bound_write(view: &str, property: &str) -> String {
+    let source = format!("component App\n  state s = \"\"\n  view\n    {view}\n");
+    let js = crate::emit::emit(&contract::compile(&source).unwrap(), false, false)
+        .unwrap()
+        .js;
+    let at = js
+        .find(&format!(",\"{property}\","))
+        .unwrap_or_else(|| panic!("no {property} write:\n{js}"));
+    js[at..].split(";S").next().unwrap().to_string()
+}
+
+/// A cleared row writes `unset` for each property a value writes, as
+/// css.rs's clear does: the stroke shorthand for its two longhands, Firefox's
+/// font smoothing beside WebKit's, and a bare button's copy of its padding.
+/// (A write with no map is `unset` by rt.js `cssText`.)
+#[test]
+fn a_blank_clears_every_property_its_value_writes() {
+    for (view, property) in [
+        ("text \"a\" -webkit-text-stroke=s", "-webkit-text-stroke"),
+        (
+            "text \"a\" -webkit-font-smoothing=s",
+            "-moz-osx-font-smoothing",
+        ),
+        (
+            "button appearance=\"none\" padding-left=s\n      text \"a\"",
+            "--exact-padding-left",
+        ),
+    ] {
+        let write = bound_write(view, property);
+        assert!(
+            write.contains("mapped(") && write.contains(",\"unset\"))"),
+            "{property}: {write}"
+        );
+    }
+}
+
+/// A bound size on a native button is the author's while it is declared, a
+/// clear included, as the kernel's written bit says a literal one
+/// (element.rs `data-exact-said`).
+#[test]
+fn a_native_buttons_cleared_width_stays_said() {
+    let write = bound_write(
+        "button appearance=\"auto\" width=s\n      text \"a\"",
+        "data-exact-width",
+    );
+    assert!(write.contains("return v==null?null:\"\""), "{write}");
+}
+
+/// LLP 1104 D3: a bound `::placeholder` colour writes css.rs's
 /// private property, which index.html's `::placeholder` rule reads.
 #[test]
 fn a_bound_placeholder_colour_writes_the_private_property() {
@@ -254,8 +376,10 @@ fn a_bound_tint_clear_restores_the_symbol_role() {
     );
 }
 
-/// The role's CSS, as the literal path writes it.
+/// The role's CSS, as the literal path writes it, in the web's column, which
+/// [`SYSTEM_COLOR_MAP`] is built in.
 pub(crate) fn role(name: &str) -> String {
+    exact_kernel::style::roles::set_column(exact_kernel::style::roles::Column::Neutral);
     let id = exact_kernel::COLOR_ROLES
         .iter()
         .position(|r| r.name == name)
@@ -288,7 +412,7 @@ pub(crate) fn run(map: &str, values: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-/// A bound text style is written as css.rs writes a
+/// LLP 1115 D3: a bound text style is written as css.rs writes a
 /// literal one; a number is left for the row's `px`.
 #[test]
 fn a_bound_text_style_is_its_rem() {
@@ -307,7 +431,7 @@ fn a_bound_text_style_is_its_rem() {
     );
 }
 
-/// A bound control size writes what css.rs writes for
+/// LLP 1069.011.001 D8: a bound control size writes what css.rs writes for
 /// the literal one, and a clear (`null`) writes nothing.
 #[test]
 fn a_bound_control_size_writes_the_literal_declarations() {
@@ -339,7 +463,7 @@ fn a_bound_control_size_writes_the_literal_declarations() {
 
 #[test]
 fn a_computed_transition_is_checked_as_an_authors() {
-    // The new tint becomes the property the browser
+    // LLP 1081 D5: the new tint becomes the property the browser
     // animates; the old spelling, the host's own name (behind a comment
     // too) and any old name are dropped, as the native parser refuses
     // them; the physics spring stays with the engine.
@@ -422,7 +546,7 @@ pub(crate) fn assert_spring_transitions(map: &str) {
     }
 }
 
-/// A bound `color-scheme` writes `light` or `dark`, and a
+/// LLP 1034 §8: a bound `color-scheme` writes `light` or `dark`, and a
 /// bound `normal` (or an invalid value) retains an unset declaration.
 #[test]
 fn a_bound_color_scheme_is_light_dark_or_unset() {
@@ -476,7 +600,7 @@ fn a_role_name_inside_another_token_stays_as_written() {
         "background2",
         "fill(1)",
         "/* label */ red",
-        // An Exact role's bare name is no colour.
+        // An Exact role's bare name is no colour (LLP 1081 D2).
         "system-orange",
         "linear-gradient(secondary-label, fill)",
     ];
@@ -526,7 +650,7 @@ fn a_bound_platform_color_is_admitted_only_as_a_plan_literal() {
 /// A bound side is the side its author wrote: `margin-left` stays
 /// `margin-left`, not the logical `margin-inline-start` css.rs writes for a
 /// side only the sheet set, so right to left it stays on the left, as the
-/// kernel and the wasm target keep it;
+/// kernel and the wasm target keep it (s13c's restyle line read it there);
 /// one only the sheet binds is that logical side still.
 #[test]
 fn a_bound_side_is_written_as_its_author_wrote_it() {

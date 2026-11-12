@@ -1,5 +1,5 @@
-// An app's Rust data source as a standalone logic module (ABI 4) for the
-// JS runtime, when the app declares none of its own: a
+// An app's Rust data source as a standalone logic module (LLP 1029.000,
+// ABI 8) for the JS runtime, when the app declares none of its own: a
 // generated crate exporting the same DataSource the web build bakes with
 // (`apps/<app>/web/build.rs`'s `contract::bake(plan, <expr>)`).
 // usage: bun host/web-js/module.mjs <app> [--out <dir>] → <dir>/app.module.wasm
@@ -100,7 +100,7 @@ function cargoWasm(manifest) {
  * it was built from, and than what the build scripts behind it declared
  * (`cargo:rerun-if-changed`, beside each `out/` it read). An unchanged
  * module then skips Cargo, whose no-op check under `-Zbuild-std` costs
- * about a second an edit (the dev loop). */
+ * about a second an edit (LLP 1071 §7, the dev loop). */
 export function fresh(product, dep, also = []) {
   try {
     const built = statSync(product).mtimeMs, text = readFileSync(dep, 'utf8');
@@ -148,6 +148,12 @@ function module(manifest, name, out, label) {
 export function buildModule(app, out = resolve(MODULES, app), draw = false, dir = resolve(root, 'apps', app)) {
   const build = readFileSync(resolve(dir, 'web/build.rs'), 'utf8');
   const expr = /contract::bake\(\s*plan,\s*([\w:]+(?:::(?:default|new)\(\))?)\s*\)/.exec(build)?.[1];
+  // The source is copied as written into a generated crate whose one dependency is the data crate, where build.rs's
+  // `use`s and locals are not. A call it cannot copy, outside comments and strings, is named rather than taken for none.
+  const code = build.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"/g, (m) => m.startsWith('"') ? '""' : ' ');
+  if (!expr && code.includes('contract::bake(') && !JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8')).rust?.module?.package) {
+    throw new Error(`${app}: ${resolve(dir, 'web/build.rs')} passes contract::bake a source the web build does not copy into the module it generates. It copies \`contract::bake(plan, <data crate>::<Type>)\`, \`<data crate>::<Type>::default()\` or \`<data crate>::<Type>::new()\` with no arguments, written with no comma after the source (rustfmt adds one when it breaks the call across lines). For anything else, write a crate that exports the source (\`exact_logic_abi::export!(<Type>, <constructor>)\`, as apps/update-lab/logic does) and name it in app.json's rust.module.package`);
+  }
   if (!expr) return ownModule(app, out, dir);
   const ty = expr.replace(/::(default|new)\(\)$/, '');
   const dataToml = readFileSync(resolve(dir, 'data/Cargo.toml'), 'utf8');
@@ -182,8 +188,9 @@ ${patch}
   return module(resolve(crate, 'Cargo.toml'), `exact_js_module_${app.replaceAll('-', '_')}`, out, `${app}: the module`);
 }
 
-/** The app's own logic module (`rust.module.package` in app.json), for an app whose web build bakes with no single Rust source (a
- * TypeScript and a Rust source composed): its crate already
+/** The app's own logic module (`rust.module.package` in app.json, LLP
+ * 1029.000), for an app whose web build bakes with no single Rust source (a
+ * TypeScript and a Rust source composed, LLP 1027.002): its crate already
  * exports the ABI, built as the generated one is. */
 function ownModule(app, out, dir) {
   const pkg = JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8')).rust?.module?.package;
@@ -198,8 +205,10 @@ function ownModule(app, out, dir) {
  * adapters. */
 export async function moduleGrants(path) {
   const { instance } = await WebAssembly.instantiate(readFileSync(path), {}), e = instance.exports;
+  const abi = e.exact_logic_abi();
+  if (abi !== 8) throw new Error(`${path}: Rust module ABI ${abi} is not 8; rebuild it with this checkout`);
   const session = e.exact_logic_create(), request = new Uint8Array(5), p = e.exact_logic_alloc(request.length);
-  new DataView(request.buffer).setUint32(0, e.exact_logic_abi(), true);
+  new DataView(request.buffer).setUint32(0, abi, true);
   new Uint8Array(e.memory.buffer, p, request.length).set(request);
   if (e.exact_logic_call(session, p, request.length) !== 0) return '';
   const out = new Uint8Array(e.memory.buffer, e.exact_logic_output(session), e.exact_logic_output_len(session)).slice(), d = new DataView(out.buffer);
@@ -210,7 +219,7 @@ export async function moduleGrants(path) {
 }
 
 
-/** Markdown pieces as a loaded capability for the runtime:
+/** Markdown pieces (LLP 1045 D3) as a loaded capability for the runtime:
  * the web host's own `exact_web_capabilities::markdown::pieces`, exported
  * alone from a wasm module the page fetches on its first Markdown node. */
 export function buildMarkdown({ out = resolve(MODULES, 'markdown'), keepFresh = false } = {}) {
@@ -240,20 +249,20 @@ pub extern "C" fn output() -> *const u8 { unsafe { OUT.as_ptr() } }
 ` });
 }
 
-/** The motion capability: `exact-web-js-motion`'s exports,
+/** The motion capability (LLP 1071 §7): `exact-web-js-motion`'s exports,
  * the one `exact_motion` Engine, as a wasm module the page fetches after
  * first paint when its plan uses motion. */
 export function buildMotion({ out = resolve(MODULES, 'motion'), keepFresh = false } = {}) {
   return buildLeaf('motion', 'exact-web-js-motion', 'host/web-js/motion', { out, keepFresh });
 }
 
-/** The Markdown editor's rules, the crate the wasm host's
+/** The Markdown editor's rules (LLP 1045 D5), the crate the wasm host's
  * build makes its `markup-editor.wasm` from. */
 export function buildEditor({ out = resolve(MODULES, 'editor'), keepFresh = false } = {}) {
   return buildLeaf('markup-editor', 'exact-markdown-editor', 'markdown/editor', { out, keepFresh });
 }
 
-/** The exclusions walker: `exact-textflow`'s
+/** The exclusions walker (LLP 1043.000 §3 D7): `exact-textflow`'s
  * `textflow-web` binary, as the wasm build builds its `textflow.wasm`. */
 export async function buildFlow({ out = resolve(MODULES, 'flow'), keepFresh = false } = {}) {
   mkdirSync(out, { recursive: true });
@@ -334,9 +343,9 @@ ${patch}`;
 
 /** `text` without its `// dev-only {` … `// dev-only }` regions: what a
  * build that is not the dev loop's copies of a runtime file (modes.js's
- * live table), so no release page carries it. */
+ * live table, LLP 1121 stage 4), so no release page carries it. */
 /** A development build's copy of rt.js with inspect mode's two hooks
- * (inspect-dev.js), so rt.js itself, and every other build's
+ * (LLP 1122 T2b; inspect-dev.js), so rt.js itself, and every other build's
  * copy, has none: an element's view id (`$exactViewId`), and every `each`
  * region with its rows and key function (`$exactEaches`), which a
  * development build's emitter names (regions.rs passes the region id) and
@@ -353,7 +362,7 @@ export function withInspectHooks(text) {
   }
   return text;
 }
-/** Lowering (lower.js `RUNTIME`): the arms sheet's host stamp, a digest of the runtime files the build copies first (`files`:
+/** B5 (lower.js `RUNTIME`): the arms sheet's host stamp, a digest of the runtime files the build copies first (`files`:
  * `{ path, text }`, lower.js's unstamped source among them), so a runtime whose helpers or rule builder changed under a
  * kept document starts its sheet over, where the arm names (the recipe, its literals, its constants) did not change. */
 export const withRuntimeStamp = (text, files) => text.replace('"exact-runtime-unstamped"', JSON.stringify(createHash('sha256').update(files.map(f => `${f.path}\0${f.text}`).join('\0')).digest('hex').slice(0, 24)));

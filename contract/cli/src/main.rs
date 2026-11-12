@@ -1,16 +1,45 @@
-//! `contract build <file.contract> [-o <file.plan>] [--json] [--errors-only] [--map]` — compile, print a
-//! one-line summary, write the bytes. Baking needs the app's data crate and
-//! happens in the app's own build (see `apps/caltrain`), not here.
+//! `contract build` compiles a source, prints a summary and writes the plan.
+//! Baking needs the app's data crate and happens in the app's own build
+//! (see `apps/caltrain`).
 //! `contract types <file.contract> [-o <app.d.ts>] [--check]` — generate TypeScript's
 //! data-source signatures from the same plan tables the executor reads.
 //! `contract rust <file.contract> [-o <shapes.rs>]` — the same shapes as Rust
 //! structs with their `Value` conversions, for a data crate's `build.rs`.
-//! `contract verify <file.contract>` — the app against the Lean semantics
-//! (`verify.rs`; it needs Lean, and nothing else here does).
+//! `contract verify` searches the app on the runner and checks it against
+//! the Lean semantics when available (`verify.rs`).
 //! `contract gallery <app> -o <dir>` — the design tool's variant gallery of the
 //! app's library components, written into `<dir>` (`contract::gallery`).
 
 use std::process::ExitCode;
+
+// These macros cover stdout in this binary's modules. Internal pipes keep
+// Rust's ignored SIGPIPE so their callers can handle write errors.
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::print_stdout(format_args!($($arg)*))
+    };
+}
+
+macro_rules! println {
+    () => { print!("\n") };
+    ($($arg:tt)*) => { print!("{}\n", format_args!($($arg)*)) };
+}
+
+fn print_stdout(args: std::fmt::Arguments<'_>) {
+    use std::io::Write as _;
+
+    let result = {
+        let mut out = std::io::stdout().lock();
+        out.write_fmt(args).and_then(|()| out.flush())
+    };
+    if let Err(error) = result {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("contract: stdout: {error}");
+        std::process::exit(1);
+    }
+}
 
 mod ambient;
 mod build;
@@ -32,10 +61,17 @@ mod tamber_serve;
 mod verify;
 mod vocab;
 
-const USAGE: &str = "usage:
-  contract build <file.contract> [-o <file.plan>] [--json] [--errors-only] [--map (requires -o)]
+fn usage() -> String {
+    let build = build::USAGE.trim_start_matches("usage: ");
+    let verify = verify::USAGE
+        .lines()
+        .next()
+        .unwrap()
+        .trim_start_matches("usage: ");
+    format!("usage:
+  {build}
   contract migrate <file.contract>
-  contract symbols <file.contract> [--name <exact-name>]
+  contract symbols <file.contract> [--stdin] [--name <exact-name>]
   contract sources <file.contract>
   contract fmt [--check | --stdout] <file.contract>
   contract fmt --uses <file.contract>
@@ -43,14 +79,15 @@ const USAGE: &str = "usage:
   contract rust <file.contract> [-o <shapes.rs>]
   contract test <file.test.contract>
   contract lean <file.contract> [--components] [--name <ident>] [-o <file.lean>]
-  contract verify <file.contract> [--types] [--prove <Module>]
+  {verify}
   contract vocab [--json] [--all] [<name> …]
   contract gallery <app> -o <dir>  (<app>: a directory or app.contract; <dir>: a build cache, never the app's tree)
-  contract tamber check <app> | eval <app> [--mode <axis>=<value>] | ir <app> [-o <tamber.json>] | fmt <app> [--check]  (<app>: a directory, app.contract or file.tamber; a flag before or after it)";
+  contract tamber check <app> | eval <app> [--mode <axis>=<value>] | ir <app> [-o <tamber.json>] | fmt <app> [--check]  (<app>: a directory, app.contract or file.tamber; a flag before or after it)")
+}
 
 #[cfg(windows)]
 fn main() -> ExitCode {
-    // The Windows executable's default 1 MiB stack
+    // @ref LLP 1035.005 D2 — the Windows executable's default 1 MiB stack
     // cannot compile the supported 256-site depth in a debug build.
     std::thread::Builder::new()
         .name("contract-cli".into())
@@ -70,7 +107,7 @@ fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--help" | "-h") if args.len() == 1 => {
-            println!("{USAGE}");
+            println!("{}", usage());
             ExitCode::SUCCESS
         }
         Some("build") => build::run(&args[1..]),
@@ -84,15 +121,20 @@ fn run() -> ExitCode {
         Some("vocab") => vocab::run(&args[1..]),
         Some("gallery") => gallery(&args[1..]),
         Some("tamber") => tamber::run(&args[1..]),
-        // The union of tokens a binding may name follows the design's `exports`.
-        Some("types") => types(&args[1..], "types", "app.d.ts", |plan, path| {
-            contract::typescript_exporting(plan, contract::design_exports(path).as_deref())
+        // The union of tokens a binding may name follows the design's `exports` (LLP 1121 D7).
+        Some("types") => types(&args[1..], "types", "app.d.ts", |path| {
+            let (plan, _) = contract::compile_path_all_unchecked(path, false)
+                .map_err(|mut all| all.swap_remove(0).to_string())?;
+            contract::typescript_exporting(&plan, contract::design_exports(path).as_deref())
+                .map_err(|e| format!("{}: {e}", path.display()))
         }),
-        Some("rust") => types(&args[1..], "rust", "shapes.rs", |plan, _| {
-            contract::rust(plan)
+        Some("rust") => types(&args[1..], "rust", "shapes.rs", |path| {
+            let (plan, call_records) = contract::compile_path_for_rust(path)
+                .map_err(|mut all| all.swap_remove(0).to_string())?;
+            contract::rust(&plan, &call_records).map_err(|e| format!("{}: {e}", path.display()))
         }),
         _ => {
-            eprintln!("{USAGE}");
+            eprintln!("{}", usage());
             ExitCode::from(2)
         }
     }
@@ -155,8 +197,20 @@ fn gallery(args: &[String]) -> ExitCode {
 }
 
 fn symbols(args: &[String]) -> ExitCode {
-    const USAGE: &str = "usage: contract symbols <file.contract> [--name <exact-name>]";
-    let (input, name) = match args {
+    const USAGE: &str = "usage: contract symbols <file.contract> [--stdin] [--name <exact-name>]
+  --stdin: the file's text is stdin's, read as if saved at <file.contract>";
+    // `--stdin`, anywhere once but as `--name`'s value (a literal ID may be
+    // spelled so): the rest is matched without it.
+    let (mut stdin, mut rest) = (0, Vec::new());
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--stdin" && (i == 0 || args[i - 1] != "--name") {
+            stdin += 1;
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    let args = rest;
+    let (input, name) = match args.as_slice() {
         [flag] if matches!(flag.as_str(), "--help" | "-h") => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -170,20 +224,42 @@ fn symbols(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match contract::symbols_json(std::path::Path::new(input), name) {
+    if stdin > 1 {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    let path = std::path::Path::new(input);
+    let symbols = if stdin == 1 {
+        let mut text = String::new();
+        if let Err(cause) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+            eprintln!("contract symbols: stdin: {cause}");
+            return ExitCode::from(1);
+        }
+        contract::with_contract_texts(vec![(path.into(), text)], || {
+            contract::symbols_json(path, name)
+        })
+    } else {
+        contract::symbols_json(path, name)
+    };
+    match symbols {
         Ok(json) => {
             println!("{json}");
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("{error}");
+        // What it found still prints, as `sources` prints a graph whose
+        // loading stopped (LLP 1091 D10); `errors` and the exit say why.
+        Err(partial) => {
+            println!("{}", partial.json);
+            for error in &partial.errors {
+                eprintln!("{error}");
+            }
             ExitCode::from(1)
         }
     }
 }
 
 /// `contract sources`: every file compiling the root reads, as JSON, even
-/// when loading stops — what a capture, a watch and a deploy
+/// when loading stops (LLP 1091 D10) — what a capture, a watch and a deploy
 /// take with the app. Exits 1 when the loader refused.
 fn sources(args: &[String]) -> ExitCode {
     const USAGE: &str = "usage: contract sources <file.contract>";
@@ -264,7 +340,7 @@ fn types(
     args: &[String],
     command: &str,
     out: &str,
-    generate: fn(&exact_plan::Plan, &std::path::Path) -> Result<String, String>,
+    generate: fn(&std::path::Path) -> Result<String, String>,
 ) -> ExitCode {
     let usage = format!(
         "usage: contract {command} <file.contract> [-o <{out}>]{}",
@@ -293,7 +369,7 @@ fn types(
         return ExitCode::from(2);
     }
     // Shapes are all a declaration file needs: a game's surface arguments
-    // never stop it, and are named as warnings.
+    // never stop it, and are named as warnings (the platformer's diary, R4).
     let path = std::path::Path::new(&args[0]);
     if let Ok(surfaces) = contract::surface_findings(path) {
         surface_warnings(&surfaces);
@@ -303,9 +379,7 @@ fn types(
             eprintln!("warning: {finding}");
         }
     }
-    let result = contract::compile_path_all_unchecked(path, false)
-        .map_err(|mut all| all.swap_remove(0).to_string())
-        .and_then(|(plan, _)| generate(&plan, path).map_err(|e| format!("{}: {e}", args[0])));
+    let result = generate(path);
     match result {
         Ok(declarations) => {
             if check {
@@ -326,7 +400,7 @@ fn types(
                     eprintln!("{output}: {error}");
                     return ExitCode::from(1);
                 }
-                // Silence reads as "did it run?"; stdout stays empty.
+                // Silence read as "did it run?" (app farm wave 2: 100); stdout stays empty.
                 eprintln!("{command}: wrote {output}");
             } else {
                 print!("{declarations}");
@@ -390,7 +464,11 @@ fn tests(args: &[String]) -> ExitCode {
                 let app = if app.is_file() { app } else { paired };
                 if let Err(errors) = contract::check_properties_path(&app, &p) {
                     for e in errors {
-                        eprintln!("{input}:{e}");
+                        if e.file.is_some() {
+                            eprintln!("{e}");
+                        } else {
+                            eprintln!("{input}:{e}");
+                        }
                     }
                     return ExitCode::from(1);
                 }
@@ -406,7 +484,7 @@ fn tests(args: &[String]) -> ExitCode {
 }
 
 /// Explicit formatting, with read-only preview and check modes; `--uses`
-/// writes the `use` lines each file of the program lacks.
+/// writes the `use` lines each file of the program lacks (LLP 1091 D1).
 fn fmt(args: &[String]) -> ExitCode {
     const USAGE: &str = "usage: contract fmt [--check | --stdout] <file.contract>\n       contract fmt --uses <file.contract>";
     if matches!(args, [flag] if flag == "--help" || flag == "-h") {

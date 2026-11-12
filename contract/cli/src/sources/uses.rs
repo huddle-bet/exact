@@ -1,4 +1,4 @@
-//! The `use` lines a file lacks: named by `contract-use-missing`
+//! The `use` lines a file lacks (LLP 1091 D1): named by `contract-use-missing`
 //! and written by `contract fmt --uses`. Since a file sees only what it names,
 //! an app written before module scope (19 of the x2apps apps) must name every
 //! declaration it reaches in another file. Which line brings a name is
@@ -9,7 +9,7 @@
 //! said: a name two files declare (which one is meant), a generated name
 //! (`Card__ui` is `Card`, named), a file no specifier reaches.
 
-use super::{digest, Loader, Origin, Refused, Sources};
+use super::{digest, Loader, Origin, Sources};
 use crate::CompileError;
 use crate::RelatedLocation;
 use contract_syntax::scope::{Elsewhere, Kind, Missing};
@@ -143,7 +143,7 @@ impl Loader<'_> {
         let (first, elsewhere) = &misses[0];
         let others = seen.len() - 1;
         let mut message = format!(
-            "`{}` is a {} declared in `{}`, which this file does not name",
+            "`{}` is a {} declared in `{}`, which this file does not name (LLP 1091 D1)",
             first.name,
             first.kind.what(),
             elsewhere.file
@@ -382,6 +382,9 @@ fn relative(dir: &Path, to: &Path) -> Option<String> {
 /// and the new ones after the last `use` line, else after the comments
 /// that open the file.
 pub(crate) fn apply(src: &str, lines: &[UseLine]) -> String {
+    let (bom, src) = src
+        .strip_prefix('\u{feff}')
+        .map_or(("", src), |rest| ("\u{feff}", rest));
     let mut out: Vec<String> = src.lines().map(str::to_owned).collect();
     for l in lines {
         let Some(n) = l.line.map(|n| n as usize) else {
@@ -416,7 +419,7 @@ pub(crate) fn apply(src: &str, lines: &[UseLine]) -> String {
             out.insert(at + k, text);
         }
     }
-    let mut text = out.join("\n");
+    let mut text = format!("{bom}{}", out.join("\n"));
     if src.ends_with('\n') {
         text.push('\n');
     }
@@ -425,31 +428,7 @@ pub(crate) fn apply(src: &str, lines: &[UseLine]) -> String {
 
 /// A loader holding the root at `root_key` alone, `src` its text.
 fn root_loader<'a>(app_root: &'a Path, root: &Path, root_key: &Path, src: &str) -> Loader<'a> {
-    Loader {
-        app_root,
-        root_given: root.to_path_buf(),
-        sources: Sources {
-            paths: vec![root_key.to_path_buf()],
-            origins: vec![Origin::App],
-            digests: vec![digest(src)],
-            homes: Vec::new(),
-            texts: vec![src.into()],
-            imports: Vec::new(),
-            packages: Vec::new(),
-            consulted: Vec::new(),
-            motion: Vec::new(),
-            var_fallbacks: Vec::new(),
-        },
-        active: vec![root_key.to_path_buf()],
-        units: Vec::new(),
-        cache: HashMap::new(),
-        fixes: Vec::new(),
-        proposed: Vec::new(),
-        declared: Vec::new(),
-        motion: Vec::new(),
-        vars: None,
-        refused: Refused::default(),
-    }
+    Loader::new(app_root, root, root_key.to_path_buf(), src, root_key)
 }
 
 /// The `use` lines each file of the program rooted at `path` lacks (LLP
@@ -658,6 +637,35 @@ mod tests {
         assert_eq!(
             out,
             "// A note.\n// More.\nuse D from \"./d.contract\"\ncomponent App\n"
+        );
+    }
+
+    #[test]
+    fn use_edits_preserve_a_leading_byte_order_mark() {
+        let added = UseLine {
+            line: None,
+            text: "use Card from \"./ui.contract\"".into(),
+        };
+        for prefix in ["", "// note\n", "use Icon from \"./icons.contract\"\n"] {
+            let src = format!("\u{feff}{prefix}component App\n  view\n    Card()\n");
+            assert_eq!(
+                apply(&src, std::slice::from_ref(&added)),
+                format!(
+                    "\u{feff}{prefix}{}\ncomponent App\n  view\n    Card()\n",
+                    added.text
+                )
+            );
+        }
+        let src = "\u{feff}use Card from \"./ui.contract\" // note\ncomponent App\n";
+        assert_eq!(
+            apply(
+                src,
+                &[UseLine {
+                    line: Some(1),
+                    text: "use Card, Icon from \"./ui.contract\"".into(),
+                }]
+            ),
+            "\u{feff}use Card, Icon from \"./ui.contract\" // note\ncomponent App\n"
         );
     }
 }

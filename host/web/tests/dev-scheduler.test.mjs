@@ -10,19 +10,64 @@ import {runInNewContext} from 'node:vm';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {watchStaticTrees} from '../serve.mjs';
+import {acceptModuleReply} from '../dev-phase.mjs';
 import {cdpBrowser, chromium} from '../../../scripts/agent-launch.mjs';
 import {need} from '../../../scripts/coverage.mjs';
+import { fileURLToPath } from 'node:url';
 const {unavailable}=chromium();
 // A test that edits an app's files and writes them back also puts their
 // times back, so a later test's build-freshness check is not tripped.
 const keepTimes = paths => { const kept = paths.map(p => [p, statSync(p)]); return () => { for (const [p, st] of kept) utimesSync(p, st.atime, st.mtime); }; };
 const source = readFileSync(process.env.E2B_DEV_SOURCE || new URL('../dev.mjs', import.meta.url), 'utf8');
 
+test('large module warning replies keep the producer alive and discard superseded diagnostics', () => {
+  const begin = source.indexOf("  child.stdout.on('data', chunk => {", source.indexOf('function startModuleCompiler()'));
+  const end = source.indexOf("\n  child.on('error'", begin);
+  let receive, retries = 0, killed = 0;
+  const said = [], published = [];
+  const child = { stdout: { on(event, callback) { assert.equal(event, 'data'); receive = callback; } } };
+  const request = id => ({ id, saved: Date.now(), started: Date.now(), stage: `stage-${id}`, output: `generation-${id}`, design: '', contract: '' });
+  const context = {
+    child, dev: child, buffered: '', active: request(1), moduleRun: 2, scrubAsks: new Map(),
+    console: { error: line => said.push(line), log() {} },
+    killCompiler: () => { killed++; }, process: { exit: code => { throw new Error(`dev loop exited ${code}`); } },
+    acceptModuleReply: (line, active, run) => acceptModuleReply(line, active, run, warning => said.push(warning)),
+    early: null, contractReady() {}, readFileSync: path => Buffer.from(path), resolve,
+    MODULE_FILES: { native: 'app.hbc', web: 'app.js' }, captureAssets: () => new Map(),
+    currentModule: null, assetCards: () => [], isEntryFile: () => false,
+    moduleDesign: null, moduleScrubbed: null, moduleReleased: false,
+    designBytes: () => '', designSource: null, designSnapshot: null, tamber: null,
+    app: { id: 'test.warnings' }, moduleCards() {}, seq: 0, captureGeneration() {}, pending: new Map(), sayReady() {},
+    announcement: () => ({ seq: context.seq }), push: message => published.push(message),
+    watchPackages() {}, rmSync() {}, moduleStage: null, produce: () => { retries++; },
+  };
+  runInNewContext(source.slice(begin, end), context);
+  const warnings = Array.from({ length: 3000 }, (_, i) => `app.ts:${i + 1}:1 warning: ${'detail '.repeat(60)}`);
+  const reply = id => JSON.stringify({ id, ok: true, receipt: {}, design: {}, warnings }) + '\n';
+  const stale = reply(1);
+  assert.ok(Buffer.byteLength(stale) > 1024 * 1024);
+  for (let offset = 0; offset < stale.length; offset += 65536) receive(Buffer.from(stale.slice(offset, offset + 65536)));
+  assert.deepEqual(said, []);
+  assert.deepEqual(published, []);
+  assert.equal(retries, 1, 'a superseded reply requests the latest candidate');
+  context.active = request(2);
+  receive(Buffer.from(reply(2)));
+  assert.deepEqual(said, warnings);
+  assert.deepEqual(published, [{ seq: 1 }]);
+  context.active = request(3); context.moduleRun = 3;
+  receive(Buffer.from(JSON.stringify({ id: 3, ok: true, receipt: {}, design: {}, warnings: [] }) + '\n'));
+  assert.deepEqual(said, warnings, 'a clean edit adds no diagnostics');
+  assert.deepEqual(published, [{ seq: 1 }, { seq: 2 }]);
+  assert.equal(context.buffered, '');
+  assert.equal(context.active, null);
+  assert.equal(killed, 0);
+});
+
 test('the JS dev loop carries state by built logic revision and refreshes host facts', async () => {
   // RealWorld has routes and text fields but no GPU surface. Keep this proof
   // independent of an optional renderer: a failure then identifies the dev
   // server, page reload, or CDP navigation instead of a wedged GPU adapter.
-  const appDir=resolve(new URL('../../../apps/realworld',import.meta.url).pathname),contract=resolve(appDir,'app.contract'),logic=resolve(appDir,'app.ts'),helper=resolve(appDir,'dev-reload-helper.ts');
+  const appDir=resolve(fileURLToPath(new URL('../../../apps/realworld',import.meta.url))),contract=resolve(appDir,'app.contract'),logic=resolve(appDir,'app.ts'),helper=resolve(appDir,'dev-reload-helper.ts');
   const original=readFileSync(contract,'utf8'),originalLogic=readFileSync(logic,'utf8');
   const restoreTimes=keepTimes([contract,logic]);
   const privateDist=mkdtempSync(join(tmpdir(),'exact-dev-carry-'));
@@ -47,7 +92,7 @@ test('the JS dev loop carries state by built logic revision and refreshes host f
     writeFileSync(helper,"export const devReloadValue = () => 'before:' + crypto.getRandomValues(new Uint32Array(2)).join('.');\n");
     writeFileSync(logic,withLogic(originalLogic));
     writeFileSync(contract,withProbe(original));
-    dev=spawn(process.execPath,[resolve(new URL('../../web/dev.mjs',import.meta.url).pathname),'--app','realworld','--port',String(port)],{cwd:resolve(new URL('../../..',import.meta.url).pathname),env:{...process.env,EXACT_WEB_DIST:privateDist},stdio:['ignore','pipe','pipe']});
+    dev=spawn(process.execPath,[resolve(fileURLToPath(new URL('../../web/dev.mjs',import.meta.url))),'--app','realworld','--port',String(port)],{cwd:resolve(fileURLToPath(new URL('../../..',import.meta.url))),env:{...process.env,EXACT_WEB_DIST:privateDist},stdio:['ignore','pipe','pipe']});
     ready=new Promise((ok,fail)=>{const take=d=>{lines+=d;for(const line of lines.split('\n'))if(line==='plan ready')return ok()};dev.stdout.on('data',take);dev.stderr.on('data',take);dev.once('error',fail);dev.once('exit',code=>fail(new Error(`dev loop exited ${code}: ${lines.slice(-2000)}`)))});
     await Promise.race([ready,new Promise((_,fail)=>setTimeout(()=>fail(new Error(`dev loop did not start: ${lines.slice(-2000)}`)),120000))]);
     drive=await open({host:'web',app:'realworld',url:`http://127.0.0.1:${port}/`});
@@ -100,7 +145,7 @@ test('the JS dev loop carries state by built logic revision and refreshes host f
   }
 },180_000);
 test('the Caltrain JS dev loop keeps its station search across an app edit', async () => {
-  const contract=resolve(new URL('../../../apps/caltrain/app.contract',import.meta.url).pathname),original=readFileSync(contract,'utf8');
+  const contract=resolve(fileURLToPath(new URL('../../../apps/caltrain/app.contract',import.meta.url))),original=readFileSync(contract,'utf8');
   const restoreTimes=keepTimes([contract]);
   const privateDist=mkdtempSync(join(tmpdir(),'exact-dev-carry-'));
   // The brand's text, wherever the layout puts it; an edit that no longer applies fails here, not as a reload that never shows.
@@ -110,7 +155,7 @@ test('the Caltrain JS dev loop keeps its station search across an app edit', asy
   let dev,drive,lines='';
   const waitFor=async (read,accept,ms=30000)=>{const end=Date.now()+ms;let last;while(Date.now()<end){try{last=await read();if(accept(last))return last}catch{}await new Promise(r=>setTimeout(r,20))}throw new Error(`Caltrain reload did not become observable: ${JSON.stringify(last)}\n${lines.slice(-3000)}`)};
   try {
-    dev=spawn(process.execPath,[resolve(new URL('../../web/dev.mjs',import.meta.url).pathname),'--app','caltrain','--port',String(port)],{cwd:resolve(new URL('../../..',import.meta.url).pathname),env:{...process.env,EXACT_WEB_DIST:privateDist},stdio:['ignore','pipe','pipe']});
+    dev=spawn(process.execPath,[resolve(fileURLToPath(new URL('../../web/dev.mjs',import.meta.url))),'--app','caltrain','--port',String(port)],{cwd:resolve(fileURLToPath(new URL('../../..',import.meta.url))),env:{...process.env,EXACT_WEB_DIST:privateDist},stdio:['ignore','pipe','pipe']});
     const ready=new Promise((ok,fail)=>{const take=d=>{lines+=d;for(const line of lines.split('\n'))if(line==='plan ready')return ok()};dev.stdout.on('data',take);dev.stderr.on('data',take);dev.once('error',fail);dev.once('exit',code=>fail(new Error(`dev loop exited ${code}: ${lines.slice(-2000)}`)))});
     await Promise.race([ready,new Promise((_,fail)=>setTimeout(()=>fail(new Error(`dev loop did not start: ${lines.slice(-2000)}`)),120000))]);
     drive=await open({host:'web',app:'caltrain',url:`http://127.0.0.1:${port}/`});
@@ -134,7 +179,7 @@ need('chrome', unavailable)('a page whose first build failed reloads into the fi
   // The first build's error page has no runtime (`globalThis.exact` never
   // exists), so its reload must not wait for one. Driven over a raw DevTools
   // pipe: agent.mjs's open() waits for a runtime this page never has.
-  const contract=resolve(new URL('../../../apps/realworld/app.contract',import.meta.url).pathname),original=readFileSync(contract,'utf8');
+  const contract=resolve(fileURLToPath(new URL('../../../apps/realworld/app.contract',import.meta.url))),original=readFileSync(contract,'utf8');
   const restoreTimes=keepTimes([contract]);
   const listener=createServer();await new Promise((ok,fail)=>{listener.once('error',fail);listener.listen(0,'127.0.0.1',ok)});const port=listener.address().port;await new Promise(ok=>listener.close(ok));
   const dist=mkdtempSync(join(tmpdir(),'exact-dev-error-dist-'));
@@ -142,7 +187,7 @@ need('chrome', unavailable)('a page whose first build failed reloads into the fi
   const waitFor=async (read,accept,ms=60000)=>{const end=Date.now()+ms;let last;while(Date.now()<end){try{last=await read();if(accept(last))return last}catch{}await new Promise(r=>setTimeout(r,50))}throw new Error(`not observed: ${JSON.stringify(last)}\n${lines.slice(-3000)}`)};
   try {
     writeFileSync(contract,original+'\nthis is not Contract (\n');
-    dev=spawn(process.execPath,[resolve(new URL('../../web/dev.mjs',import.meta.url).pathname),'--app','realworld','--port',String(port)],{cwd:resolve(new URL('../../..',import.meta.url).pathname),env:{...process.env,EXACT_WEB_DIST:dist},stdio:['ignore','pipe','pipe']});
+    dev=spawn(process.execPath,[resolve(fileURLToPath(new URL('../../web/dev.mjs',import.meta.url))),'--app','realworld','--port',String(port)],{cwd:resolve(fileURLToPath(new URL('../../..',import.meta.url))),env:{...process.env,EXACT_WEB_DIST:dist},stdio:['ignore','pipe','pipe']});
     dev.stdout.on('data',d=>{lines+=d});dev.stderr.on('data',d=>{lines+=d});
     const url=`http://127.0.0.1:${port}/`;
     await waitFor(()=>fetch(url).then(r=>r.status),status=>status===200,180000);
@@ -206,8 +251,8 @@ test('dev edits clear only their own errors while unrelated failures stay visibl
     console:{error(){}},location:{origin:'http://localhost',href:'http://localhost/',search:''},
     EventSource:class {constructor(){stream=this;}},
     document:{body:{appendChild(el){overlay=el;return el;}},createElement(){return {remove(){overlay=null;}};},querySelector(){return null;}},
-    navigator:{sendBeacon(){}},requestAnimationFrame:callback=>callback(),crypto,addEventListener(){}, // inspect mode's capture gate
-    matchMedia:()=>({matches:false,addEventListener(){}}), // the build channel's facts
+    navigator:{sendBeacon(){}},requestAnimationFrame:callback=>callback(),crypto,addEventListener(){}, // inspect mode's capture gate (LLP 1122 T2b)
+    matchMedia:()=>({matches:false,addEventListener(){}}), // the build channel's facts (LLP 1122 D4)
     localStorage:{getItem:()=>'1',setItem(){}}, // the "Open in native" link was put away; the overlay is all this page shows
     fetch:async url=>new Response(url.endsWith('app.plan')?plan:JSON.stringify(envelope)),
     exact:{ready:Promise.resolve(),compat:{inputs:{app:'fixture'}},reloadGeneration:async()=>{reloaded();return true;},
@@ -248,7 +293,7 @@ test('dev edits clear only their own errors while unrelated failures stay visibl
   await edited();assert.equal(text(),'');
 });
 test('the wasm page sends its build-channel reports one at a time, in order, and none across a reconnect', async () => {
-  // The server binds a refusal to the status after it: a slow
+  // The server binds a refusal to the status after it (LLP 1122 D4): a slow
   // refusal still reaches it first. Each post is "delivered" when its delay
   // ends; a register answers when the test lets it.
   let stream, delivered=[], held=new Map();
@@ -299,7 +344,7 @@ test('the wasm page sends its build-channel reports one at a time, in order, and
   await new Promise(r=>setTimeout(r,250));
   assert.deepEqual(sent('n2'),[],'nothing made on the replaced stream is sent');
   assert.deepEqual(sent('n3'),['status@2'],'the new stream sends its own status, and no report made before it');
-  // (c) A navigation is its stream's: one that is no route is
+  // (c) A navigation is its stream's (LLP 1122 T7): one that is no route is
   // refused on it; one a reconnect replaced before it ran (queued behind a
   // pin) neither routes nor answers, and the new stream's navigation of the
   // same seq is its own.
@@ -348,7 +393,7 @@ test('dev startup rebuilds changed Rust even when the app identity still matches
     identity=true;
     writeFileSync(graphPath,JSON.stringify({...build,trust:'production'}));
     assert.equal(await current(),false);
-    // A build that links only its plan's use-set is not the dev loop's.
+    // A build that links only its plan's use-set is not the dev loop's (LLP 1047 D7).
     writeFileSync(graphPath,JSON.stringify({...build,binary:{...build.binary,configuration:{flags:{}}}}));
     assert.equal(await current(),false);
     writeFileSync(graphPath,'{');
@@ -616,8 +661,8 @@ test('the JS dev loop rebuilds backend selection creation, edits and removal',as
     const appId=JSON.parse(readFileSync(join(app,'app.json'),'utf8')).app.id;
     const authored="import type {Answer} from './app.contract.d.ts';\nexport const appId="+JSON.stringify(appId)+";const origin='http://127.0.0.1:4400';export const grants=`net.fetch ${origin}`;export const answer:Answer=()=>origin;\n";
     writeFileSync(join(app,'app.ts'),authored);
-    const env={...process.env,EXACT_APP_DIR:app};delete env.EXACT_BACKEND_ORIGIN;delete env.EXACT_WEB_DIST;delete env.CARGO_TARGET_DIR; // its own target/web-dist, which a suite's shared dist or target would move
-    child=spawn(process.execPath,[resolve(import.meta.dir,'../dev.mjs'),'--app','app'],{env,stdio:['ignore','pipe','pipe']});
+    const env={...process.env};delete env.EXACT_APP_DIR;delete env.EXACT_BACKEND_ORIGIN;delete env.EXACT_WEB_DIST;delete env.CARGO_TARGET_DIR; // its own target/web-dist, which a suite's shared dist or target would move
+    child=spawn(process.execPath,[resolve(import.meta.dir,'../dev.mjs'),'--app',app],{env,stdio:['ignore','pipe','pipe']});
     for(const stream of [child.stdout,child.stderr])stream.on('data',b=>{log+=b.toString();});
     await until('http://127.0.0.1:4400');
     mkdirSync(join(app,'.exact'),{recursive:true});const selection=join(app,'.exact/backend-origin');
@@ -643,7 +688,7 @@ test('the resident module watcher follows backend selection and the settings fil
     writeFileSync(selection,'http://127.0.0.1:4412');await until();
     writeFileSync(selection,'http://127.0.0.1:4413');await until();
     rmSync(selection);await until();
-    // A setting's file (`import.meta.env`).
+    // A setting's file (`import.meta.env`, LLP 1153 D4).
     writeFileSync(join(dir,'.env'),'API_BASE_URL=http://127.0.0.1:4412\n');await until();
     const before=changes;writeFileSync(join(dir,'.exact/other'),'not an input');
     await new Promise(r=>setTimeout(r,250));assert.equal(changes,before);

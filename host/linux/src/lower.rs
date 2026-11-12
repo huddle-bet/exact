@@ -1,11 +1,12 @@
-//! Animations the Canvas host's reader plays on Android (as Apple lowers them):
-//! an `opacity`, `translate`, `scale` or `rotate` animation of a box, an
-//! `opacity` or `r` animation of a filled circle, and a stroked shape's
-//! `stroke-dashoffset` (a draw-in: the reader records that one path again with
-//! the dash phase), are not sampled by the engine. The painter records the node
-//! once into a layer at its underlying values ([`Presented::lowered`]); the
-//! reader samples the keyframes this module encodes ([`Host::layer_tracks`])
-//! every display frame and moves or fades the layer, as a browser's compositor
+//! Animations the Canvas host's reader plays (LLP 1076 on Android, after LLP
+//! 1055 D7's lowering on Apple): an `opacity`, `translate`, `scale` or
+//! `rotate` animation of a box, an `opacity` or `r` animation of a filled
+//! circle, and a stroked shape's `stroke-dashoffset` (a draw-in: the reader
+//! records that one path again with the dash phase), are not sampled by the
+//! engine. The painter records the node once
+//! into a layer at its underlying values ([`Presented::lowered`]); the reader
+//! samples the keyframes this module encodes ([`Host::layer_tracks`]) every
+//! display frame and moves or fades the layer, as a browser's compositor
 //! plays them without the main thread. Rows are not recorded again for them.
 //!
 //! A node is lowered only when every animation on it is, and nothing the
@@ -174,7 +175,7 @@ impl<D: DataSource> Host<D> {
         let now = self.engine.now();
         // A track the reader plays whose node now has something painted over
         // the property (a press row, a look naming it, set while it played)
-        // is the engine's again, from where its curve is.
+        // is the engine's again, from where its curve is (LLP 1121 D8).
         for (node, t) in &self.played {
             let Some(n) = self
                 .runner
@@ -316,13 +317,13 @@ impl<D: DataSource> Host<D> {
                 _ => None,
             })
             .unwrap_or(0.0);
-        let point = |d: Dimension| match d {
-            Dimension::Points(v) => v,
+        let point = |d: &Dimension| match d {
+            Dimension::Points(v) => *v,
             _ => 0.0,
         };
         let (cx0, cy0) = node
             .as_ref()
-            .map_or((0.0, 0.0), |n| (point(n.style.cx), point(n.style.cy)));
+            .map_or((0.0, 0.0), |n| (point(&n.style.cx), point(&n.style.cy)));
         // Only for a dash track: the one row, where it is set.
         let dash0 = || {
             node.as_ref().map_or(0.0, |n| {
@@ -559,8 +560,8 @@ fn easing(out: &mut Vec<u32>, e: Option<&Easing>) {
 /// does: a box's transform and opacity; an SVG element's opacity; a filled
 /// circle's radius as a scale about its centre.
 fn playable(n: &exact_kernel::NodeRef<'_>, props: &[Property]) -> bool {
-    // What the host paints over the node's own (a press, a look) is composed where the engine
-    // samples, so it stays there.
+    // What the host paints over the node's own (a press, a look: LLP 1061 D7,
+    // LLP 1121 D8) is composed where the engine samples, so it stays there.
     if props.iter().any(|p| crate::host::press::paints_over(n, *p)) {
         return false;
     }
@@ -588,7 +589,12 @@ fn playable(n: &exact_kernel::NodeRef<'_>, props: &[Property]) -> bool {
         let point = |d: Dimension| matches!(d, Dimension::Points(_));
         // A circle's centre is a translation of its drawing, when its centre
         // is a length; not with a turn (two pivots).
-        if moves && (n.node_type != NodeType::SvgCircle || turns || !point(s.cx) || !point(s.cy)) {
+        if moves
+            && (n.node_type != NodeType::SvgCircle
+                || turns
+                || !point(s.cx.clone())
+                || !point(s.cy.clone()))
+        {
             return false;
         }
         // A radius scales the whole drawing: a fill alone. A dash offset is one

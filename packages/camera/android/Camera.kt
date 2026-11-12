@@ -1,22 +1,22 @@
-// @exact/camera on Android: the viewfinder `exact-camera`, CameraX's `PreviewView`
+// @exact/camera on Android (LLP 1133.008 D1-D5, D8, D10): the viewfinder `exact-camera`, CameraX's `PreviewView`
 // bound as a `Preview` use case, over a video track of @exact/media-capture's, and `takePhoto` through the capture's
 // one `ImageCapture`, written to the app's files.
 //
-// - A viewfinder is a consumer of its track while it is displayed and its `srcObject` names the track, joined
-//   with the origin the runner reports, so a tool's display takes no lease. The process has one `Preview`: it
-//   shows in the viewfinder displayed last, and another displayed at once shows its empty box.
-// - The `ImageCapture` is the capture's process object: each session's photos in turn. Unsaid, it is CameraX's
-//   own (`CAPTURE_MODE_MINIMIZE_LATENCY`, flash off, JPEG); `fillLightMode` and the `android.*` words set the
+// - A viewfinder is a consumer of its track while it is displayed and its `srcObject` names the track (D3), joined
+//   with the origin the runner reports, so a tool's display takes no lease (§14). The process has one `Preview`: it
+//   shows in the viewfinder displayed last, and another displayed at once shows its empty box (D10).
+// - The `ImageCapture` is the capture's process object (D3): each session's photos in turn. Unsaid, it is CameraX's
+//   own (`CAPTURE_MODE_MINIMIZE_LATENCY`, flash off, JPEG, D2); `fillLightMode` and the `android.*` words set the
 //   flash, mode and quality, a builder field built again when it changes. The shutter sound is
 //   `MediaActionSound.SHUTTER_CLICK` at each capture, unless `android.shutterSound` is false where the platform
 //   allows it.
-// - Hosted views take no touches beyond a click (`host/android/README.md`): no tap to focus or pinch to zoom yet
-//   (recorded as a tell).
+// - Hosted views take no touches beyond a click (`host/android/README.md`): no tap to focus or pinch to zoom yet (D8
+//   item 6, recorded as a tell).
 // - Under the agent no capture exists: the viewfinder shows a drawn test card, mirrored for a `user` camera, and
 //   `takePhoto` writes it as JPEG, or the app asset `prefer extension camera.picture={"path":…}` names, unchanged.
 //   The drawn card is Android's own (the package's card.jpg is not in the APK), so its bytes differ from the other
 //   hosts'.
-// - Tier 3: `useCasesHatch` sees the use cases before each bind, `imageCaptureHatch` each `ImageCapture.Builder`
+// - Tier 3 (D5): `useCasesHatch` sees the use cases before each bind, `imageCaptureHatch` each `ImageCapture.Builder`
 //   after the module's words, `cameraHatch` the `Camera` after each bind.
 package exact.camera
 
@@ -67,13 +67,22 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
 
     private class Sub(val track: String, val origin: String) : TrackConsumer {
         var live = false
+        private var source: VideoSource? = null
         var leave: () -> Unit = {}
         var onLive: (VideoSource?) -> Unit = {}
         var onBlank: () -> Unit = {}
-        override fun liveVideo(source: VideoSource?) { live = true; onLive(source) }
+        override fun liveVideo(source: VideoSource?) {
+            live = true
+            this.source = source
+            onLive(source)
+        }
         override fun muted(reason: String) = onBlank()
-        override fun unmuted() {}
-        override fun ended() { live = false; onBlank() }
+        override fun unmuted() { if (live) onLive(source) }
+        override fun ended() {
+            live = false
+            source = null
+            onBlank()
+        }
     }
 
     private val views = HashMap<String, ViewState>()
@@ -98,7 +107,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         picture = values.optJSONObject("picture")?.optString("path")?.ifEmpty { null }
     }
 
-    // Viewfinders
+    // Viewfinders (D3, D8 items 1 and 2)
 
     override fun view(tag: String, session: String, id: String, context: Context, props: JSONObject, emit: (String, String) -> Unit): View {
         require(tag == "exact-camera") { "no view $tag" }
@@ -111,7 +120,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
 
     override fun update(view: View, props: JSONObject) {
         val id = views.entries.firstOrNull { it.value.view === view }?.key ?: return
-        // `contain` unsaid is `<video>`'s; PreviewView's own default (FILL_CENTER) is a written `cover`.
+        // `contain` unsaid is `<video>`'s; PreviewView's own default (FILL_CENTER) is a written `cover` (D2).
         when (view) {
             is PreviewView -> view.scaleType = when (props.optString("object-fit")) {
                 "cover" -> PreviewView.ScaleType.FILL_CENTER
@@ -164,7 +173,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         if (!want || v.sub != null) return
         val sub = Sub(src, v.madeBy)
         sub.onLive = { source -> show(v, sub, source) }
-        sub.onBlank = { blank(v.view) }
+        sub.onBlank = { if (v.sub === sub) blank(v.view) }
         v.sub = sub
         try {
             sub.leave = context.tracks.subscribe(src, sub, false, v.madeBy)
@@ -205,9 +214,9 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         }
     }
 
-    // Photos
+    // Photos (D1, D2)
 
-    /** Under the agent, each photo for `state.extensions`, by path and SHA-256. */
+    /** Under the agent, each photo for `state.extensions` (§9, Disclosure), by path and SHA-256. */
     private fun disclose(path: String, track: String, bytes: ByteArray) {
         val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
         photos.put(JSONObject().put("path", path).put("sha256", sha).put("track", track).put("origin", context.origin))
@@ -218,7 +227,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         val entry = context.tracks.lookup(args.optString("track")) ?: return reply(error("NotFoundError"))
         if (entry.kind != "video") return reply(error("NotSupportedError"))
         val s = entry.state?.invoke() ?: JSONObject()
-        // A track that is not shown takes no photo: ended, disabled, or muted (`idle` among them).
+        // A track that is not shown takes no photo (D1): ended, disabled, or muted (`idle` among them).
         if (s.optString("readyState") != "live" || !s.optBoolean("enabled") || s.optBoolean("muted", true)) return reply(error("InvalidStateError"))
         val ext = "jpg"
         val path = args.optString("path").ifEmpty { null }?.let { if (it.endsWith(".$ext")) it else "$it.$ext" } ?: "app:/tmp/camera/${++taken}.$ext"
@@ -226,7 +235,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         file.parentFile?.mkdirs()
         if (context.agent) {
             val bytes = agentBytes() ?: return reply(error("UnknownError"))
-            file.writeBytes(bytes)
+            try { dev.exact.canvas.Files.write(file, bytes) } catch (e: java.io.IOException) { return reply(error("UnknownError")) }
             say("took $path (${bytes.size} bytes, the agent's picture)")
             disclose(path, entry.id, bytes)
             return reply(photo(path, file))
@@ -235,7 +244,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
         val android = args.optJSONObject("android") ?: JSONObject()
         val capture = imageCapture(source, args, android)
         if (android.optBoolean("shutterSound", true) || MediaActionSound.mustPlayShutterSound()) sound.play(MediaActionSound.SHUTTER_CLICK)
-        // A photo in flight is a consumer: its lease holds until the file is written.
+        // A photo in flight is a consumer: its lease holds until the file is written (D3).
         val holder = Sub(entry.id, "app")
         holder.leave = context.tracks.subscribe(entry.id, holder, false, "app")
         capture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompat.getMainExecutor(context.application),
@@ -253,7 +262,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
             })
     }
 
-    /** The capture's `ImageCapture`, built again when a builder word changes. */
+    /** The capture's `ImageCapture`, built again when a builder word changes (D4). */
     private fun imageCapture(source: VideoSource, args: JSONObject, android: JSONObject): ImageCapture {
         val mode = when (android.optString("captureMode")) {
             "maximizeQuality" -> ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
@@ -292,7 +301,7 @@ class CameraModule(context: ExtensionContext) : ExactExtension(context) {
             .put("fillLightMode", if (torch) JSONArray().put("auto").put("off").put("flash") else JSONArray().put("off"))
     }
 
-    // The agent's picture
+    // The agent's picture (§9)
 
     private fun agentBytes(): ByteArray? {
         picture?.let { p -> return runCatching { context.application.assets.open("app/$p").use { it.readBytes() } }.getOrNull() }

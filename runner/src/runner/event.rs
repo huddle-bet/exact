@@ -16,7 +16,7 @@ const BINDING_ARGS: usize = 8;
 const BINDING_STRING: usize = 1024;
 const BINDING_STRING_TOTAL: usize = 4096;
 
-/// A bounded retained Press/Swiperight binding. Contains no frame, tree, plan,
+/// A bounded retained Press/Swiperight/Swipeleft binding. Contains no frame, tree, plan,
 /// resource or History owner. A fresh Runner (including reload) invalidates it.
 #[derive(Debug, Clone)]
 pub struct ActionBinding {
@@ -125,18 +125,18 @@ fn scalar_kind(kind: TypeKind) -> bool {
     )
 }
 
-/// What an `input` or `change` event carries, typed by its control:
-/// a text field's text, or whether a checkbox is checked.
+/// What an `input` or `change` event carries, typed by its control (LLP
+/// 1069.001 D4): a text field's text, or whether a checkbox is checked.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlValue {
     /// A text field's text.
     Text(String),
     /// A checkbox's (or switch's) checked state.
     Checked(bool),
-    /// A file input's picked files, in selection order.
+    /// A file input's picked files (LLP 1069.002 D3), in selection order.
     Files(Vec<super::picker::Picked>),
     /// A text field's text with its selection as the edit left it, which
-    /// its `InputEvent` reports.
+    /// its `InputEvent` reports (x2apps codeedit #2).
     Field(String, super::FieldSelection),
     /// A scripted range replacement: one noncancelable insertReplacementText input.
     Replacement(String, super::FieldSelection),
@@ -189,19 +189,19 @@ pub enum Event {
     /// A press on the view with no point and no modifier key held: a
     /// keyboard's or an assistive technology's.
     Press,
-    /// A press with a pointer's point or modifier keys held (shift-click,
-    /// ⌘-click; a menu at the press), the
+    /// A press with a pointer's point or modifier keys held (gallery F20:
+    /// shift-click, ⌘-click; LLP 1021 D2: a menu at the press), the
     /// `MouseEvent` a `press` action may take; dispatched as `Press`.
     /// [`Event::press`] makes whichever the press calls for.
     PressWith(super::MouseEvent),
     /// A control's value moved (HTML's `input`): a text field's every
-    /// keystroke, a checkbox's toggle.
+    /// keystroke, a checkbox's toggle (LLP 1069.001 D4).
     Input(ControlValue),
     /// A control's value was committed (HTML's `change`): a text field on
-    /// blur or Enter, a checkbox as it toggles.
+    /// blur or Enter, a checkbox as it toggles (LLP 1069.001 D4).
     Change(ControlValue),
     /// A file input's picker was dismissed with nothing chosen (HTML's
-    /// `cancel`). A node without a `cancel` handler takes
+    /// `cancel`, LLP 1069.002 D2). A node without a `cancel` handler takes
     /// it as nothing.
     Cancel,
     /// A dialog closed, after its focus was restored.
@@ -216,9 +216,14 @@ pub enum Event {
     /// A scroll finished (DOM's `scrollend`): the person's, its momentum
     /// included, or an animated one.
     Scrollend,
+    /// A drag of a scroller began (UIKit's `scrollViewWillBeginDragging`).
+    Scrolldragstart,
+    /// That drag let go: its velocity and, where known, where it will rest.
+    Scrolldragend(super::host_kinds::ScrollDrag),
     /// The platform's history swipe, as the host tracks it.
     Historyswipe(super::host_kinds::HistorySwipe),
-    /// A text field's selection changed (HTML's `select`): its text, and the selection its `InputEvent` reports.
+    /// A text field's selection changed (HTML's `select`, x2apps codeedit
+    /// #2): its text, and the selection its `InputEvent` reports.
     FieldSelect(String, super::FieldSelection),
     /// The field's selection, including a collapsed caret.
     FieldSelectionChange(String, super::FieldSelection),
@@ -234,7 +239,7 @@ pub enum Event {
         link: String,
         /// Space-separated unavailable command names.
         unavailable: String,
-        /// The selected atom's source, or empty.
+        /// The selected atom's source, or empty (LLP 1045.000 D3).
         atom: String,
     },
     /// The pointer came over the view (`true`) or left it (`false`) —
@@ -281,20 +286,20 @@ pub enum Event {
     /// The platform requested a context menu (secondary click or long press).
     Contextmenu,
     /// A context menu asked for at a point: the secondary click's
-    /// `PointerEvent`; dispatched as `Contextmenu`.
+    /// `PointerEvent` (studio diary R22); dispatched as `Contextmenu`.
     ContextmenuAt(super::PointerEvent),
     /// The window is about to close or the app to quit (DOM's
-    /// `beforeunload`): an action that calls
+    /// `beforeunload`, studio diary R17): an action that calls
     /// `preventDefault()` keeps it open.
     Beforeunload,
-    /// A MIDI input's message: the runner dispatches it to
+    /// A MIDI input's message (LLP 1125 D8): the runner dispatches it to
     /// each element that hears its input; no host sends it as an event.
     MidiMessage(super::midi::MidiMessage),
     /// A wheel's turn or a trackpad's scroll over the view (DOM's `wheel`);
     /// a pinch arrives as one with Control held, as on the web.
     Wheel(super::WheelEvent),
     /// Files dropped on the view from outside the app (DOM's `drop`), each
-    /// a `doc:` handle the host minted.
+    /// a `doc:` handle the host minted (LLP 1069.010 D1).
     Drop(super::DropEvent),
     /// A drag of files from outside the app came over the view's box from
     /// outside it (DOM's `dragenter` as a handler that ignores moves between
@@ -304,21 +309,23 @@ pub enum Event {
     /// That drag left the view's box or was cancelled (DOM's `dragleave`,
     /// likewise); a drop sends none, as the DOM's does.
     Dragleave(super::DropEvent),
-    /// A press on an inline atom.
+    /// A press on an inline atom (LLP 1045.000 D7).
     Atompress(super::AtomEvent),
     /// A double click, or the platform’s double tap.
     Dblclick,
     /// A touch or primary button went down on the view (DOM's
-    /// `pointerdown`), before any gesture is recognized.
+    /// `pointerdown`), before any gesture is recognized (LLP 1005 §3).
     Pointerdown(super::PointerEvent),
     /// That touch or button came up, or the platform cancelled it (DOM's
     /// `pointerup`; a `pointercancel` is delivered as one).
     Pointerup(super::PointerEvent),
     /// The pointer moved over the view, or while held after going down on
-    /// it: at most one a frame (as built).
+    /// it: at most one a frame (LLP 1056 §3 stage 3, as built).
     Pointermove(super::PointerEvent),
     /// A platform-recognized right swipe.
     Swiperight,
+    /// Its mirror, a left swipe (Charlie, 2026-11-10).
+    Swipeleft,
     /// A pull past the top of a scroll container asked for fresh content
     /// (UIKit's `UIRefreshControl`); the app answers through `refreshing`.
     Refresh,
@@ -328,7 +335,7 @@ pub enum Event {
     /// The element's content box after layout, ResizeObserver's
     /// `contentRect` (`super::resize`).
     Resize(super::ResizeRect),
-    /// IntersectionObserver's threshold-zero entry.
+    /// IntersectionObserver's threshold-zero entry (LLP 1005).
     Intersect {
         /// Whether the target intersects the root, including edge contact.
         is_intersecting: bool,
@@ -336,23 +343,23 @@ pub enum Event {
         intersection_ratio: f64,
     },
     /// Incremental recognized pan displacement in viewport CSS pixels.
-    /// The action commits layout state, never a hold.
+    /// @ref LLP 1043.000 §3 D8 — the action commits layout state, never a hold.
     Pan(f64, f64),
     /// A pan that began has ended: its release velocity in viewport CSS
     /// pixels per second (vx, vy), pan's units over time. The platform's
     /// where it measures one (UIKit), `exact_motion::VelocityTracker`'s
-    /// elsewhere; a cancelled contact releases at (0, 0).
+    /// elsewhere; a cancelled contact releases at (0, 0) (LLP 1057 §10.6).
     PanRelease(f64, f64),
     /// A standard media event. Numeric payloads are seconds.
     Media(EventKind, String),
-    /// DOM's `copy`, `cut` or `paste` at the focused view: the clipboard's
-    /// plain text as the event carries it — what is
+    /// DOM's `copy`, `cut` or `paste` at the focused view (spreadsheet F4,
+    /// F14): the clipboard's plain text as the event carries it — what is
     /// pasted; empty on copy and cut, whose action writes the clipboard
     /// (`copyText`), as a DOM listener's `setData` does — and a paste's files
     /// (`clipboardData.files`), each a `doc:` handle the host minted.
     Clipboard(EventKind, String, Vec<String>),
     /// The part of the reader's text selection inside a `text` changed (the
-    /// web's `selectionchange`): the selected text and its
+    /// web's `selectionchange`, the reader diary): the selected text and its
     /// UTF-16 start and end in the node's own text; nothing selected there
     /// is empty with equal offsets.
     SelectionChange {
@@ -365,13 +372,13 @@ pub enum Event {
         /// Selected fragments in viewport coordinates, sampled with the event.
         rects: Vec<crate::geometry::GeometryAnswer>,
     },
-    /// An incoming location at the navigation root.
+    /// An incoming location at the navigation root. @ref LLP 1038 D8/D11
     Navigate(String),
-    /// What an iframe's guest shows: its
+    /// What an iframe's guest shows (@ref LLP 1020.002 D2): its
     /// `navigate`, `currententrychange`, `navigatesuccess` or
     /// `navigateerror`, with the `FrameNavigation` record.
     FrameNavigation(EventKind, Box<frame_navigation::FrameNavigation>),
-    /// An iframe guest's `newwindow` or `download`,
+    /// An iframe guest's `newwindow` or `download` (@ref LLP 1020.002 D5),
     /// with its `FrameNewWindow` or `FrameDownload` record.
     FrameRecord(EventKind, Box<Value>),
     /// An authored sheet handle released: logical height and signed pixels/second.
@@ -406,7 +413,7 @@ pub enum Event {
         vx: f64,
         /// Finite signed y velocity, logical pixels per second.
         vy: f64,
-        /// Finite signed scale units per second, measured by the engine.
+        /// Finite signed scale units per second, measured by the engine (LLP 1057.001 §3).
         vscale: f64,
     },
 }
@@ -414,8 +421,8 @@ pub enum Event {
 /// A scroll event's position and the scroller's extents, in CSS pixels: the
 /// web's `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight`,
 /// `clientWidth` and `clientHeight` of the element that scrolled, read when
-/// the event fires (a jump-to-latest pill asks whether the list is at its
-/// end, `scrollHeight - scrollTop - clientHeight` as on the web).
+/// the event fires (chat F4: a jump-to-latest pill asks whether the list is
+/// at its end, `scrollHeight - scrollTop - clientHeight` as on the web).
 /// A native host's `scrollWidth`/`scrollHeight` is its client size plus its
 /// scroll range, so the difference is the range it clamps to.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -453,8 +460,8 @@ impl ScrollEvent {
 }
 
 /// The modifier keys held as a key went down: `KeyboardEvent`'s
-/// `shiftKey`, `ctrlKey`, `altKey` and `metaKey`, so Shift+Enter and ⌘S
-/// are expressible.
+/// `shiftKey`, `ctrlKey`, `altKey` and `metaKey` (chat F2, kanban F27 in the
+/// x2apps diaries: Shift+Enter and ⌘S were not expressible).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     /// Shift.
@@ -591,6 +598,7 @@ impl Event {
             Event::Historyswipe(s) => Some(s.value()),
             Event::Load => Some(super::host_kinds::ImageLoad::default().value()),
             Event::ImageLoad(i) => Some(i.value()),
+            Event::Scrolldragend(d) => Some(d.value()),
             Event::MidiMessage(m) => Some(m.value()),
             Event::Drop(d) | Event::Dragenter(d) | Event::Dragleave(d) => Some(d.value()),
             Event::FrameNavigation(_, n) => Some(n.value()),
@@ -718,8 +726,8 @@ impl Event {
         }
     }
 
-    /// A checkbox's reported state, exactly `true` or `false`,
-    /// as the payload of an `input` or `change`.
+    /// A checkbox's reported state, exactly `true` or `false` (LLP 1069.001
+    /// D4), as the payload of an `input` or `change`.
     pub fn checked_payload(payload: &str) -> Option<ControlValue> {
         match payload {
             "true" => Some(ControlValue::Checked(true)),
@@ -777,7 +785,7 @@ fn valid_height_release(height: f64, velocity: f64) -> bool {
 }
 
 impl<D: DataSource> Runner<D> {
-    /// Capture a retained Press/Swiperight target at its painted publication.
+    /// Capture a retained Press/Swiperight/Swipeleft target at its painted publication.
     /// Admits only scalar literal/direct field projections and closed root-store
     /// actions. Tree lookup retains its existing mounted-tree traversal cost;
     /// accepted captures own at most eight scalars and 4096 UTF-8 string bytes.
@@ -790,7 +798,10 @@ impl<D: DataSource> Runner<D> {
         if self.poisoned {
             return Err(Poisoned);
         }
-        if !matches!(event, EventKind::Press | EventKind::Swiperight) {
+        if !matches!(
+            event,
+            EventKind::Press | EventKind::Swiperight | EventKind::Swipeleft
+        ) {
             return Err(Unsupported);
         }
         let view = self.kernel.node_by_key(key).ok_or(Stale)?.id;
@@ -863,6 +874,7 @@ impl<D: DataSource> Runner<D> {
         let kind = match event {
             Event::Press => EventKind::Press,
             Event::Swiperight => EventKind::Swiperight,
+            Event::Swipeleft => EventKind::Swipeleft,
             _ => {
                 return Err(ActionBindingError::Refused(
                     ActionBindingRefusal::Unsupported,
@@ -1045,7 +1057,7 @@ impl<D: DataSource> Runner<D> {
 
     /// Runner-only collection events use the same action transaction and journal
     /// as host events. They have no payload; their bound arguments are evaluated
-    /// in the list's scope when the edge dispatches.
+    /// in the list's scope when the edge dispatches (LLP 1054.000.006).
     pub(super) fn dispatch_edge(
         &mut self,
         view: ViewId,
@@ -1108,6 +1120,8 @@ impl<D: DataSource> Runner<D> {
             Event::Close => "close",
             Event::Toggle { .. } => "toggle",
             Event::Scrollend => "scrollend",
+            Event::Scrolldragstart => "scrolldragstart",
+            Event::Scrolldragend(_) => "scrolldragend",
             Event::Historyswipe(_) => "historyswipe",
             Event::Select { .. } | Event::FieldSelect(..) => "select",
             Event::Hover(true) => "hover in",
@@ -1138,6 +1152,7 @@ impl<D: DataSource> Runner<D> {
             Event::Pointerup(_) => "pointerup",
             Event::Pointermove(_) => "pointermove",
             Event::Swiperight => "swiperight",
+            Event::Swipeleft => "swipeleft",
             Event::Refresh => "refresh",
             Event::Scroll(_) => "scroll",
             Event::Resize(_) => "resize",
@@ -1201,14 +1216,21 @@ impl<D: DataSource> Runner<D> {
             })
             .ok_or(RunnerError::UnknownView(view))?;
         // Events without a listener do nothing: a picker's `cancel` (LLP
-        // 1069.010 D3), a dialog's `close`, a scroll's end, a swipe.
+        // 1069.010 D3), a dialog's `close` (LLP 1021), a scroll's end or drag, a swipe.
         if matches!(
             event,
-            Event::Cancel | Event::Close | Event::Scrollend | Event::Historyswipe(_)
+            Event::Cancel
+                | Event::Close
+                | Event::Scrollend
+                | Event::Scrolldragstart
+                | Event::Scrolldragend(_)
+                | Event::Historyswipe(_)
         ) {
             let kind = match event {
                 Event::Close => EventKind::Close,
                 Event::Scrollend => EventKind::Scrollend,
+                Event::Scrolldragstart => EventKind::Scrolldragstart,
+                Event::Scrolldragend(_) => EventKind::Scrolldragend,
                 Event::Historyswipe(_) => EventKind::Historyswipe,
                 _ => EventKind::Cancel,
             };
@@ -1223,14 +1245,14 @@ impl<D: DataSource> Runner<D> {
                 return Ok(CommitReceipt::default());
             }
         }
-        // Each control's payload is
+        // @ref LLP 1069.001 D4, LLP 1069.002 D3 — each control's payload is
         // its own kind's, held to HTML's rules (`control.rs`).
         let control = match &event {
             Event::Input(value) => Some(self.control_payload(view, "input", value)?),
             Event::Change(value) => Some(self.control_payload(view, "change", value)?),
             _ => None,
         };
-        // The `InputEvent`: the target as the event
+        // The `InputEvent` (x2apps codeedit #2): the target as the event
         // leaves it, a text field's selection the host's report.
         let (control, record) = match (&event, control) {
             (Event::Input(v) | Event::Change(v), Some(p)) => {
@@ -1276,6 +1298,8 @@ impl<D: DataSource> Runner<D> {
             Event::Close => (EventKind::Close, None, "close"),
             Event::Toggle { .. } => (EventKind::Toggle, None, "toggle"),
             Event::Scrollend => (EventKind::Scrollend, None, "scrollend"),
+            Event::Scrolldragstart => (EventKind::Scrolldragstart, None, "scrolldragstart"),
+            Event::Scrolldragend(_) => (EventKind::Scrolldragend, None, "scrolldragend"),
             Event::Historyswipe(_) => (EventKind::Historyswipe, None, "historyswipe"),
             Event::Select {
                 formats,
@@ -1327,6 +1351,7 @@ impl<D: DataSource> Runner<D> {
             Event::Pointerup(_) => (EventKind::Pointerup, None, "pointerup"),
             Event::Pointermove(_) => (EventKind::Pointermove, None, "pointermove"),
             Event::Swiperight => (EventKind::Swiperight, None, "swiperight"),
+            Event::Swipeleft => (EventKind::Swipeleft, None, "swipeleft"),
             Event::Refresh => (EventKind::Refresh, None, "refresh"),
             Event::Scroll(_) => (EventKind::Scroll, None, "scroll"),
             Event::Resize(_) => (EventKind::Resize, None, "resize"),
@@ -1392,14 +1417,14 @@ impl<D: DataSource> Runner<D> {
             args.push(value);
         }
         if let Some(p) = payload {
-            // A navigate action may deliberately ignore its location.
+            // A navigate action may deliberately ignore its location (D8).
             if kind != EventKind::Navigate || !self.plan.action(handler.action).params.is_empty() {
                 args.push(p);
             }
         }
         // The event's record, after what it always carries, to an action
         // that declares one more parameter (`contract_types::event_record`).
-        // A drop's `ReorderEvent` names its lists.
+        // A drop's `ReorderEvent` names its lists (LLP 1094 D2).
         let record = match &event {
             Event::ReorderDrop { .. } => Some(self.reorder_record(view)),
             Event::Input(_)

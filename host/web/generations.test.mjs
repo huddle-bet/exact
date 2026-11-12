@@ -1,6 +1,6 @@
-// A page is served from the build it booted (generations.mjs): a page's
+// A page is served from the build it booted (generations.mjs; theme2's ruling on the build-swap pair): a page's
 // files all come from one build while another replaces it, old builds are kept while their pages may ask and reaped
-// as the retention rule keeps them, and a generation path is checked strictly.
+// as the ruling keeps them, and a generation path is checked strictly.
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { takeLock } from './build-lock.mjs';
 import { buildTreeFile, replaceBuild } from './serve.mjs';
 import { GENERATION, foreignBeside, generationFile, generationOf, generationPath, leaseGeneration, leasedGenerations, reapGenerations, servedFile } from './generations.mjs';
 import { BESIDE, STAGE, beside } from './beside.mjs';
+import { fileURLToPath } from 'node:url';
 
 /** A JS-target build naming `k` in every file: its document (base `/`) and the shell beside it, its module, a lazy
  * chunk named by `k` as a hashed chunk is, its plan; and its receipt. */
@@ -68,7 +69,7 @@ test('a page\'s files all come from one build while 100 builds replace it', asyn
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('builds are kept by generation and reaped as the retention rule keeps them: the newest 3, the leased, the young, within the cap', async () => {
+test('builds are kept by generation and reaped as the ruling keeps them: the newest 3, the leased, the young, within the cap', async () => {
   const { root, dist, stage } = workspace();
   try {
     const ids = [];
@@ -172,8 +173,8 @@ test('with two renames for a swap (no one-step exchange), a page\'s files are st
   // A process of its own: the exchange is chosen once a process.
   const r = spawnSync(process.execPath, ['-e', `
     const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs'); const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
-    const { replaceBuild } = await import(${JSON.stringify(new URL('./serve.mjs', import.meta.url).pathname)});
-    const { servedFile } = await import(${JSON.stringify(new URL('./generations.mjs', import.meta.url).pathname)});
+    const { replaceBuild } = await import(${JSON.stringify(fileURLToPath(new URL('./serve.mjs', import.meta.url)))});
+    const { servedFile } = await import(${JSON.stringify(fileURLToPath(new URL('./generations.mjs', import.meta.url)))});
     const root = mkdtempSync(join(tmpdir(), 'exact-generations-renames-')), dist = join(root, 'dist');
     const build = (k) => { const d = join(root, 's' + k); mkdirSync(d); writeFileSync(join(d, 'index.html'), '<base href="/"><p>build ' + k + '</p>'); writeFileSync(join(d, 'app.js'), 'build ' + k);
       writeFileSync(join(d, '.exact-build.json'), JSON.stringify({ exactBuild: 1, target: 'js', files: [{ name: 'app.js', sha256: String(k) }] })); return d; };
@@ -207,7 +208,7 @@ test('no build yet: not found at once, not held for a swap that is not under way
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-// What a build keeps beside its directory is the build's to replace and reap, so beside an author's
+// LLP 1153 D3: what a build keeps beside its directory is the build's to replace and reap, so beside an author's
 // `--out` directory each such name must be absent or a build's own (`foreignBeside`); and the native bake's capture
 // skips the same names as the web's scans (js/bake/src/beside.rs, host/web/beside.mjs).
 test('what a build keeps beside its directory is its own, or the directory is refused; the bake skips the same names', () => {

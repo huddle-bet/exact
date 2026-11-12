@@ -1,7 +1,9 @@
 // The executor's C++: a lean Hermes runtime (bytecode only — it cannot be
 // handed source), one module evaluated once, and calls into `exact.answer`
 // with strings. Storage uses Ibex2 bindings on this same runtime and the
-// caller owns every completion and microtask checkpoint.
+// caller owns every completion and microtask checkpoint (LLP 1027 D9/D10).
+//
+// @ref LLP 1027 D3 (the executor) / D10 (what the module can use)
 #include <hermes/hermes.h>
 #include <jsi/jsi.h>
 #include <ibex2_jsi.h>
@@ -54,9 +56,11 @@ static std::shared_ptr<jsi::Buffer> kept_bytecode(const uint8_t *data, size_t le
 }
 
 // (ctx, op, a, b, out) -> 0 with `out` null (undefined) or a malloc'd string.
-typedef int (*HostFn)(void *ctx, uint32_t op, const char *a, const char *b, char **out);
-// (ctx, op, a, bytes, len, out): the host door for byte input (a digest's
-// data, a key's handle and a message to sign). Same result rules.
+// Strings cross with their lengths: a JavaScript string may hold U+0000.
+typedef int (*HostFn)(void *ctx, uint32_t op, const char *a, size_t a_len, const char *b,
+                      size_t b_len, char **out, size_t *out_len);
+// (ctx, op, a, bytes, len, out): the host door for byte input (LLP 1069.005:
+// a digest's data, a key's handle and a message to sign). Same result rules.
 typedef int (*BytesFn)(void *ctx, uint32_t op, const char *a, const uint8_t *bytes, size_t len,
                        char **out);
 
@@ -185,41 +189,24 @@ char *dup(const std::string &s) {
   return p;
 }
 
-std::string render(jsi::Runtime &rt, const jsi::Value &v) {
-  if (v.isObject()) {
-    jsi::Function stringify =
-        rt.global().getPropertyAsObject(rt, "JSON").getPropertyAsFunction(rt, "stringify");
-    jsi::Value text = stringify.call(rt, v);
-    if (text.isString()) return text.getString(rt).utf8(rt);
-  }
-  return v.toString(rt).utf8(rt);
-}
-
 void install_console(State *state) {
   jsi::Runtime &rt = *state->rt;
-  jsi::Object console(rt);
-  for (const char *level : {"log", "info", "warn", "error", "debug"}) {
-    console.setProperty(
-        rt, level,
-        jsi::Function::createFromHostFunction(
-            rt, jsi::PropNameID::forAscii(rt, level), 1,
-            [state](jsi::Runtime &rt, const jsi::Value &, const jsi::Value *args,
-                    size_t count) -> jsi::Value {
-              std::string line;
-              for (size_t i = 0; i < count; i++) {
-                if (i) line += ' ';
-                line += render(rt, args[i]);
-              }
-              if (state->log.size() >= kLogLines) state->log.erase(state->log.begin());
-              state->log.push_back(std::move(line));
-              return jsi::Value::undefined();
-            }));
-  }
-  rt.global().setProperty(rt, "console", console);
+  rt.global().setProperty(rt, "__exact_log",
+      jsi::Function::createFromHostFunction(
+          rt, jsi::PropNameID::forAscii(rt, "__exact_log"), 1,
+          [state](jsi::Runtime &rt, const jsi::Value &, const jsi::Value *args,
+                  size_t count) -> jsi::Value {
+            if (count != 1 || !args[0].isString())
+              throw jsi::JSError(rt, "console requires a formatted string");
+            auto line = args[0].getString(rt).utf8(rt);
+            if (state->log.size() >= kLogLines) state->log.erase(state->log.begin());
+            state->log.push_back(std::move(line));
+            return jsi::Value::undefined();
+          }));
 }
 
 // `__exact_host(op, a, b)`: the one door into Rust — the prelude takes it
-// off the global object and keeps it in a closure.
+// off the global object and keeps it in a closure (LLP 1027 D1a, D10).
 void install_host(State *state) {
   jsi::Runtime &rt = *state->rt;
   rt.global().setProperty(
@@ -234,9 +221,10 @@ void install_host(State *state) {
             std::string a = args[1].getString(rt).utf8(rt);
             std::string b = args[2].getString(rt).utf8(rt);
             char *out = nullptr;
+            size_t out_len = 0;
             int status = state->host(state->ctx, static_cast<uint32_t>(args[0].getNumber()),
-                                     a.c_str(), b.c_str(), &out);
-            std::string text = out ? std::string(out) : std::string();
+                                     a.data(), a.size(), b.data(), b.size(), &out, &out_len);
+            std::string text = out ? std::string(out, out_len) : std::string();
             if (out) std::free(out);
             if (status != 0) throw jsi::JSError(rt, text);
             if (!out) return jsi::Value::undefined();
@@ -245,7 +233,7 @@ void install_host(State *state) {
 }
 
 // `__exact_bytes(op, a, arrayBuffer)`: the door for bytes, which the string
-// door cannot carry. The prelude takes it too.
+// door cannot carry (LLP 1069.005 D1). The prelude takes it too.
 void install_bytes(State *state) {
   jsi::Runtime &rt = *state->rt;
   rt.global().setProperty(rt, "__exact_key", jsi::Function::createFromHostFunction(
@@ -290,6 +278,7 @@ int fail(char **out, const std::string &message, int code) {
 extern "C" {
 
 void *exact_js_create(uint32_t max_heap_bytes, HostFn host, BytesFn bytes, void *ctx,
+                      const uint8_t *console, size_t console_len,
                       const void *queue, const Ibex2Bindings *bindings,
                       const void *grants,
                       const ibex2::jsi_adapter::CompiledScript *scripts,
@@ -306,6 +295,7 @@ void *exact_js_create(uint32_t max_heap_bytes, HostFn host, BytesFn bytes, void 
     auto state = std::make_unique<State>(State{std::move(rt), {}, host, bytes, ctx, nullptr,
                                                grants, max_heap_bytes, 0, {}});
     install_console(state.get());
+    state->rt->evaluateJavaScript(kept_bytecode(console, console_len), "console.hbc");
     install_host(state.get());
     install_bytes(state.get());
     install_capture(state.get());
@@ -487,8 +477,8 @@ bool exact_js_capture(void *h, size_t index, const char **path, size_t *path_len
 }
 void exact_js_clear_captures(void *h) { clear_captures(static_cast<State *>(h)); }
 
-// Stop the running execution, or the next to start, from any thread:
-// Hermes raises an uncatchable timeout at the next async break
+// Stop the running execution, or the next to start, from any thread (LLP
+// 1048.000 D10): Hermes raises an uncatchable timeout at the next async break
 // check, which bytecode compiled with -emit-async-break-check has in every
 // loop and function. The caller keeps the runtime alive through this call.
 void exact_js_interrupt(void *h) {
@@ -508,16 +498,14 @@ int exact_js_drain(void *h, char **out) {
   }
 }
 
-// The console lines since the last take, newline-separated.
-void exact_js_take_log(void *h, char **out) {
+// Borrow each record for the synchronous callback, keeping NULs and line endings.
+void exact_js_take_log(void *h, void *ctx,
+                       void (*record)(void *, const uint8_t *, size_t)) {
   auto *state = static_cast<State *>(h);
-  std::string joined;
-  for (size_t i = 0; i < state->log.size(); i++) {
-    if (i) joined += '\n';
-    joined += state->log[i];
+  for (const auto &line : state->log) {
+    record(ctx, reinterpret_cast<const uint8_t *>(line.data()), line.size());
   }
   state->log.clear();
-  *out = dup(joined);
 }
 
 void exact_js_free(char *p) { std::free(p); }

@@ -1,13 +1,13 @@
-//! Form controls, painted: this host has no platform
+//! Form controls, painted (LLP 1069.001 D7): this host has no platform
 //! controls to show. Where it has no platform at all (the Linux desktop,
-//! Windows) each is the web's neutral look's (`neutral.rs`).
-//! Under the Material look a checkbox and a radio are Material's
+//! Windows) each is the web's neutral look's (`neutral.rs`; LLP 1115.000
+//! D17). Under the Material look a checkbox and a radio are Material's
 //! (`material.rs`). Else, which is Android's reader until its other controls
 //! are Material's,
 //! a checkbox is Chrome's rounded square, a radio its circle and a switch a
 //! pill with a thumb, filled with `accent-color`, else the platform's accent
 //! where the host reported one ([`accents`]). `appearance: none` draws
-//! nothing here: the author's box is the whole look.
+//! no native chrome; a select or date field keeps its value in the author's box (D6).
 
 use super::material::Icon;
 use super::{look, neutral, rgba, Backend, Rect4, Shape};
@@ -17,12 +17,12 @@ use tiny_skia::Transform;
 
 /// This painter's own accent, Chrome's default `#0075ff`: what a control
 /// paints in where its node sets no `accent-color` and the host reported no
-/// colours (desktop Linux, which has no platform accent to read).
+/// colours (desktop Linux, which has no platform accent to read; LLP 1104 D7).
 const ACCENT: [u8; 4] = [0x00, 0x75, 0xff, 0xff];
 
 /// The accent a control, a focus ring or a filled button paints in, and
 /// what is drawn on it (a check, a switch's thumb, a filled button's
-/// title). One accent: the node's `accent-color` where it
+/// title). One accent (LLP 1115.001 D4): the node's `accent-color` where it
 /// sets one (`authored`), with white on it as before; else the platform's
 /// `AccentColor` with its `AccentColorText`, where the host reported the
 /// device's colours; else this painter's own blue, with white.
@@ -53,7 +53,7 @@ pub(crate) fn control_text_styles() -> exact_kernel::ControlTextStyles {
     }
 }
 
-/// An authored `::placeholder` colour, its alpha its own;
+/// An authored `::placeholder` colour (LLP 1104 D3), its alpha its own;
 /// `None` leaves the platform's.
 pub(crate) fn authored_placeholder(
     style: &exact_kernel::StyleProps,
@@ -65,8 +65,8 @@ pub(crate) fn authored_placeholder(
         .then(|| super::rgba(style.rare.placeholder_color.resolve(dark)))
 }
 
-/// What a field has round its text. Under the neutral look
-/// that is the control's line and the look's padding, of the field's
+/// What a field has round its text. Under the neutral look (LLP 1115.000
+/// D17) that is the control's line and the look's padding, of the field's
 /// font size, as the page's sheet has them; else Material's filled field's
 /// (`material.rs`).
 pub(crate) fn field_chrome(font_size: f32, labelled: bool) -> FieldChrome {
@@ -88,7 +88,7 @@ pub(crate) fn field_chrome(font_size: f32, labelled: bool) -> FieldChrome {
 
 /// A control's choice while its bound value is the one it had when the
 /// person chose, as the web build writes an input's `value` only when the
-/// bound value changes.
+/// bound value changes (LLP 1069.001 D4, amended 2026-10-04; kanban2 #5).
 pub(crate) fn choice<'a>(
     node: &NodeRef<'_>,
     chosen: Option<&'a (String, String)>,
@@ -99,9 +99,28 @@ pub(crate) fn choice<'a>(
         .map(|(c, _)| c.as_str())
 }
 
-/// What a date control shows: its [`choice`], else the bound value. Under
-/// the neutral look that is HTML's value, its placeholder form when empty;
-/// else the device's writing of it (`dates.rs`), nothing when empty.
+/// A range's thumb's diameter in a box `w` by `h`: the neutral look's mark,
+/// else 16 px. The painter and the pointer both read it and
+/// [`range_mirrored`], so the thumb lands under a press.
+pub(crate) fn range_thumb(node: &NodeRef<'_>, w: f32, h: f32) -> f32 {
+    let d = match look::neutral() {
+        true => look::px(metric::MARK_SIZE, neutral::em(node)),
+        false => 16.0,
+    };
+    d.min(h).min(w)
+}
+
+/// Whether a range's minimum is at the right. A horizontal range runs from
+/// its inline start, so under `direction: rtl` it is, as a browser draws it
+/// and Android's `SeekBar` (`mirrorForRtl`) does.
+pub(crate) fn range_mirrored(node: &NodeRef<'_>) -> bool {
+    node.computed_row(exact_kernel::StyleId::Direction, |s| s.direction)
+        == exact_kernel::Direction::Rtl
+}
+
+/// What a date control shows: its [`choice`], else the bound value. Native
+/// neutral fields show HTML's format hint when empty; bare fields leave
+/// room for their placeholder. Else the device formats the value (`dates.rs`).
 pub(super) fn date_text(
     node: &NodeRef<'_>,
     chosen: Option<&(String, String)>,
@@ -109,6 +128,9 @@ pub(super) fn date_text(
 ) -> String {
     let value = choice(node, chosen).unwrap_or_else(|| node.props.str(PropId::Value).unwrap_or(""));
     let kind = node.props.str(PropId::Type).unwrap_or("date");
+    if value.is_empty() && node.style.appearance == Appearance::None {
+        return String::new();
+    }
     if !look::neutral() {
         let shown = dates.and_then(|d| d.show(kind, value));
         return shown.unwrap_or_else(|| value.to_string());
@@ -146,10 +168,10 @@ pub(crate) fn accent(node: &NodeRef<'_>, dark: bool) -> Option<[u8; 4]> {
 }
 
 /// An authored accent: an `accent-color` on the node or above it, else the
-/// design's `AccentColor`; none where only the platform's.
+/// design's `AccentColor` (LLP 1121 D9); none where only the platform's.
 /// `accent-color: AccentColor` names the platform's (or the design's), not
 /// an authored one, except under an authored accent, which it keeps, as the
-/// web's `var(--exact-accent, AccentColor)` does: the painting
+/// web's `var(--exact-accent, AccentColor)` does (stage 9 F1): the painting
 /// scope holds that one ([`roles::scoped_accent`]).
 pub(crate) fn authored_accent(node: &NodeRef<'_>, dark: bool) -> Option<[u8; 4]> {
     use exact_kernel::style::roles;
@@ -168,7 +190,7 @@ pub(crate) fn authored_accent(node: &NodeRef<'_>, dark: bool) -> Option<[u8; 4]>
 }
 
 /// Whether the author took `node`'s focus ring off: CSS `outline: none`,
-/// the row's one value, on any element that takes the focus.
+/// the row's one value (LLP 1104 D6), on any element that takes the focus.
 pub(crate) fn ringless(node: &NodeRef<'_>) -> bool {
     node.style.mask.has(exact_kernel::StyleId::OutlineStyle)
 }
@@ -191,7 +213,7 @@ pub(crate) fn ring(node: &NodeRef<'_>, dark: bool) -> [u8; 4] {
     accents(accent(node, dark), dark).0
 }
 
-/// A select's open menu: its panel in viewport points,
+/// A select's open menu (LLP 1069.001 D7): its panel in viewport points,
 /// one row per option, the chosen one marked with the accent.
 #[derive(Debug, Clone)]
 pub struct MenuPaint {
@@ -201,8 +223,10 @@ pub struct MenuPaint {
     pub row: f32,
     /// Each option's label and whether it is disabled.
     pub rows: Vec<(String, bool)>,
-    /// The chosen row.
+    /// The highlighted row: the one the keys moved to, else the chosen.
     pub chosen: Option<usize>,
+    /// How far the rows are scrolled, in points.
+    pub offset: f32,
     /// The select's inherited text style, which the rows are set in.
     pub style: exact_kernel::StyleProps,
     /// The select's accent, where it sets one.
@@ -233,44 +257,72 @@ impl super::Painter {
         self.filled_field(node, rect, focused, false, ts)
     }
 
-    /// A closed select, or a field that shows a value:
+    /// A closed select, or a field that shows a value (LLP 1069.001 D7):
     /// the neutral look's field with the text, and a caret when it opens a
     /// menu; else Material's filled field with its trailing icon.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn field_control(
         &mut self,
+        walk: &super::Walk<'_, '_>,
         node: &NodeRef<'_>,
         content: Rect4,
+        outer: &Shape,
         focused: bool,
         ts: Transform,
         text: &str,
         chevron: bool,
     ) {
-        if node.style.appearance == Appearance::None {
-            return;
-        }
+        let bare = node.style.appearance == Appearance::None;
         let dark = self.dark;
-        if look::neutral() {
+        if bare || look::neutral() {
             // Focus changes without a tree commit, so a row cannot keep this ring.
             self.row_refuse();
-            // The look's field: its ground and line, the text a field's
-            // padding in, on the middle line, and a select's caret.
-            let shape = neutral::field(self.backend.as_mut(), node, content, ts, dark);
+            // No appearance keeps the value and authored ink, without the field's inset or caret.
+            let shape = if bare {
+                *outer
+            } else {
+                neutral::field(self.backend.as_mut(), node, content, ts, dark)
+            };
             let style = node.computed_style(StyleMask::INHERITED);
-            let spec = super::text_spec(&style, text);
+            let placeholder = bare && text.is_empty();
+            let shown = if placeholder {
+                node.props.str(PropId::Placeholder).unwrap_or("")
+            } else {
+                text
+            };
+            let spec = super::text_spec(&style, shown);
             let paragraph = self.text.borrow_mut().paragraph(&spec, None);
             let (x, y, w, h) = content;
             let em = neutral::em(node);
-            let inset =
-                look::px(metric::CONTROL_LINE, em) + look::px(metric::FIELD_PADDING_INLINE, em);
+            let inset = if bare {
+                0.0
+            } else {
+                look::px(metric::CONTROL_LINE, em) + look::px(metric::FIELD_PADDING_INLINE, em)
+            };
             let rtl = style.direction == exact_kernel::Direction::Rtl;
-            let ox = if rtl {
+            let ox = if bare {
+                x + crate::text::field::line_left(
+                    style.text_align,
+                    style.direction,
+                    w,
+                    paragraph.width,
+                )
+            } else if rtl {
                 x + w - inset - paragraph.width
             } else {
                 x + inset
             };
             let oy = y + ((h - paragraph.height) / 2.0).max(0.0);
             let palette = [crate::text::RunPaint {
-                color: neutral::field_ink(node, dark),
+                color: if placeholder {
+                    authored_placeholder(node.style, dark)
+                        .unwrap_or_else(|| look::role("-exact-placeholder", dark))
+                } else if bare {
+                    super::presented_color(walk, node, dark)
+                        .unwrap_or_else(|| rgba(node.text_color().resolve(dark)))
+                } else {
+                    neutral::field_ink(node, dark)
+                },
                 source: node.id,
             }];
             self.backend.push_clip(&Shape::rect(content), ts);
@@ -282,10 +334,15 @@ impl super::Painter {
                 ts,
             );
             self.backend.pop_clip();
-            if chevron {
+            if chevron && !bare {
                 neutral::caret(self.backend.as_mut(), node, content, ts, dark);
             }
-            if focused && !self.unringed(node) && node.props.bool(PropId::Disabled) != Some(true) {
+            let unringed = if bare {
+                ringless(node)
+            } else {
+                self.unringed(node)
+            };
+            if focused && !unringed && node.props.bool(PropId::Disabled) != Some(true) {
                 self.field_ring(&shape, ring(node, dark), ts);
             }
             return;
@@ -298,7 +355,7 @@ impl super::Painter {
         self.filled_value(node, content, focused, ts, text, icon);
     }
 
-    /// A range: Chrome's track, filled with the accent to
+    /// A range (LLP 1069.001 D7): Chrome's track, filled with the accent to
     /// a 16 px thumb at the value.
     pub(super) fn range_control(
         &mut self,
@@ -327,14 +384,15 @@ impl super::Painter {
         } else {
             0.0
         };
+        let (x, y, w, h) = content;
+        let (d, mirrored) = (range_thumb(node, w, h), range_mirrored(node));
+        let along = if mirrored { 1.0 - t } else { t };
         if look::neutral() {
-            neutral::range(self.backend.as_mut(), node, content, ts, dark, t);
+            neutral::range(self.backend.as_mut(), node, content, ts, dark, d, along);
             return;
         }
-        let (x, y, w, h) = content;
-        let d = 16f32.min(h).min(w);
         let cy = y + h / 2.0;
-        let tx = x + (w - d) * t;
+        let tx = x + (w - d) * along;
         let track =
             |from: f32, to: f32| Shape::new((from, cy - 2.0, (to - from).max(0.0), 4.0), [2.0; 4]);
         let rest = if dark {
@@ -344,16 +402,20 @@ impl super::Painter {
         };
         self.backend.fill(&track(x, x + w), alpha(rest), ts);
         let (accent, _) = accents(accent(node, dark), dark);
-        self.backend
-            .fill(&track(x, tx + d / 2.0), alpha(accent), ts);
+        // The fill runs from the minimum to the thumb.
+        let filled = match mirrored {
+            true => track(tx + d / 2.0, x + w),
+            false => track(x, tx + d / 2.0),
+        };
+        self.backend.fill(&filled, alpha(accent), ts);
         let thumb = Shape::new((tx, cy - d / 2.0, d, d), [d / 2.0; 4]);
         self.backend.fill(&thumb, alpha(accent), ts);
     }
 
-    /// A select's open menu, over everything.
+    /// A select's open menu, over everything (LLP 1069.001 D7).
     pub(super) fn menu(&mut self, menu: &MenuPaint) {
         let ts = Transform::identity();
-        // Painted after the walk: the select's own scheme, as
+        // Painted after the walk: the select's own scheme (LLP 1034 §8), as
         // its inherited style computes it, else the app's.
         let dark = match menu.style.color_scheme {
             exact_kernel::ColorScheme::Dark => true,
@@ -375,9 +437,13 @@ impl super::Painter {
         };
         self.backend.fill(&panel.inset(1.0), bg, ts);
         let (accent, on_accent) = accents(menu.accent, dark);
-        let (x, y, w, _) = menu.rect;
+        let (x, y, w, h) = menu.rect;
+        self.backend.push_clip(&panel, ts);
         for (i, (label, disabled)) in menu.rows.iter().enumerate() {
-            let top = y + MENU_PAD + i as f32 * menu.row;
+            let top = y + MENU_PAD + i as f32 * menu.row - menu.offset;
+            if top + menu.row < y || top > y + h {
+                continue;
+            }
             let chosen = menu.chosen == Some(i);
             if chosen {
                 let row = Shape::new((x + 4.0, top, w - 8.0, menu.row), [4.0; 4]);
@@ -404,6 +470,7 @@ impl super::Painter {
             self.backend
                 .text(&mut engine, &paragraph, &palette, (x + 12.0, oy), ts);
         }
+        self.backend.pop_clip();
         self.dark = previous;
     }
 }
@@ -473,7 +540,7 @@ pub(super) fn paint(
     } else {
         ([0x76, 0x76, 0x76, 0xff], [0xff, 0xff, 0xff, 0xff])
     };
-    // A radio is Chrome's circle: checked, an accent
+    // A radio is Chrome's circle (x2apps survey #2): checked, an accent
     // ring around the field's own fill and an accent dot a fifth in.
     if node.props.str(PropId::Type) == Some("radio") {
         let circle = Shape::new(content, [w.min(h) / 2.0; 4]);
@@ -510,7 +577,7 @@ pub(super) fn paint(
     }
 }
 
-/// An indeterminate `progress`: UIKit's
+/// An indeterminate `progress` (LLP 1069.001, amended 2026-10-07): UIKit's
 /// activity indicator as one still frame, eight spokes round the centre of
 /// the box's shorter side in `color`, the tail fading behind the brightest
 /// one (counterclockwise: the indicator turns clockwise). Linux paints on
@@ -534,7 +601,7 @@ pub(super) fn progress(
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     // Its own `color`, else an authored accent, else the platform's
     // (Material's spinner is in the primary colour): an inherited colour is
-    // not the spinner's.
+    // not the spinner's (LLP 1115 D4, LLP 1121 D9).
     let ink = if node.style.written.has(exact_kernel::StyleId::TextColor) {
         rgba(node.text_color().resolve(dark))
     } else {
@@ -553,7 +620,7 @@ pub(super) fn progress(
     }
 }
 
-/// A determinate `progress`: UIKit's progress view, drawn as
+/// A determinate `progress` (LLP 1116 D8): UIKit's progress view, drawn as
 /// the range's track is here — a 4 px pill across the content box, centred,
 /// in the system fill, and the accent to the value from the leading edge.
 pub(super) fn progress_bar(
@@ -618,7 +685,7 @@ mod field_tests {
                     cell: false,
                     labelled: false,
                 });
-                // Material's filled field, whatever the font.
+                // Material's filled field, whatever the font (LLP 1115.001 D9).
                 assert_eq!(
                     chrome,
                     FieldChrome {
@@ -635,7 +702,7 @@ mod field_tests {
     }
 }
 
-/// The authored `::placeholder` colour, its alpha kept; none
+/// LLP 1104 D3: the authored `::placeholder` colour, its alpha kept; none
 /// is the platform's (the field's paint and the hosted field's hint).
 #[cfg(test)]
 #[test]

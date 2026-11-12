@@ -127,7 +127,7 @@ impl<D: DataSource> Host<D> {
                 .chain(&receipt.shell.flow_changed)
                 .copied(),
         );
-        // The opt-in worker surface is opaque and
+        // @ref LLP 1043.000 §3 D7 — the opt-in worker surface is opaque and
         // has a separate paragraph artifact. Retire it before any flowed ink:
         // ordinary native views own the region until its next registration.
         // This costs a normal O(tree) layout once, never stale cached pixels.
@@ -671,7 +671,7 @@ impl<D: DataSource> Host<D> {
                 }
             }
         }
-        Self::stage_native_paragraphs(&candidate.nodes, &mut staged);
+        self.stage_native_paragraphs(&candidate.nodes, &mut staged);
         // Styles intentionally omit the four native presentation rows. Sample
         // this qualified current key at promotion so newly created controls get
         // their real opacity/transform too; do not reconstruct from an old ID.

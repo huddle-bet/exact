@@ -1,6 +1,7 @@
-// One import planned in a process of its own: a client's file (a paired
-// one's, through a remote door, as much as the local tool's or `bun
-// exact.mjs tamber import`'s) is read by `contract tamber import-plan`, never by the shared
+// One import planned in a process of its own (LLP 1121 §5 stage 10b; the
+// lead's 12:31Z ruling on E2+E3): a client's file (a paired one's, through
+// a remote door, as much as the local tool's or `bun exact.mjs tamber
+// import`'s) is read by `contract tamber import-plan`, never by the shared
 // `tamber serve`, so a document that costs too much to read stops only its
 // own process. A watchdog here kills it past `rssKb` of resident memory,
 // `ms` of wall clock or `outBytes` of answer, or when it can't watch it
@@ -14,8 +15,9 @@ import { execFile, spawn } from 'node:child_process';
 import { constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /** About 1 GiB resident (KiB), 10 s, a 2 MiB answer, a 4 MiB design; four queued, each waiting up to 30 s. */
 export const LIMITS = { rssKb: 1 << 20, ms: 10_000, outBytes: 2 << 20, designBytes: 4 << 20, waiting: 4, waitMs: 30_000 };
 

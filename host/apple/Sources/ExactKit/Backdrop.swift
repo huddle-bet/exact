@@ -1,4 +1,4 @@
-// CSS `backdrop-filter` on both Apple platforms.
+// CSS `backdrop-filter` on both Apple platforms (LLP 1053.000 D2).
 //
 // macOS: Core Image's Gaussian as the node layer's public
 // `backgroundFilters`, run between the sRGB tone curves because Core Image
@@ -7,17 +7,21 @@
 // 0.05 pt. Core Animation hands the filters the backdrop past the box,
 // where Chrome reads only the box and mirrors it past its edges; the chain
 // mirrors the box first, so the edges land within 2/255 per channel of
-// Chrome's (a turned or skewed box still reads past it).
+// Chrome's (#129's panels; a turned or skewed box still reads past it).
 // AppKit filters a layer's backdrop only when the layer masks to its
 // bounds, and the backdrop it sees is the superlayer's subtree: the
 // parent's paint and the earlier siblings, not what a further ancestor
-// paints. Both are declared: a backdrop
+// paints. Both are declared (LLP 1053.000 §3, LLP 1001 §1): a backdrop
 // node clips its children to its border box, and paint above its parent
 // shows through unblurred. The node's own background and border draw over
 // the blur, as CSS orders them; its outer shadows cast from a layer beside
 // its own, which the mask would clip (`Mac/BackdropShadowMac.swift`).
 //
 // iOS has no public arbitrary-radius backdrop blur (`backgroundFilters` is
+// macOS-only and `CABackdropLayer` is private), so a blur maps to the
+// blur style nearest it by measured pixels (`.light`, Charlie 2026-09-27), drawn as the node's
+// material view under its children: a declared deviation with its measured
+// bound (LLP 1053.000 §3). `backgroundMaterial` stays the host-policy
 // spelling and wins on a node that has both, on every host.
 import CExact
 import CoreGraphics
@@ -27,7 +31,7 @@ import UIKit
 import AppKit
 #endif
 
-/// `backgroundMaterial`'s vocabulary: the schema's table,
+/// `backgroundMaterial`'s vocabulary (LLP 1053.000 D4): the schema's table,
 /// read through `exact_material_platform`, as this platform's own names.
 enum Materials {
     #if os(iOS) || os(tvOS)
@@ -53,7 +57,7 @@ enum Materials {
     private static var noted = Set<String>()
 
     /// This platform's name for `name`: a stand-in where the table names
-    /// one, silently"; the agent's `state`
+    /// one, silently (Charlie, 2026-09-27: "ok, (b)"; the agent's `state`
     /// shows it, `agentMaterial`); an unknown name draws `ultra-thin`'s and
     /// is logged once (`log`).
     static func resolve(_ name: String, log: (String) -> Void) -> String {
@@ -137,6 +141,10 @@ enum BackdropOperation: Equatable {
 }
 
 extension NodeView {
+    /// Its `-exact-glass-tint` in its colour scheme, nil where unset: the
+    /// tint of its glass material (`UIGlassEffect`, `NSGlassEffectView`).
+    var glassTint: CGColor? { cgColor("glass_tint") }
+
     var backdropOperations: [BackdropOperation] {
         style["backdrop_filter"]?.array?.compactMap(BackdropOperation.init) ?? []
     }
@@ -150,8 +158,8 @@ extension NodeView {
         return defaultSurfaceRadius == nil || unevenCorners ? nil : "glass"
     }
 
-    /// The corner of a popover's default surface: the compiler marks a
-    /// popover whose author wrote no
+    /// The corner of a popover's default surface (LLP 1021; theme2
+    /// 2026-10-21 19:55): the compiler marks a popover whose author wrote no
     /// surface (`defaultSurface`), and the host sends the corner only where
     /// this platform's metrics give one (`popover-radius`: iOS's, measured
     /// against iOS 26's glass popover on iOS 27; an earlier iOS draws the
@@ -270,7 +278,13 @@ extension NodeView {
         if let view = materialView as? BackdropEffectView { view.hide() } else { materialView?.effect = nil }
     }
 
-    /// The effect for material `kind`: a glass effect on
+    /// Whether its glass reacts to a touch (`UIGlassEffect.isInteractive`):
+    /// its `glassInteractive`, else whether it can be pressed now.
+    var glassInteracts: Bool {
+        props["glassInteractive"].map { $0 == "true" } ?? (handlers.contains("press") && !disabled)
+    }
+
+    /// The effect for material `kind` (LLP 1053.000 D4): a glass effect on
     /// iOS 26 (else ultra-thin), otherwise the table's blur style.
     func materialEffect(_ kind: String, interactive: Bool) -> UIVisualEffect {
         let apple = Materials.resolve(kind) { [weak self] in self?.presenter?.session?.log($0) }
@@ -278,6 +292,7 @@ extension NodeView {
             if #available(iOS 26.0, tvOS 26.0, *) {
                 let glass = UIGlassEffect(style: apple == "glass" ? .regular : .clear)
                 glass.isInteractive = interactive
+                glass.tintColor = glassTint.map { UIColor(cgColor: $0) }
                 return glass
             }
             #if os(tvOS)
@@ -308,7 +323,8 @@ enum Backdrop {
     /// own Gaussian (σ ≈ 19–33 pt on the iOS simulator, whatever σ was
     /// asked) and tint, so none is nearer another σ. Measured against
     /// Chrome over the parity page, `.light` is nearest in every case, the
-    /// tinted glass included. It does not follow the appearance.
+    /// tinted glass included (LLP 1053.000 §3; Charlie, 2026-09-27: "yes
+    /// switch to regular or light"). It does not follow the appearance.
     static var material: UIBlurEffect.Style { .light }
 
     static let fullSigma: CGFloat = 20

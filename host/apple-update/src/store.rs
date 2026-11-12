@@ -1,5 +1,5 @@
-//! The update store on Apple platforms: the client half of over-the-air
-//! updates.
+//! The update store on Apple platforms (LLP 1026 D9/D11/D12; LLP 1030 D7;
+//! LLP 1030.000 §4 stage 4, the client half).
 //!
 //! **One store per process.** The app's container holds it and every
 //! runtime in the process boots from the same selection, so it lives behind
@@ -12,7 +12,7 @@
 //! **What runs where.** `open`, `select`, the boot marks, `activate`, and
 //! `sync` are main-thread calls that hold the lock only for local work. The
 //! check ([`check`]) is a thread: it fetches over ibex2's transport — the
-//! same `NSURLSession` the executor's requests use —
+//! same `NSURLSession` the executor's requests use (LLP 1016 D2) —
 //! verifies, writes the entry whole, and reports through the callback the
 //! host gave, carrying one line; the host hops to its main thread and calls
 //! `exact_update_sync` for each runtime. So the runner never does I/O, the
@@ -24,7 +24,9 @@
 //! The buffer discipline is the runtime's (`exact_in`/`exact_out`) for
 //! calls that have no runtime: `exact_update_in(len)` hands out the input
 //! buffer a path payload is written into, every call answers with a length,
-//! and `exact_update_out()` is the output's address. Nothing here is
+//! and `exact_update_out()` is the output's address. There is one of each
+//! per process, so a host calling from several threads holds one lock from
+//! a call's payload to its copied answer (`Updates.buffers` in Swift). Nothing here is
 //! `unsafe`; the one pointer that leaves is the line a finished check hands
 //! the callback, alive for that call only.
 
@@ -40,7 +42,7 @@ use std::sync::{Mutex, MutexGuard};
 /// when a check fetched and staged files, `"download":{"seq","files","ms","entry"}`.
 pub type DoneFn = extern "C" fn(ctx: *mut c_void, line: *const u8, len: usize);
 
-/// The head is a pointer card; a file is a plan or an asset.
+/// The head is a pointer card (LLP 1026 D11); a file is a plan or an asset.
 const MAX_HEAD_BYTES: usize = exact_update::MAX_ENVELOPE_BYTES;
 const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -214,7 +216,7 @@ pub fn open(len: usize, compat: &str, plan: &[u8]) -> u32 {
     else {
         return emit(b"exact_update_open: the payload names no base and assets".to_vec());
     };
-    match Client::open(Path::new(&base), Path::new(&assets), compat, plan) {
+    match Client::open(Some(Path::new(&base)), Path::new(&assets), compat, plan) {
         Ok(client) => {
             refresh(&client);
             *lock(&CLIENT) = Some(client);
@@ -347,7 +349,7 @@ pub fn refuse(token: u64, len: usize) -> u32 {
     0
 }
 
-/// The selection is booting: count it, once per process.
+/// The selection is booting: count it (LLP 1026 D11), once per process.
 pub fn boot_started() {
     let mut guard = lock(&CLIENT);
     if let Some(c) = guard.as_mut() {
@@ -572,8 +574,8 @@ pub fn discard(token: u64) {
     }
 }
 
-/// What the store has to say, into a runner's delivery facts:
-/// the stream, the running and embedded `seq`, whether an entry is
+/// What the store has to say, into a runner's delivery facts (LLP 1030
+/// D7): the stream, the running and embedded `seq`, whether an entry is
 /// staged, the sunset. The binary's own three (`with_compat`) are left as
 /// they were; with no store open nothing changes.
 pub fn status_into(delivery: &mut Delivery) {

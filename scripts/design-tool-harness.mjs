@@ -9,8 +9,9 @@ import { join, resolve } from 'node:path';
 import { checkoutPort, claimPort, takePort } from './port-lock.mjs';
 import { spawnOwned, stopAll } from './test-children.mjs';
 import { upstream } from './tamber-request.mjs';
+import { fileURLToPath } from 'node:url';
 
-export const ROOT = resolve(new URL('..', import.meta.url).pathname);
+export const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 // The tool's port for this run: one of its own, held for the whole run (`claimPort`, from this checkout's own on,
 // one of 200 above 17740, never the 7740 a person's tool holds), so two runs at once (one checkout's or two's) each
 // have one and neither waits; EXACT_TOOL_PORT names one instead, taken in turn by each test. Every child the tests
@@ -91,9 +92,9 @@ export function toolBuilt() {
 }
 
 /** What a wait after a signal says when the event it waited for is missing: a heartbeat the server sent before the
- * event, landed after the signal, can release `clock held` first. The race is left open: a run it fails in closes it
- * with one more `clock held` after the signal. */
-export const HEARTBEAT_RACE = 'the event the drive waited for is missing: if a heartbeat sent before it landed after the signal, it released the wait early; close that race: one more `clock held changes` after the signal';
+ * event, landed after the signal, can release `clock held` first (Astra, dt/dtt round 2; QUEUE.md, "A heartbeat in
+ * transit"). Left open by theme2's ruling: a gate it fails in closes it, one more `clock held` after the signal. */
+export const HEARTBEAT_RACE = 'the event the drive waited for is missing: if a heartbeat sent before it landed after the signal (QUEUE.md, "A heartbeat in transit can release a signalled wait"), close that race: one more `clock held changes` after the signal';
 
 /** Lines of `child`'s stdout as they come; `until(pass)` waits for one. */
 export function lines(child) {

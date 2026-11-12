@@ -1,4 +1,4 @@
-//! The top layer: the shape rule, the surface a shell's
+//! The top layer (LLP 1115.001 D10): the shape rule, the surface a shell's
 //! windows show, what closes it, the page inert beneath it, the focus
 //! moving in and back, Back's order, and a host with no shell unchanged.
 use super::look::{self, Inputs, Layout};
@@ -75,7 +75,7 @@ component App
               text "Open"
             row width=400 height=40
               button press=poke contextmenu=aim("row") contextPopover="menu" testId="held" width=300 height=40
-                text "Hold me"
+                text "Hold me" testId="held-text"
               button popovertarget="menu" aria-label="More" id="trigger" testId="more" width=40 height=40
                 image "symbol:more"
           if e.name == "detail"
@@ -352,7 +352,7 @@ fn the_shape_rule_is_the_one_the_apple_hosts_follow() {
         .map(|r| (r.title.as_str(), r.cancel, r.destructive))
         .collect();
     assert_eq!(titles, [("Cancel", true, false), ("Delete", false, true)]);
-    // Lowering implies `closerequest` for the shape, so
+    // LLP 1115.000 D13.4: lowering implies `closerequest` for the shape, so
     // Back and Escape cancel it and it has no outside.
     assert!(cancellable && !outside);
     assert!(
@@ -711,7 +711,7 @@ fn the_page_is_inert_under_an_alert_and_the_focus_moves_in_and_back() {
     assert_eq!(text(&p, "said"), "removed", "a cancel runs nothing");
 }
 
-/// An alert has no outside, and its `closedby` is read
+/// LLP 1115.000 D13.4: an alert has no outside, and its `closedby` is read
 /// as it stands, written or implied. The shape's implied `closerequest`
 /// tells the shell that Back dismisses it and a tap outside does not (flags
 /// 1). An author's `closedby="any"` is Material's dialog left to itself,
@@ -1083,13 +1083,11 @@ fn a_driver_reveals_a_row_of_the_surface_and_opens_a_context_menu_by_its_node() 
         p.run_commands(|| ());
         serde_json::from_str(&reply).unwrap()
     };
+    let hold = |id: ViewId| format!(r#"{{"op":"tap","id":{id},"contextmenu":true}}"#);
     // A host with no shell refuses a context menu's popover, as it did.
     let mut desktop = boot();
     let held = id(&desktop, "held");
-    let refused = ask(
-        &mut desktop,
-        format!(r#"{{"op":"tap","id":{held},"contextmenu":true}}"#),
-    );
+    let refused = ask(&mut desktop, hold(held));
     assert_eq!(refused["error"], crate::navigation::POPOVER_UNSUPPORTED);
 
     let (mut p, _) = windowed();
@@ -1107,11 +1105,7 @@ fn a_driver_reveals_a_row_of_the_surface_and_opens_a_context_menu_by_its_node() 
     // `tap <node> contextmenu` is the finger held on it: its `contextmenu`
     // runs, the menu it names opens, and a row is chosen by its node.
     let held = id(&p, "held");
-    let opened = ask(
-        &mut p,
-        format!(r#"{{"op":"tap","id":{held},"contextmenu":true}}"#),
-    );
-    assert_eq!(opened["tapped"], held, "{opened}");
+    assert_eq!(ask(&mut p, hold(held))["tapped"], held);
     assert_eq!(text(&p, "aimed"), "row");
     assert_eq!(p.surface().map(|s| s.kind), Some(SurfaceKind::Menu));
     let share = id(&p, "menu-share");
@@ -1120,9 +1114,17 @@ fn a_driver_reveals_a_row_of_the_surface_and_opens_a_context_menu_by_its_node() 
     assert_eq!(text(&p, "said"), "sent");
     // The row's own press did not run.
     assert!(p.surface().is_none());
+
+    // Held inside the row (its text), the row's menu opens; not under the next page.
+    let inside = id(&p, "held-text");
+    assert_eq!(ask(&mut p, hold(inside))["tapped"], inside);
+    assert_eq!(p.surface().map(|s| s.kind), Some(SurfaceKind::Menu));
+    ask(&mut p, format!(r#"{{"op":"tap","id":{share}}}"#));
+    tap(&mut p, "open").unwrap();
+    assert!(ask(&mut p, hold(inside))["error"].is_string() && p.surface().is_none());
 }
 
-/// The menu's motion grows from the corner by its anchor:
+/// The menu's motion grows from the corner by its anchor (D10, as ruled):
 /// the statement says which, and the shell's window animates from it.
 #[test]
 fn a_menu_grows_from_the_corner_by_its_anchor() {

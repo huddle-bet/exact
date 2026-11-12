@@ -1,13 +1,16 @@
-//! `@exact/sign-in` under its declared substitute: FedCM's `identity` is a
-//! member of `@exact/passkeys`' `get`, held to the providers' grants and
-//! FedCM's rules before any ticket, and answered through the one `credential`
-//! ticket, whose `args` name what `packages/sign-in/test/idp.mjs` signs over.
-//! The tests run on this Mac, whose cells are macOS's: Google through the
-//! host's session, and Apple only with a profile, which `prefer` stands in for.
+//! `@exact/sign-in` under its declared substitute (LLP 1133.014 §9): FedCM's
+//! `identity` is a member of `@exact/passkeys`' `get` (D10 item 1), held to
+//! the providers' grants and FedCM's rules before any ticket, and answered
+//! through the one `credential` ticket, whose `args` name what
+//! `packages/sign-in/test/idp.mjs` signs over. The tests run on this Mac,
+//! whose cells are macOS's (D3): Google through the host's session, and
+//! Apple only with a profile, which `prefer` stands in for.
 
+#[cfg(target_os = "macos")]
+use exact_runner::HoldAnswer;
 use exact_runner::{
-    Answer, CallOrigin, DataError, DataSource, Dispatch, HoldAnswer, Outcome, Reply, Request,
-    Response, Runner, Store, Value, Work,
+    Answer, CallOrigin, DataError, DataSource, Dispatch, Outcome, Reply, Request, Response, Runner,
+    Store, Value, Work,
 };
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
@@ -34,6 +37,7 @@ component App
 "#;
 
 const GOOGLE: &str = "https://accounts.google.com/gsi/fedcm.json";
+#[cfg(target_os = "macos")]
 const APPLE: &str = "https://appleid.apple.com";
 const GRANTS: &str = "auth.passkey auth-fixture.exact.test\nauth.google web.apps.googleusercontent.com\nauth.google ios.apps.googleusercontent.com\nauth.apple com.exact.authfixture.web\nnet.fetch http://127.0.0.1:4331\n";
 
@@ -86,6 +90,7 @@ fn google(client: &str) -> Json {
 }
 
 /// A credential `idp.mjs` would make, for `config`.
+#[cfg(target_os = "macos")]
 fn credential(config: &str) -> String {
     json!({ "type": "identity", "id": "", "configURL": config, "isAutoSelected": false,
         "token": "eyJ.fixture.token", "handle": "h-1" })
@@ -208,6 +213,7 @@ impl Host {
     }
 
     /// The capabilities laid over this target's default.
+    #[cfg(target_os = "macos")]
     fn prefer(&mut self, key: &str, value: Json) {
         let op = json!({ "op": "prefer", "extension": { key: value } }).to_string();
         let (_, out) = self.r.extension_agent(&op).unwrap();
@@ -215,6 +221,7 @@ impl Host {
     }
 
     /// A data-code call of `body`: the receiver of its reply.
+    #[cfg(target_os = "macos")]
     fn call(&mut self, body: &Json) -> mpsc::Receiver<Outcome> {
         let (tx, rx) = mpsc::channel();
         match self
@@ -228,11 +235,13 @@ impl Host {
         rx
     }
 
+    #[cfg(target_os = "macos")]
     fn answered(&mut self, body: &Json) -> Json {
         json_of(self.call(body).recv().unwrap())
     }
 }
 
+#[cfg(target_os = "macos")]
 fn json_of(outcome: Outcome) -> Json {
     let Outcome::Response(Response { body, .. }) = outcome else {
         panic!("an answer");
@@ -240,9 +249,9 @@ fn json_of(outcome: Outcome) -> Json {
     serde_json::from_slice(&body).unwrap()
 }
 
-/// An active Google request is a member of passkeys' `get`,
+/// D10 item 1, §9: an active Google request is a member of passkeys' `get`,
 /// held under the one `credential` ticket whose args name the provider, the
-/// audience this target's token carries (the iOS client on Apple) and
+/// audience this target's token carries (the iOS client on Apple, D8) and
 /// the nonce; a typed credential answers the data code, and neither the
 /// journal nor `state` holds its token or handle.
 #[cfg(target_os = "macos")]
@@ -297,7 +306,7 @@ fn an_active_sign_in_is_a_member_of_get_and_a_credential_ticket() {
     assert_eq!(ceremony["outcome"], "answered");
 }
 
-/// What admission refuses before any ticket, each with its name.
+/// D1, D8: what admission refuses before any ticket, each with its name.
 #[cfg(target_os = "macos")]
 #[test]
 fn admission_refuses_by_fedcm_s_rules_and_the_grants() {
@@ -329,7 +338,7 @@ fn admission_refuses_by_fedcm_s_rules_and_the_grants() {
         (silent, "NotSupportedError", "silent"),
         (unknown, "NotSupportedError", "is no provider here"),
         (no_ios, "NotSupportedError", "needs apple.clientId"),
-        // A Mac build without a profile offers no Apple.
+        // A Mac build without a profile offers no Apple (D7).
         (
             apple,
             "NotSupportedError",
@@ -355,7 +364,7 @@ fn admission_refuses_by_fedcm_s_rules_and_the_grants() {
     assert_eq!(host.answered(&direct)["error"], "NotSupportedError");
 }
 
-/// A passive Apple request beside a passkey is one sheet where the
+/// D3, §9: a passive Apple request beside a passkey is one sheet where the
 /// target offers it (a Mac with a profile, by `prefer`); `cancel` then fails
 /// as passkeys' does, and an identity request alone fails `NetworkError`.
 #[cfg(target_os = "macos")]
@@ -380,7 +389,7 @@ fn a_passkey_and_passive_apple_share_one_ticket() {
     let args = &tickets[0].1;
     assert_eq!(args["options"]["challenge"], "Z2V0");
     assert_eq!(args["identity"]["mode"], "passive");
-    // Apple's audience natively is the app's bundle ID.
+    // Apple's audience natively is the app's bundle ID (D8).
     assert_eq!(
         args["identity"]["providers"][0]["audience"],
         "com.exact.authfixture"
@@ -397,7 +406,7 @@ fn a_passkey_and_passive_apple_share_one_ticket() {
         .answer_hold(ticket, &HoldAnswer::Choice("none".into()))
         .unwrap();
     assert_eq!(json_of(reply.recv().unwrap())["error"], "NetworkError");
-    // Google cannot share a sheet on Apple.
+    // Google cannot share a sheet on Apple (D3).
     let mut google_beside = both.clone();
     google_beside["args"]["identity"]["providers"][0]["configURL"] = json!(GOOGLE);
     google_beside["args"]["identity"]["providers"][0]["clientId"] =
@@ -406,7 +415,7 @@ fn a_passkey_and_passive_apple_share_one_ticket() {
         json!({ "clientId": "ios.apps.googleusercontent.com" });
     let answer = host.answered(&google_beside);
     assert_eq!(answer["error"], "NotSupportedError", "{answer}");
-    // A press's active request ends a held passive one with `AbortError`.
+    // A press's active request ends a held passive one with `AbortError` (D5).
     let passive = host.call(&alone);
     let active = host.call(&google("web.apps.googleusercontent.com"));
     assert_eq!(json_of(passive.recv().unwrap())["error"], "AbortError");
@@ -418,7 +427,7 @@ fn a_passkey_and_passive_apple_share_one_ticket() {
     drop(active);
 }
 
-/// A sign-in a tool's call starts fails
+/// D9, drive 8's stand-in: a sign-in a tool's call starts fails
 /// `person-required` with no ticket.
 #[test]
 fn a_tool_s_sign_in_is_refused_person_required() {
@@ -434,30 +443,73 @@ fn a_tool_s_sign_in_is_refused_person_required() {
     );
 }
 
-/// A credential answered after its mutation was superseded never
+/// D12: a credential answered after its mutation was superseded never
 /// reaches data code; its handle is disposed of by sign-in.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_dropped_sign_in_is_disposed_of_by_its_member() {
-    let (_app, mut host, data) = boot("dispose");
-    host.r.act("google", vec![]).unwrap();
-    host.pump();
-    let (ticket, _) = host.tickets()[0].clone();
-    host.r.act("idle", vec![]).unwrap();
-    host.pump();
-    host.r
-        .answer_hold(ticket, &HoldAnswer::Value(credential(GOOGLE)))
-        .unwrap();
-    host.pump();
-    let logs = host.logs();
-    assert!(
-        logs.contains("dispose sign-in h-1: its reply was dropped"),
-        "{logs}"
-    );
-    assert!(data.0.lock().unwrap().is_empty(), "no data code read it");
+    for bound in [false, true] {
+        let (_app, mut host, data) = boot("dispose");
+        let held: Arc<Mutex<Option<Reply>>> = Default::default();
+        let heard: Arc<Mutex<Vec<Json>>> = Default::default();
+        if bound {
+            let held = held.clone();
+            let heard = heard.clone();
+            host.r
+                .native_slot()
+                .host(Some(Arc::new(move |body: Vec<u8>, reply: Reply| {
+                    let body: Json = serde_json::from_slice(&body).unwrap();
+                    heard.lock().unwrap().push(body.clone());
+                    if body["send"] == "identity" {
+                        *held.lock().unwrap() = Some(reply);
+                    } else {
+                        reply.send(Outcome::Response(Response {
+                            status: 200,
+                            headers: vec![],
+                            body: b"{}".to_vec(),
+                        }));
+                    }
+                })));
+            host.r.bind_extensions(&["passkeys", "sign-in"], &[]);
+        }
+        host.r.act("google", vec![]).unwrap();
+        host.pump();
+        let ticket = host.tickets().first().map(|(ticket, _)| *ticket);
+        host.r.act("idle", vec![]).unwrap();
+        host.pump();
+        if bound {
+            held.lock()
+                .unwrap()
+                .take()
+                .expect("sign-in received the request")
+                .send(Outcome::Response(Response {
+                    status: 200,
+                    headers: vec![],
+                    body: credential(GOOGLE).into_bytes(),
+                }));
+        } else {
+            host.r
+                .answer_hold(ticket.unwrap(), &HoldAnswer::Value(credential(GOOGLE)))
+                .unwrap();
+        }
+        host.pump();
+        let logs = host.logs();
+        assert!(
+            logs.contains("dispose sign-in h-1: its reply was dropped"),
+            "bound={bound}: {logs}"
+        );
+        assert!(data.0.lock().unwrap().is_empty(), "no data code read it");
+        if bound {
+            assert!(heard
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|body| body == &json!({"extension": "sign-in", "dispose": ["h-1"]})));
+        }
+    }
 }
 
-/// Contract may not name the member, and two packages may
+/// D10 item 1, D12: Contract may not name the member, and two packages may
 /// not declare the same one.
 #[test]
 fn the_member_is_data_code_s_and_declared_once() {
@@ -484,4 +536,157 @@ fn the_member_is_data_code_s_and_declared_once() {
         .map(|e| format!("{e:?}"))
         .unwrap_or_default();
     assert!(errors.contains("module-member-twice"), "{errors}");
+}
+
+/// A bound identity-only call reaches sign-in with the complete options.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_bound_sign_in_goes_to_the_member_s_package() {
+    let (_app, mut host, _data) = boot("bound");
+    let heard: Arc<Mutex<Vec<Json>>> = Default::default();
+    let seen = heard.clone();
+    host.r
+        .native_slot()
+        .host(Some(Arc::new(move |body: Vec<u8>, reply: Reply| {
+            seen.lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap());
+            reply.send(Outcome::Response(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: b"{}".to_vec(),
+            }));
+        })));
+    host.r.bind_extensions(&["passkeys", "sign-in"], &[]);
+    host.r.act("google", vec![]).unwrap();
+    host.pump();
+    let calls: Vec<Json> = (heard.lock().unwrap().iter())
+        .filter(|b| b["args"]["identity"].is_object())
+        .cloned()
+        .collect();
+    assert_eq!(calls.len(), 1, "{}", host.logs());
+    assert_eq!(calls[0]["extension"], "sign-in");
+    assert_eq!(calls[0]["send"], "identity");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bound_sign_in_preserves_options_and_combined_requests_stay_with_passkeys() {
+    let (_app, mut host, _) = boot("bound-options");
+    host.prefer(
+        "passkeys.getClientCapabilities",
+        json!({ "available": true }),
+    );
+    host.prefer("sign-in.getIdentityCapabilities", json!({ "providers": { "apple": { "active": true, "passive": true, "withPublicKey": true } } }));
+    let heard: Arc<Mutex<Vec<Json>>> = Default::default();
+    let seen = heard.clone();
+    host.r
+        .native_slot()
+        .host(Some(Arc::new(move |body: Vec<u8>, reply: Reply| {
+            seen.lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap());
+            reply.send(Outcome::Response(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: b"{}".to_vec(),
+            }));
+        })));
+    host.r.bind_extensions(&["passkeys", "sign-in"], &[]);
+    let mut alone = google("web.apps.googleusercontent.com");
+    alone["args"]["mediation"] = json!("required");
+    host.answered(&alone);
+    let mut both = json!({ "extension": "passkeys", "send": "get", "args": {
+        "publicKey": { "challenge": "Z2V0", "rpId": "auth-fixture.exact.test" },
+        "identity": { "mode": "passive", "providers": [{ "configURL": APPLE, "clientId": "com.exact.authfixture.web" }] }
+    } });
+    host.answered(&both);
+    let calls: Vec<Json> = heard
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c["args"]["identity"].is_object())
+        .cloned()
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["extension"], "sign-in");
+    assert_eq!(calls[0]["send"], "identity");
+    assert_eq!(calls[0]["args"], alone["args"]);
+    assert_eq!(calls[1]["extension"], "passkeys");
+    assert_eq!(calls[1]["send"], "get");
+    assert_eq!(calls[1]["args"], both["args"]);
+    alone["args"]["signal"] = json!("signal-1");
+    let unsupported = host.answered(&alone);
+    assert_eq!(unsupported["error"], "NotSupportedError");
+    assert!(unsupported["message"].as_str().unwrap().contains("signal"));
+    host.r.bind_extensions(&["passkeys"], &[]);
+    let answer = host.answered(&both);
+    assert!(answer["error"].is_null(), "{answer}");
+    let calls = heard.lock().unwrap();
+    let call = calls
+        .iter()
+        .rev()
+        .find(|c| c["args"]["identity"].is_object())
+        .unwrap();
+    assert_eq!(call["extension"], "passkeys");
+    assert_eq!(call["send"], "get");
+    assert_eq!(call["args"], both["args"]);
+    drop(calls);
+    both["args"]["publicKey"] = Json::Null;
+    let refused = host.answered(&both);
+    assert_eq!(refused["error"], "NotSupportedError");
+    assert!(refused["message"].as_str().unwrap().contains("identity"));
+    assert_eq!(
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["args"]["identity"].is_object())
+            .count(),
+        3
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_superseded_bound_sign_in_cancels_its_member_request() {
+    let (_app, mut host, _) = boot("cancel-bound");
+    let heard: Arc<Mutex<Vec<Json>>> = Default::default();
+    let held: Arc<Mutex<Option<Reply>>> = Default::default();
+    let seen = heard.clone();
+    let wait = held.clone();
+    host.r
+        .native_slot()
+        .host(Some(Arc::new(move |body: Vec<u8>, reply: Reply| {
+            let body: Json = serde_json::from_slice(&body).unwrap();
+            seen.lock().unwrap().push(body.clone());
+            if body["send"] == "identity" {
+                *wait.lock().unwrap() = Some(reply);
+            } else {
+                reply.send(Outcome::Response(Response {
+                    status: 200,
+                    headers: vec![],
+                    body: b"{}".to_vec(),
+                }));
+            }
+        })));
+    host.r.bind_extensions(&["passkeys", "sign-in"], &[]);
+    host.r.act("google", vec![]).unwrap();
+    host.pump();
+    let request = heard
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|b| b["send"] == "identity")
+        .unwrap()["request"]
+        .clone();
+    assert!(request.is_number());
+    host.r.act("idle", vec![]).unwrap();
+    host.pump();
+    let calls = heard.lock().unwrap();
+    let cancels: Vec<&Json> = calls.iter().filter(|b| b["cancel"].is_number()).collect();
+    assert_eq!(
+        cancels,
+        vec![&json!({"extension": "sign-in", "cancel": request})]
+    );
 }

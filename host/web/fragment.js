@@ -1,4 +1,4 @@
-// The browser's "scroll to the fragment" (HTML: find a potential indicated element, scroll it into
+// @ref LLP 1153 D5 — the browser's "scroll to the fragment" (HTML: find a potential indicated element, scroll it into
 // view, move the sequential focus navigation starting point to it), made by the runtime once a route's data has
 // arrived: an Exact page's content comes after load, so the browser's own step finds nothing. The element is looked
 // for in the visit's own route, since a route retained beneath may hold the same `id`; it is held at the start while
@@ -9,13 +9,20 @@
 
 let armed = null, held = null;
 // Where each history entry (navigation.js's `exact`) left the scrollers it moved: what Back or Forward between two
-// fragments of one visit puts back, as the browser restores a traversed entry's scroll position.
-const kept = new Map(), entry = () => globalThis.history?.state?.exact;
+// fragments of one visit puts back, as the browser restores a traversed entry's scroll position. Weak references
+// let removed routes go; one reference per element lets later scroll events update its place in the entry.
+const kept = new Map(), references = new WeakMap(), entry = () => globalThis.history?.state?.exact;
+function reference(el) {
+  if (!references.has(el)) references.set(el, new WeakRef(el));
+  return references.get(el);
+}
+/** A history push discards the forward entries, including the index it writes (navigation.js). */
+export function forget(from) { for (const k of kept.keys()) if (k >= from) kept.delete(k); }
 addEventListener("scroll", e => {
   const at = entry(), el = e.target === document ? document.scrollingElement : e.target;
   if (at == null || !(el instanceof Element)) return;
   if (!kept.has(at)) kept.set(at, new Map());
-  kept.get(at).set(el, [el.scrollTop, el.scrollLeft]);
+  kept.get(at).set(reference(el), [el.scrollTop, el.scrollLeft]);
 }, { capture: true, passive: true });
 
 /** The route of `visit`: the element keyed by it that is not a navigation root, whose key is its top's. */
@@ -57,8 +64,7 @@ const byId = (r, id) => id ? [...r.querySelectorAll("[id]")].find(el => el.id ==
 export function arm(root, op, person) {
   const r = route(root, op.top), at = entry();
   if (op.pushed && r && at != null) {
-    for (const k of kept.keys()) if (k >= at) kept.delete(k);
-    kept.set(at - 1, new Map(scrollers(r).map(el => [el, [el.scrollTop, el.scrollLeft]])));
+    kept.set(at - 1, new Map(scrollers(r).map(el => [reference(el), [el.scrollTop, el.scrollLeft]])));
   }
   held?.abort();
   armed = { visit: op.top, fragment: op.fragment, activation: op.activation, traversal: !!op.traversal, since: op.since ?? person.personScrolls, person };
@@ -91,7 +97,12 @@ export function scroll(root, visit, fragment, log, activation) {
   const r = route(root, visit);
   if (!r) return log(`fragment #${fragment}: no route of visit ${visit} is on the page`);
   if (was?.traversal) {
-    const place = new Map(kept.get(entry())), restore = () => { for (const [el, [top, left]] of place) if (el.isConnected && (el === document.scrollingElement || r.contains(el) || el.contains(r))) el.scrollTo({ top, left, behavior: "instant" }); };
+    const place = new Map(kept.get(entry())), restore = () => {
+      for (const [ref, [top, left]] of place) {
+        const el = ref.deref();
+        if (el?.isConnected && (el === document.scrollingElement || r.contains(el) || el.contains(r))) el.scrollTo({ top, left, behavior: "instant" });
+      }
+    };
     // The browser's own traversal to an entry with a fragment then scrolls to the document's first element of that
     // id, which knows no route, at the `hashchange` it sends or, its fragment unchanged, at its next frame's layout:
     // the place, as it was before that scroll, is put back once more after each, unless the person scrolled since.
@@ -108,6 +119,7 @@ export function scroll(root, visit, fragment, log, activation) {
     // ring, as a browser's own scroll to a fragment draws none. A field the person is typing in keeps it.
     if (document.activeElement?.matches?.("input, textarea, select, [contenteditable]")) return;
     if (!target.matches("a[href], button, input, select, textarea, [tabindex], [contenteditable]")) {
+      if (target.exactAuthoredTabIndex === undefined) target.exactAuthoredTabIndex = null;
       target.setAttribute("tabindex", "-1");
       target.addEventListener("blur", () => target.removeAttribute("tabindex"), { once: true });
     }
@@ -120,4 +132,4 @@ export function scroll(root, visit, fragment, log, activation) {
 }
 
 // The wasm host loads this module by a script tag (glue.js `loadAfterPaint`), which finds it here.
-(globalThis.exact ??= {}).fragment = { arm, scroll, cancel, shows };
+(globalThis.exact ??= {}).fragment = { arm, scroll, cancel, shows, forget };

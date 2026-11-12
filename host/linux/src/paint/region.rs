@@ -26,6 +26,8 @@ pub(crate) struct ActionNode {
     pub blocked: bool,
     pub press: ActionSlot,
     pub swipe: ActionSlot,
+    /// `swipeleft`'s, the mirror of `swipe` (Charlie, 2026-11-10).
+    pub swipe_left: ActionSlot,
     swipe_policy: Option<(exact_kernel::TouchAction, Option<exact_motion::Transition>)>,
 }
 impl ActionNode {
@@ -59,7 +61,8 @@ pub(crate) struct ScrollBounds {
 }
 impl ScrollBounds {
     /// `collection_max` is a collection's range on its main axis: y for a
-    /// block list, x for a flex (row) one, the runner's rule at creation.
+    /// block list, x for a flex (row) one, the runner's rule at creation
+    /// (LLP 1070 H1).
     fn capture(node: &NodeRef<'_>, kernel: &Kernel, collection_max: Option<f32>) -> Self {
         let axes = effective_overflow(node);
         // Not a scroll container: nothing to measure; it never moves.
@@ -102,9 +105,9 @@ enum Payload {
         Vec<RunPaint>,
         Option<Rc<inline_frame::Captured>>,
     ),
-    /// An `svg`'s scene as resolved at capture (SVG in a
+    /// An `svg`'s scene as resolved at capture (LLP 1055.000 §4: SVG in a
     /// retained region; the instant is the capture's), its wide colours
-    /// settled for the capture's appearance.
+    /// settled for the capture's appearance (LLP 1121 stage 4).
     Svg(Rc<exact_kernel::svg::Scene>),
 }
 struct NodePaint {
@@ -115,10 +118,16 @@ struct NodePaint {
     paint: BoxPaint,
     payload: Payload,
     opacity: f32,
-    clips: bool,
+    /// Its effective overflow, which says what it clips its children to.
+    axes: (Overflow, Overflow),
     css_clip: exact_kernel::clip::ClipPath,
     scroll: Option<(f32, f32)>,
     action: ActionNode,
+}
+impl NodePaint {
+    fn clips(&self) -> bool {
+        self.axes != (Overflow::Visible, Overflow::Visible)
+    }
 }
 pub(super) struct Picture {
     publication: Rc<RegionPublication>,
@@ -143,7 +152,7 @@ impl Picture {
         Rc::ptr_eq(&self.publication, publication)
     }
     pub(super) fn capture(
-        painter: &Painter,
+        painter: &mut Painter,
         scene: &Scene<'_>,
         region: &crate::content_region::ContentRegionState,
         publication: &Rc<RegionPublication>,
@@ -290,7 +299,9 @@ impl Picture {
                         )
                     }),
                     NodeType::Svg => {
-                        let mut svg = super::svg::resolve_svg(scene, &node, geometry.content);
+                        let mut svg =
+                            super::svg::resolve_svg(scene, &node, geometry.content, painter.dark);
+                        painter.svg_note(&node, &svg);
                         exact_kernel::style::wide::Settle::settle(&mut svg);
                         Payload::Svg(Rc::new(svg))
                     }
@@ -352,7 +363,10 @@ impl Picture {
             };
             let press = slot(EventKind::Press)?;
             let swipe = slot(EventKind::Swiperight)?;
-            let swipe_policy = (matches!(swipe, ActionSlot::Bound(_))
+            let swipe_left = slot(EventKind::Swipeleft)?;
+            let swipe_policy = ([&swipe, &swipe_left]
+                .iter()
+                .any(|s| matches!(s, ActionSlot::Bound(_)))
                 && Presented::from_style(node.style) == Presented::IDENTITY
                 && !node.children().iter().any(|id| {
                     scene
@@ -385,6 +399,7 @@ impl Picture {
                 blocked: !(actions.eligible)(node.key),
                 press,
                 swipe,
+                swipe_left,
                 swipe_policy,
             };
             by_id.insert(id, i);
@@ -398,7 +413,7 @@ impl Picture {
                 paint,
                 payload,
                 opacity,
-                clips,
+                axes,
                 css_clip: node.style.rare.clip_path.clone(),
                 scroll: scroll_offset,
                 action,
@@ -611,9 +626,12 @@ impl<'a> Replay<'a> {
                     if let Some(node) = scene.kernel.node_by_key(n.key) {
                         let p = (scene.presented)(node.id);
                         if p.moves() {
-                            let ActionSlot::Bound(_) = &n.action.swipe else {
+                            if ![&n.action.swipe, &n.action.swipe_left]
+                                .iter()
+                                .any(|s| matches!(s, ActionSlot::Bound(_)))
+                            {
                                 return Err("content replay refuses unbound motion".into());
-                            };
+                            }
                             moving += 1;
                             if moving > 1
                                 || !n.action.swipe_matches(&node, scene.kernel)
@@ -661,10 +679,7 @@ impl<'a> Replay<'a> {
                             .into_iter()
                             .chain(n.paint.widths)
                             .all(f32::is_finite)
-                        && n.paint
-                            .radii
-                            .into_iter()
-                            .all(exact_kernel::Dimension::is_finite);
+                        && n.paint.radii.iter().all(|d| d.is_finite());
                     n.paint.emit(&geometry, |shape, _| {
                         finite &= finite_rect(shape.rect)
                             && shape
@@ -767,7 +782,7 @@ impl<'a> Replay<'a> {
                     if n.opacity < 1. {
                         painter.backend.push_opacity(n.opacity);
                     }
-                    // Retain the same CSS outline
+                    // @ref LLP 1043.000 §3 D7 — retain the same CSS outline
                     // through trunk's parent-first projection and replay.
                     if !n.css_clip.commands().is_empty() {
                         css_clips.push(painter.backend.push_css_clip(
@@ -780,17 +795,13 @@ impl<'a> Replay<'a> {
                         Payload::Empty => {}
                         Payload::Image(image, fit, tint) => {
                             if let Some(dst) = object_fit(image.natural(), *fit, g.content) {
-                                painter.backend.image(
-                                    image,
-                                    image.placed(dst),
-                                    &[Shape::rect(g.content), g.outer],
-                                    parent,
-                                    *tint,
-                                );
+                                let clips = [g.content_edge()];
+                                let placed = image.placed(dst);
+                                painter.backend.image(image, placed, &clips, parent, *tint);
                             }
                         }
                         Payload::Svg(s) => {
-                            painter.paint_svg(s, n.clips, g.outer.rect, g.content, parent);
+                            painter.paint_svg(s, n.clips(), n.paint.content_shape(g), parent);
                         }
                         Payload::Text(p, palette, inline) => {
                             if let Some(inline) = inline {
@@ -809,10 +820,10 @@ impl<'a> Replay<'a> {
                             );
                         }
                     }
-                    if n.clips {
-                        painter.backend.push_clip(&g.outer, parent);
+                    if let Some(shape) = field::overflow_clip(&g.outer, n.paint.widths, n.axes) {
+                        painter.backend.push_clip(&shape, parent);
                         clips.push(clip);
-                        let own = bbox(parent, g.outer.rect);
+                        let own = bbox(parent, shape.rect);
                         clip = Some(clip.map_or(own, |c| intersect(c, own)));
                     }
                 }
@@ -821,7 +832,7 @@ impl<'a> Replay<'a> {
                     if n.opacity <= 0. {
                         continue;
                     }
-                    if n.clips {
+                    if n.clips() {
                         painter.backend.pop_clip();
                         clip = clips.pop().unwrap();
                     }

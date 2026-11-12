@@ -1,18 +1,17 @@
-// The Hermes bundle for exact2's Android host: a TypeScript data
-// module runs on Android in the same lean Hermes VM as on every native host,
-// but the pinned Ibex release ships no `aarch64-linux-android` bundle yet.
-// This builds one with Ibex's own release script, whose Android target is the
-// pending Ibex patch (`aarch64-linux-android` in
+// An Android Hermes bundle built from an Ibex checkout, for work on Ibex itself
+// (LLP 1107). An app's library otherwise links the pinned Ibex release's
+// `aarch64-linux-android` bundle, which `exact setup` installs. This builds one
+// with Ibex's own release script (`aarch64-linux-android` in
 // scripts/build-hermes-vanilla-release.sh): the pinned Hermes commit, the NDK,
-// Unicode Lite and no Intl (no JNI, no ICU), and the receipt the
+// static ICU without JNI, and the receipt the
 // `hermes-lean-sys` resolver verifies. The bundle unpacks into
 // ~/.cache/exact/hermes-android/<archive sha256>/, `current` names the newest,
 // and `agent-android.mjs build` hands it to Cargo as
-// HERMES_LEAN_SYS_DIR_aarch64_linux_android, so the host's own pinned bundle is
-// untouched.
+// HERMES_LEAN_SYS_DIR_aarch64_linux_android in place of the pinned one, for the
+// target only, so the host's own pinned bundle is untouched.
 //
 //   bun scripts/hermes-android.mjs build              IBEX_DIR: an Ibex checkout with the Android target
-//   bun scripts/hermes-android.mjs install <tar.gz>   publish a bundle built elsewhere (an Ibex release asset)
+//   bun scripts/hermes-android.mjs install <tar.gz>   cache a bundle built elsewhere
 //   bun scripts/hermes-android.mjs path               the installed bundle, or nothing
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -21,6 +20,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
 export const HERMES_ANDROID_CACHE = resolve(process.env.EXACT_HERMES_ANDROID_CACHE ?? resolve(homedir(), '.cache/exact/hermes-android'));
+export const ANDROID_MIN_API = 29;
 
 /** The installed bundle's directory, or null. */
 export function hermesAndroidBundle() {
@@ -46,7 +46,9 @@ function build() {
   const work = mkdtempSync(resolve(HERMES_ANDROID_CACHE, '.build-'));
   try {
     const archive = resolve(work, 'hermes-vanilla-aarch64-linux-android.tar.gz');
-    const built = spawnSync('bash', ['scripts/build-hermes-vanilla-release.sh', 'aarch64-linux-android', archive], { cwd: ibex, stdio: 'inherit' });
+    const built = spawnSync('bash', ['scripts/build-hermes-vanilla-release.sh', 'aarch64-linux-android', archive], {
+      cwd: ibex, stdio: 'inherit', env: { ...process.env, IBEX_ANDROID_API: String(ANDROID_MIN_API) },
+    });
     if (built.status !== 0) process.exit(built.status ?? 1);
     console.log(install(archive, work));
   } finally {

@@ -1,10 +1,11 @@
-// The platforms an app outside this repository ships, and the native workspace it builds them in.
+// The platforms an app outside this repository ships, and the native workspace it builds them in (LLP 1153 D1).
 //
 // The manifest is the declaration: `host.<platform>` names a platform, with `deploy.store.<platform>` for the three
 // that hold an update store. A native verb names its platform the first time it runs (`bringPlatform`), and the crates
 // a build needs are generated under the app's `.exact/shells/`, as a game's bake writes `.shells/` (game/app/shells.mjs):
-// nothing Rust enters the author's tree. An app that writes its own `Cargo.toml` is an authored workspace, which
-// `resolveApp` takes instead (scripts/cargo-check.mjs `authoredWorkspace`).
+// nothing Rust enters the author's tree. An app that needs Rust of its own (a GPU module, a data crate) copies this
+// workspace up beside app.json (D1.4, docs/recipes/gpu-module.md); an app with its own `Cargo.toml` is an authored
+// workspace, which `resolveApp` takes instead (scripts/cargo-check.mjs `authoredWorkspace`).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /** The platforms a manifest can name, each with the crate that serves it. */
 export const PLATFORMS = { ios: 'apple', macos: 'apple', tvos: 'apple', linux: 'linux', android: 'android', windows: 'windows' };
 /** The platforms that hold an update store, so a stream (scripts/deploy.mjs), and Windows, whose host refuses every
- * store level but "0" (it has no update store yet) while an absent key reads as "A". */
+ * store level but "0" (it has no update store yet, LLP 1115.004 D15) while an absent key reads as "A". */
 const STORED = ['ios', 'macos', 'linux', 'windows'];
 
 /** A verb's platform (`ios`, `mac`, `linux`, `android`, `windows`), or a drive's host (`test ios`); null for the web and
@@ -31,7 +32,7 @@ export function platformOf(verb, host = 'web') {
 }
 
 /** What `host.<platform>` holds when a verb names the platform: the scaffold's defaults for the two Apple platforms,
- * a desktop window's size for Windows (the host chooses its painter), nothing
+ * a desktop window's size for Windows (the host chooses its painter, LLP 1149 D12), nothing
  * for the others (each key may be empty, scripts/app.schema.json). */
 const hostDefaults = (platform) => ({
   ios: { minimumOS: '17.0', deviceFamily: ['iphone', 'ipad'] },
@@ -151,7 +152,8 @@ exact_web::host!(
 `,
   };
   if (kind === 'apple') return {
-    'Cargo.toml': `${header('[lib]\ncrate-type = ["rlib"]')}exact-logic = ${dep('logic')}
+    'Cargo.toml': `${header('[lib]\ncrate-type = ["rlib"]')}ibex2-sqlite = ${dep('vendor/ibex/crates/ibex2-sqlite')}
+exact-logic = ${dep('logic')}
 exact-apple = ${dep('host/apple')}
 exact-apple-update = ${dep('host/apple-update')}
 exact-js = ${dep('js')}
@@ -168,7 +170,8 @@ include!(concat!(env!("OUT_DIR"), "/host.rs"));
 `,
   };
   if (kind === 'linux') return {
-    'Cargo.toml': `${header(`[[bin]]\nname = "${name}-linux"\npath = "src/main.rs"`)}exact-logic = ${dep('logic')}
+    'Cargo.toml': `${header(`[[bin]]\nname = "${name}-linux"\npath = "src/main.rs"`)}ibex2-sqlite = ${dep('vendor/ibex/crates/ibex2-sqlite')}
+exact-logic = ${dep('logic')}
 exact-linux = ${dep('host/linux')}
 exact-js = ${dep('js')}
 
@@ -186,10 +189,11 @@ fn main() {
 }
 `,
   };
-  // The library the Canvas reader loads (host/android/README.md), in Shelf's shape: empty off Android.
+  // The library the Canvas reader loads (LLP 1107, host/android/README.md), in Shelf's shape: empty off Android.
   if (kind === 'android') return {
     'Cargo.toml': `${header('[lib]\ncrate-type = ["cdylib"]\ntest = false\nbench = false').replace(/\n\[dependencies\]\n$/, '')}
 [target.'cfg(target_os = "android")'.dependencies]
+ibex2-sqlite = ${dep('vendor/ibex/crates/ibex2-sqlite')}
 exact-logic = ${dep('logic')}
 exact-linux = ${dep('host/linux')}
 exact-js = ${dep('js')}
@@ -222,15 +226,16 @@ mod android {
 `,
   };
   if (kind === 'windows') return {
-    'Cargo.toml': `${header(`[[bin]]\nname = "${name}-windows"\npath = "src/main.rs"\ntest = false\nbench = false`)}exact-logic = ${dep('logic')}
+    'Cargo.toml': `${header(`[[bin]]\nname = "${name}-windows"\npath = "src/main.rs"\ntest = false\nbench = false`)}ibex2-sqlite = ${dep('vendor/ibex/crates/ibex2-sqlite')}
+exact-logic = ${dep('logic')}
 exact-windows = ${dep('host/windows')}
-# The packages' Windows implementations name \`exact_linux::package\`.
+# The packages' Windows implementations name \`exact_linux::package\` (LLP 1133.022 D10 item 5).
 exact-linux = ${dep('host/linux')}
 exact-js = ${dep('js')}
 
 ${build}`,
     'build.rs': bake('windows'),
-    // A GUI executable in every profile: opened from Explorer or the desktop, a development build shows
+    // A GUI executable in every profile, as Excord's: opened from Explorer or the desktop, a development build shows
     // no console window beside its own; a parent's handles still carry its stderr.
     'src/main.rs': `//! ${title} on Windows: the host's window over the app's TypeScript data module and its baked plan.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
@@ -253,6 +258,11 @@ fn main() {
 export const authoredCrate = (dir, kind, name, title) =>
   Object.fromEntries(Object.entries(crateFiles(kind, { name, title, app: '..', dep: path => `{ path = ${JSON.stringify(pathFrom(resolve(dir, kind), resolve(ROOT, path)))} }` })).map(([file, text]) => [`${kind}/${file}`, text]));
 
+/** For each host crate, its build script as `.exact/shells/` writes it and as it reads beside app.json: a crate copied up
+ * (LLP 1153 D1.4) whose script is still the first gets the second from `update` (game/new.mjs). */
+export const copiedBuildScripts = () => Object.fromEntries(Object.values(PLATFORMS).concat('web').filter((kind, i, all) => all.indexOf(kind) === i)
+  .map(kind => [kind, ['../../..', '..'].map(app => crateFiles(kind, { name: 'app', title: 'App', app, dep: () => '' })['build.rs'])]));
+
 const titleOf = name => name.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
 const stampOf = (shells) => { try { return JSON.parse(readFileSync(resolve(shells, '.stamp.json'), 'utf8')); } catch { return null; } };
 
@@ -267,11 +277,14 @@ function writeChanged(path, text) {
 /** The generated workspace for the app at `dir`, current with its inputs: the manifest's platforms and name, the
  * checkout's path and the files the workspace copies from it, and this module. Returns the workspace directory and
  * whether anything was written. The lock is exact2's, re-resolved offline for these members; one this machine's cache
- * cannot resolve is left as the copy for the first build, which fetches (scripts/app.mjs `checkOutsideLock`). */
-export function ensureShells(dir, manifest = readManifest(dir)) {
+ * cannot resolve is left as the copy for the first build, which fetches (scripts/app.mjs `checkOutsideLock`).
+ * The crates are `<name>-<kind>`: `name` is the one the app's exact.mjs passes, which another checkout of the app in a
+ * folder of another name (a git worktree) shares; without one, the folder's. */
+export function ensureShells(dir, manifest = readManifest(dir), name = null) {
   dir = realpathSync(dir);
-  const shells = shellsDir(dir), name = basename(dir), title = manifest.app?.name ?? manifest.name ?? titleOf(name);
-  // The package that fills the native slot; the bake refuses two.
+  name ??= basename(dir);
+  const shells = shellsDir(dir), title = manifest.app?.name ?? manifest.name ?? titleOf(name);
+  // The package that fills the native slot (LLP 1154 D3); the bake refuses two.
   const crates = shellCrates(manifest), native = nativePackages(dir).map(p => p.name);
   // The paths written are relative where the two trees share a directory (`pathFrom`), which reads real directories.
   for (const kind of crates) mkdirSync(resolve(shells, kind), { recursive: true });
@@ -289,9 +302,9 @@ export function ensureShells(dir, manifest = readManifest(dir)) {
   const expected = ['Cargo.toml', 'Cargo.lock', ...copied.map(([file]) => file), ...crates.flatMap(kind => Object.keys(crateFiles(kind, { name, title, dep: () => '', app: '' })).map(file => `${kind}/${file}`))];
   const complete = expected.every(file => existsSync(resolve(shells, file)));
   if (before && JSON.stringify(before) === JSON.stringify(stamp) && complete) return { workspace: shells, wrote: false, crates };
-  let wrote = writeChanged(resolve(shells, 'Cargo.toml'), `# ${title}'s native workspace, generated by exact2 from app.json: never edited, rewritten
-# when the manifest's platforms or the checkout change. An app that needs Rust of its own writes a Cargo.toml of its
-# own beside app.json, which is used instead.
+  let wrote = writeChanged(resolve(shells, 'Cargo.toml'), `# ${title}'s native workspace, generated by exact2 from app.json (LLP 1153 D1): never edited, rewritten
+# when the manifest's platforms or the checkout change. An app that needs Rust of its own copies this workspace up
+# beside app.json and adds its crates there (\`bun exact.mjs contract vocab gpu-module\`); that one is used instead.
 [workspace]
 members = [${crates.map(c => JSON.stringify(c)).join(', ')}]
 resolver = "2"
@@ -325,11 +338,11 @@ ${patches.join('\n')}
   return { workspace: shells, wrote: true, crates };
 }
 
-/** What a native verb does before its build: when the manifest does not name `platform`, check that
+/** What a native verb does before its build (LLP 1153 D1.2): when the manifest does not name `platform`, check that
  * platform's setup rows (`report`: the rows, or `{ error }` when they could not be read) and stop on a missing one,
  * nothing written; then name it, writing an app.json the app lacked. Then keep the generated workspace current unless
- * the app authored one. Returns the lines to say, or `{ refused }`. */
-export async function bringPlatform(dir, platform, { report = null, os = process.platform } = {}) {
+ * the app authored one, its crates named `name` (`ensureShells`). Returns the lines to say, or `{ refused }`. */
+export async function bringPlatform(dir, platform, { report = null, os = process.platform, name = null } = {}) {
   const lines = [], verb = `bun exact.mjs ${platform === 'macos' ? 'mac' : platform}`;
   const manifest = existsSync(resolve(dir, 'app.json')) ? readManifest(dir) : null;
   if (!namesPlatform(manifest ?? {}, platform)) {
@@ -340,15 +353,15 @@ export async function bringPlatform(dir, platform, { report = null, os = process
     if (missing.length) return { refused: `${verb}: this machine lacks what a ${platform} build needs; nothing was written:\n${missing.map(row => `  ${row.name}: ${row.have} (SDK ${row.want})\n    ${row.fix}`).join('\n')}` };
     if (!manifest) {
       // An app without app.json had the defaults scripts/app.mjs `readManifest` supplies; naming a platform writes them.
-      const name = basename(dir), title = titleOf(name);
-      writeManifest(dir, { name: title, app: { id: `com.exact.${name}`, name: title }, host: { web: {} }, deploy: { store: { web: '0' } } });
+      const app = name ?? basename(dir), title = titleOf(app);
+      writeManifest(dir, { name: title, app: { id: `com.exact.${app}`, name: title }, host: { web: {} }, deploy: { store: { web: '0' } } });
       lines.push('app.json: written with the defaults the app had without one');
     }
     const wrote = namePlatform(dir, platform);
     if (wrote.length) lines.push(`app.json: ${wrote.join(', ')} added: the app now ships ${platform} (bun exact.mjs update --without ${platform} stops it)`);
   }
   if (!authoredWorkspace(dir)) {
-    const { workspace, wrote, crates } = ensureShells(dir);
+    const { workspace, wrote, crates } = ensureShells(dir, undefined, name);
     if (wrote) lines.push(`${workspace}: the native workspace (${crates.join(', ')}), generated from app.json`);
   }
   return { lines };

@@ -1,8 +1,10 @@
 //! Explicit source ownership across two executors, without depending on either engine.
-//! Paired replacement.
-//! The ordered set: every child that shares a
+//! @ref LLP 1027 D8 / LLP 1027.001 / LLP 1029.000 — paired replacement.
+//! @ref LLP 1027.002 D3 — the ordered set: every child that shares a
 //! `secret.keep` name with a worker child takes its turns one at a time,
 //! each against the store as committed at dispatch.
+
+mod turns;
 
 use crate::envelope;
 use exact_plan::{Plan, Value};
@@ -17,6 +19,8 @@ type Retain<R> = fn(&R) -> Result<R, DataError>;
 
 /// A call an ordered member recorded, to run at dispatch.
 enum Recorded {
+    /// The worker already recorded its resume while parsing a timer yield.
+    WorkerTurn { key: Key, child: u64 },
     Answer {
         rust: bool,
         target: Option<Target>,
@@ -24,6 +28,7 @@ enum Recorded {
         args: Vec<Value>,
     },
     Resume {
+        fetch: Option<u64>,
         rust: bool,
         target: Option<Target>,
         source: String,
@@ -55,6 +60,7 @@ fn key(rust: bool, target: Option<Target>, source: &str, args: &[Value]) -> Key 
 
 fn recorded_key(recorded: &Recorded) -> Key {
     match recorded {
+        Recorded::WorkerTurn { key, .. } => key.clone(),
         Recorded::Answer {
             rust,
             target,
@@ -71,7 +77,7 @@ fn recorded_key(recorded: &Recorded) -> Key {
     }
 }
 
-/// One ordered set (change 2): its members, the turn it
+/// One ordered set (LLP 1027.002 D3, change 2): its members, the turn it
 /// has reserved, and the calls waiting behind it, in order.
 struct Set {
     busy: bool,
@@ -111,8 +117,9 @@ pub struct Mixed<J, R> {
     delivery_waiters: HashSet<u64>,
     delivery_phases: BTreeMap<u64, bool>,
     delivery_routes: BTreeMap<u64, u64>,
-    stages: HashMap<Key, VecDeque<Stage>>,
+    stages: HashMap<(Key, Option<u64>), VecDeque<Stage>>,
     logs: Vec<String>,
+    more: HashMap<Target, Vec<Request>>,
     /// The sources whose overlay a worker owns, said once each.
     told_overlay: BTreeSet<String>,
 }
@@ -197,7 +204,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
             "mixed:{}",
             serde_json::to_string(&(javascript.revision(), rust.revision())).unwrap()
         );
-        // The ordered sets (change 2): a worker child is a
+        // The ordered sets (LLP 1027.002 D3, change 2): a worker child is a
         // set; a main child joins it when their `secret.keep` names overlap,
         // since the Store is the only state the ordering protects. Two
         // workers with disjoint names are two sets that run concurrently.
@@ -248,6 +255,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
             delivery_routes: BTreeMap::new(),
             stages: HashMap::new(),
             logs: Vec::new(),
+            more: HashMap::new(),
             told_overlay: BTreeSet::new(),
         })
     }
@@ -257,6 +265,19 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
             .get(source)
             .copied()
             .ok_or_else(|| DataError::UnknownSource(source.into()))
+    }
+
+    fn canvas_source(&mut self, surface: &str) -> &mut dyn DataSource {
+        if self
+            .javascript
+            .canvas_surfaces()
+            .iter()
+            .any(|(name, _)| name == surface)
+        {
+            &mut self.javascript
+        } else {
+            &mut self.rust
+        }
     }
 
     fn token(&mut self) -> Result<u64, DataError> {
@@ -308,13 +329,46 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
         Ok(answer)
     }
 
+    fn route_set(
+        &mut self,
+        rust: bool,
+        target: Option<Target>,
+        answer: Answer,
+    ) -> Result<Answer, DataError> {
+        let answer = self.route_answer(rust, answer)?;
+        if let (Some(target), Answer::Later(_)) = (target, &answer) {
+            let requests = if rust {
+                self.rust.more_for(target)
+            } else {
+                self.javascript.more_for(target)
+            };
+            let mut more = Vec::new();
+            for request in requests {
+                if let Answer::Later(request) = self.route_answer(rust, Answer::Later(request))? {
+                    more.push(request);
+                }
+            }
+            self.more.insert(target, more);
+        }
+        Ok(answer)
+    }
+
     /// Record an ordered member's call; it runs at dispatch, one turn at a
     /// time per set, against the store as committed then.
     fn record(&mut self, set: usize, k: Key, recorded: Recorded) -> Result<Answer, DataError> {
         let token = self.token()?;
+        let fetch = match &recorded {
+            Recorded::Resume { fetch, .. } => *fetch,
+            _ => None,
+        };
         self.recorded.insert(token, (set, recorded));
-        self.stages.entry(k).or_default().push_back(Stage::Turn);
-        Ok(Answer::Later(Request::continuation(token)))
+        self.stages
+            .entry((k, fetch))
+            .or_default()
+            .push_back(Stage::Turn);
+        let mut request = Request::continuation(token);
+        request.fetch = fetch;
+        Ok(Answer::Later(request))
     }
 
     /// Start a recorded turn: a worker child records and dispatches its own
@@ -325,6 +379,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
             return Dispatch::Missing;
         };
         let rust = match &recorded {
+            Recorded::WorkerTurn { key, .. } => key.0,
             Recorded::Answer { rust, .. } | Recorded::Resume { rust, .. } => *rust,
         };
         self.sets[set].busy = true;
@@ -337,6 +392,9 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
         if self.child_placement(rust) == Placement::Worker {
             let mut scratch = Store::new(&grants, []);
             let answer = match recorded {
+                Recorded::WorkerTurn { child, .. } => {
+                    Ok(Answer::Later(Request::continuation(child)))
+                }
                 Recorded::Answer {
                     target,
                     source,
@@ -348,11 +406,16 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
                     source,
                     args,
                     outcome,
+                    fetch,
                     ..
-                } => self.child_parse(rust, target, &mut scratch, &source, &args, outcome),
+                } => self
+                    .child_parse_fetch(rust, target, fetch, &mut scratch, &source, &args, outcome)
+                    .and_then(|answer| {
+                        answer.ok_or_else(|| unavailable("a worker turn was expected"))
+                    }),
             };
             return match answer {
-                // A long poll on a member's own work: no request a host could run, so the
+                // A long poll on a member's own work (LLP 1016.000 D8): no request a host could run, so the
                 // answer fails as the member's own refusal would.
                 Ok(Answer::Later(request)) if request.long_poll_refusal().is_some() => {
                     let why = request.long_poll_refusal().unwrap_or_default();
@@ -396,22 +459,27 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
             };
         }
         let mut local = Store::new(&grants, envelope::snapshot(store, &grants));
+        local.set_clock_ms(store.clock_ms());
         let result = match recorded {
+            Recorded::WorkerTurn { .. } => unreachable!("a worker turn belongs to a worker"),
             Recorded::Answer {
                 target,
                 source,
                 args,
                 ..
-            } => self.child_answer(rust, target, &mut local, &source, &args),
+            } => self
+                .child_answer(rust, target, &mut local, &source, &args)
+                .map(Some),
             Recorded::Resume {
                 target,
                 source,
                 args,
                 outcome,
+                fetch,
                 ..
-            } => self.child_parse(rust, target, &mut local, &source, &args, outcome),
+            } => self.child_parse_fetch(rust, target, fetch, &mut local, &source, &args, outcome),
         };
-        let outcome = envelope::encode(result, &mut local, Vec::new());
+        let outcome = envelope::encode_optional(result, vec![], &mut local, Vec::new());
         Dispatch::Run(Work::Now(Box::new(move || outcome)))
     }
 
@@ -428,6 +496,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
         self.sets[set].busy = true;
         let grants = self.javascript.grants();
         let mut local = Store::new(grants, envelope::snapshot(store, grants));
+        local.set_clock_ms(store.clock_ms());
         let result = self
             .javascript
             .module_delivery(&mut local, kept, outcome)
@@ -450,128 +519,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
         Ok(Some(request))
     }
 
-    fn child_answer(
-        &mut self,
-        rust: bool,
-        target: Option<Target>,
-        store: &mut Store,
-        source: &str,
-        args: &[Value],
-    ) -> Result<Answer, DataError> {
-        if rust {
-            crate::answer(&mut self.rust, target, store, source, args)
-        } else {
-            crate::answer(&mut self.javascript, target, store, source, args)
-        }
-    }
-
-    fn child_parse(
-        &mut self,
-        rust: bool,
-        target: Option<Target>,
-        store: &mut Store,
-        source: &str,
-        args: &[Value],
-        outcome: Outcome,
-    ) -> Result<Answer, DataError> {
-        if rust {
-            crate::parse(&mut self.rust, target, store, source, args, outcome)
-        } else {
-            crate::parse(&mut self.javascript, target, store, source, args, outcome)
-        }
-    }
-
-    fn answer_with(
-        &mut self,
-        target: Option<Target>,
-        store: &mut Store,
-        source: &str,
-        args: &[Value],
-    ) -> Result<Answer, DataError> {
-        let rust = self.owner(source)?;
-        if let Some(set) = self.set_of[rust as usize] {
-            return self.record(
-                set,
-                key(rust, target, source, args),
-                Recorded::Answer {
-                    rust,
-                    target,
-                    source: source.to_string(),
-                    args: args.to_vec(),
-                },
-            );
-        }
-        let grants = self.child_grants(rust);
-        let answer = store.with_grants(&grants, |store| {
-            self.child_answer(rust, target, store, source, args)
-        })?;
-        self.route_answer(rust, answer)
-    }
-
-    fn parse_with(
-        &mut self,
-        target: Option<Target>,
-        store: &mut Store,
-        source: &str,
-        args: &[Value],
-        outcome: Outcome,
-    ) -> Result<Answer, DataError> {
-        let rust = self.owner(source)?;
-        let grants = self.child_grants(rust);
-        if let Some(set) = self.set_of[rust as usize] {
-            let k = key(rust, target, source, args);
-            let stage = self.stages.get_mut(&k).and_then(VecDeque::pop_front);
-            if self.stages.get(&k).is_some_and(VecDeque::is_empty) {
-                self.stages.remove(&k);
-            }
-            return match stage {
-                Some(Stage::Turn) => {
-                    // The reserved turn ended, however it ended.
-                    self.sets[set].busy = false;
-                    self.sets[set].running = None;
-                    let answer = if self.child_placement(rust) == Placement::Worker {
-                        store.with_grants(&grants, |store| {
-                            self.child_parse(rust, target, store, source, args, outcome)
-                        })
-                    } else {
-                        let mut logs = Vec::new();
-                        let answer = store.with_grants(&grants, |store| {
-                            envelope::apply(outcome, store, &mut logs)
-                        });
-                        self.logs.extend(logs);
-                        answer
-                    };
-                    match answer {
-                        Ok(Answer::Later(request)) => {
-                            self.stages.entry(k).or_default().push_back(Stage::Yielded);
-                            self.route_answer(rust, Answer::Later(request))
-                        }
-                        other => other,
-                    }
-                }
-                Some(Stage::Yielded) => self.record(
-                    set,
-                    k,
-                    Recorded::Resume {
-                        rust,
-                        target,
-                        source: source.to_string(),
-                        args: args.to_vec(),
-                        outcome,
-                    },
-                ),
-                None => Err(unavailable(format!(
-                    "`{source}`: a reply for an answer not in flight"
-                ))),
-            };
-        }
-        let answer = store.with_grants(&grants, |store| {
-            self.child_parse(rust, target, store, source, args, outcome)
-        })?;
-        self.route_answer(rust, answer)
-    }
-
-    /// Envelope lines plus each member's journal.
+    /// Envelope lines plus each member's journal (LLP 1012, LLP 1097 D8).
     /// The JavaScript child's trait path carries its storage journal; a
     /// worker child keeps its own and is not a member here.
     pub fn take_logs(&mut self) -> Vec<String> {
@@ -582,7 +530,7 @@ impl<J: DataSource, R: DataSource> Mixed<J, R> {
     }
 }
 
-impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
+impl<J: DataSource, R: DataSource> exact_runner::DataSourceWrapper for Mixed<J, R> {
     fn prepare_snapshot(
         &mut self,
         module: Option<exact_runner::SnapshotModule<'_>>,
@@ -594,6 +542,11 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
 
     fn take_storage_changed(&mut self) -> bool {
         self.javascript.take_storage_changed() | self.rust.take_storage_changed()
+    }
+
+    fn note_storage_changed(&mut self) {
+        self.javascript.note_storage_changed();
+        self.rust.note_storage_changed();
     }
 
     fn set_document_owner(&mut self, owner: u64) {
@@ -715,6 +668,22 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         }
     }
 
+    fn more_for(&mut self, target: Target) -> Vec<Request> {
+        self.more.remove(&target).unwrap_or_default()
+    }
+
+    fn parse_fetch_for(
+        &mut self,
+        target: Target,
+        fetch: Option<u64>,
+        store: &mut Store,
+        source: &str,
+        args: &[Value],
+        outcome: Outcome,
+    ) -> Result<Option<Answer>, DataError> {
+        self.parse_with_fetch(Some(target), fetch, store, source, args, outcome)
+    }
+
     fn parse_for(
         &mut self,
         target: Target,
@@ -747,7 +716,7 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
             }
             return dispatch;
         }
-        // Background work is the JavaScript child's.
+        // Background work is the JavaScript child's (LLP 1097 D5).
         if token == exact_runner::BACKGROUND {
             return self.javascript.dispatch(token, store);
         }
@@ -832,7 +801,7 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
     }
 
     /// What the runner still has in flight, after a commit that let
-    /// requests go. A recorded call, held turn or routed
+    /// requests go (LLP 1016 D5). A recorded call, held turn or routed
     /// continuation whose token isn't in flight was replaced or let go, and
     /// is dropped. A key no longer in flight loses its stages; one whose
     /// in-flight request is a newer call recorded here keeps that call's
@@ -846,7 +815,12 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         let tokens: HashSet<u64> = in_flight.iter().filter_map(|f| f.continuation).collect();
         self.recorded.retain(|token, _| tokens.contains(token));
         self.continuations.retain(|token, _| tokens.contains(token));
-        let recorded: HashSet<u64> = self.recorded.keys().copied().collect();
+        let recorded: HashSet<u64> = self
+            .recorded
+            .iter()
+            .filter(|(_, (_, call))| matches!(call, Recorded::Answer { .. }))
+            .map(|(token, _)| *token)
+            .collect();
         let live: HashMap<Key, Option<u64>> = in_flight
             .iter()
             .filter_map(|f| {
@@ -855,9 +829,10 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
             })
             .collect();
         let newer = |k: &Key| matches!(live.get(k), Some(Some(t)) if recorded.contains(t));
-        self.stages
-            .retain(|k, _| k.1.is_none() || live.contains_key(k));
-        for (k, stages) in self.stages.iter_mut() {
+        self.stages.retain(|(k, fetch), _| {
+            k.1.is_none() || live.contains_key(k) && (!newer(k) || fetch.is_none())
+        });
+        for ((k, _), stages) in self.stages.iter_mut() {
             if k.1.is_some() && newer(k) {
                 stages.clear();
                 stages.push_back(Stage::Turn);
@@ -897,6 +872,7 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
                             running.get(&t),
                         ) {
                             (Some((owner, child)), _, _) => (*owner == rust).then_some(*child),
+                            (_, Some((_, Recorded::WorkerTurn { child, .. })), _) => Some(*child),
                             // A call recorded here that the child hasn't seen:
                             // what the child still holds for its key is stale.
                             (_, Some((_, Recorded::Answer { .. })), _) => return None,
@@ -922,7 +898,18 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
     fn discard(&mut self, token: u64) {
         match self.recorded.remove(&token) {
             Some((_, recorded)) => {
-                let k = recorded_key(&recorded);
+                if let Recorded::WorkerTurn { key, child } = &recorded {
+                    if key.0 {
+                        self.rust.discard(*child);
+                    } else {
+                        self.javascript.discard(*child);
+                    }
+                }
+                let fetch = match &recorded {
+                    Recorded::Resume { fetch, .. } => *fetch,
+                    _ => None,
+                };
+                let k = (recorded_key(&recorded), fetch);
                 if let Some(stages) = self.stages.get_mut(&k) {
                     stages.pop_back();
                     if stages.is_empty() {
@@ -955,7 +942,7 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         self.javascript.ready() && self.rust.ready()
     }
 
-    /// Both halves' rosters; a name in both is the bake's
+    /// Both halves' rosters (LLP 1056 D1); a name in both is the bake's
     /// refusal, and the TypeScript half's here.
     fn canvas_surfaces(&self) -> Vec<(String, usize)> {
         let mut all = self.javascript.canvas_surfaces();
@@ -967,21 +954,23 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         all
     }
 
+    fn draw_2d(
+        &mut self,
+        surface: &str,
+        args: &[Value],
+        ctx: &exact_runner::exact_canvas::Context2d,
+        frame: &exact_runner::exact_canvas::Frame,
+    ) -> Result<bool, exact_runner::exact_canvas::DrawError> {
+        self.canvas_source(surface)
+            .draw_2d(surface, args, ctx, frame)
+    }
+
     fn draw(
         &mut self,
         request: &exact_runner::DrawRequest<'_>,
         ctx: &exact_runner::exact_canvas::Context2d,
     ) -> exact_runner::Drawn {
-        let javascript = self
-            .javascript
-            .canvas_surfaces()
-            .iter()
-            .any(|(n, _)| n == request.surface);
-        if javascript {
-            self.javascript.draw(request, ctx)
-        } else {
-            self.rust.draw(request, ctx)
-        }
+        self.canvas_source(request.surface).draw(request, ctx)
     }
 
     fn canvases_retired(&mut self, retired: &[(u64, u32)]) {
@@ -1063,10 +1052,14 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         self.javascript.background_state()
     }
 
+    fn keeps_sent(&self, fetch: u64) -> bool {
+        self.javascript.keeps_sent(fetch)
+    }
+
     // Each let-go request goes to the child that asked it, and each child
     // hears, as after every `forgotten`, even with none of its own.
     // JavaScript kept replies reserve a turn in their ordered set through
-    // module_delivery, just as a live answer does.
+    // module_delivery, just as a live answer does (LLP 1027.002 D3).
     fn keep_sent(
         &mut self,
         store: &Store,
@@ -1146,25 +1139,28 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
         }
     }
 
-    // An answer's timer outran its own request: the
+    // An answer's timer outran its own request (LLP 1027.000 D1): the
     // JavaScript child's, outside an ordered set, whose turns are the set's.
     // Its continuation goes out under a token of this composer's.
     fn timer_before_reply(
         &mut self,
         store: &Store,
         in_flight: InFlight<'_>,
+        fetch: Option<u64>,
     ) -> Option<(u64, Request)> {
         if self.set_of[0].is_some() || self.owner(in_flight.source).ok() != Some(false) {
             return None;
         }
-        let (token, request) = self.javascript.timer_before_reply(store, in_flight)?;
+        let (token, request) = self
+            .javascript
+            .timer_before_reply(store, in_flight, fetch)?;
         match self.route_answer(false, Answer::Later(request)) {
             Ok(Answer::Later(request)) => Some((token, request)),
             _ => None,
         }
     }
 
-    // A kept request is the JavaScript child's: its module
+    // A kept request is the JavaScript child's (LLP 1146 D2): its module
     // turn sees the store through the child's grants, as an answer does.
     fn module_landed(
         &mut self,
@@ -1248,8 +1244,8 @@ impl<J: DataSource, R: DataSource> DataSource for Mixed<J, R> {
                 "mixed replacement changes admitted identity or grants",
             ));
         }
-        // Placement is carried, never changed by a replacement:
-        // the children's placements decide the sets again.
+        // Placement is carried, never changed by a replacement (LLP
+        // 1027.002 §6): the children's placements decide the sets again.
         Self::construct(javascript, rust, self.sources.clone(), self.retain_rust)
     }
 }

@@ -1,5 +1,5 @@
 //! Optional Rust data executors: embedded first frame, replacement after first pixel.
-//! Independently built data modules, one encoded seam on every host.
+//! @ref LLP 1029.000 — independently built data modules, one encoded seam on every host.
 
 use exact_logic_abi as abi;
 #[doc(hidden)]
@@ -40,6 +40,11 @@ pub const MAX_MODULE: usize = 32 << 20;
 
 trait Executor {
     fn call(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String>;
+    /// Whether a call trapped. A trapped instance's memory and state are
+    /// undefined, so it takes no further calls.
+    fn trapped(&self) -> bool {
+        false
+    }
     #[cfg(any(
         target_os = "macos",
         target_os = "linux",
@@ -68,7 +73,7 @@ pub struct Swappable<D> {
     revision: Option<String>,
     plan: Option<Vec<u8>>,
     executor: Option<Box<dyn Executor>>,
-    /// The embedded crate's Canvas 2D roster, kept across a
+    /// The embedded crate's Canvas 2D roster (LLP 1056 D1), kept across a
     /// replacement: the roster is part of the binary.
     canvas_surfaces: Vec<(String, usize)>,
     /// The source the binary compiled natively, and how to make that source
@@ -194,11 +199,29 @@ impl<D: DataSource> Swappable<D> {
     ) -> Result<Answer, DataError> {
         let request =
             abi::call_request(store, source, args, outcome).map_err(DataError::Interface)?;
+        let bytes = self.run(&request)?;
+        abi::call_reply(&bytes, store)
+    }
+    /// Run one request on the active executor. After a trap the instance is
+    /// discarded and the module activated afresh, so the trap costs that call
+    /// only (LLP 1029.000 §3: module-local caches may be discarded).
+    fn run(&mut self, request: &[u8]) -> Result<Vec<u8>, DataError> {
         let engine = self.executor.as_mut().ok_or_else(|| {
             DataError::Unavailable("Rust module awaits post-pixel activation".into())
         })?;
-        let bytes = engine.call(&request).map_err(DataError::Interface)?;
-        abi::call_reply(&bytes, store)
+        let error = match engine.call(request) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => error,
+        };
+        if engine.trapped() {
+            self.executor = None;
+            if let Err(again) = self.activate_module() {
+                return Err(DataError::Interface(format!(
+                    "{error}; activating the module again failed: {again}"
+                )));
+            }
+        }
+        Err(DataError::Interface(error))
     }
     fn activate_module(&mut self) -> Result<(), String> {
         if self.executor.is_some() {
@@ -226,7 +249,7 @@ impl<D: DataSource> Swappable<D> {
     }
 }
 
-impl<D: DataSource> DataSource for Swappable<D> {
+impl<D: DataSource> exact_runner::DataSourceWrapper for Swappable<D> {
     fn prepare_snapshot(
         &mut self,
         module: Option<exact_runner::SnapshotModule<'_>>,
@@ -242,6 +265,12 @@ impl<D: DataSource> DataSource for Swappable<D> {
         self.embedded
             .as_mut()
             .is_some_and(DataSource::take_storage_changed)
+    }
+
+    fn note_storage_changed(&mut self) {
+        if let Some(embedded) = &mut self.embedded {
+            embedded.note_storage_changed();
+        }
     }
 
     fn set_document_owner(&mut self, owner: u64) {
@@ -302,8 +331,22 @@ impl<D: DataSource> DataSource for Swappable<D> {
         }
         Ok(())
     }
+    fn configure_secrets(
+        &mut self,
+        secrets: std::sync::Arc<dyn exact_runner::SharedSecrets>,
+    ) -> Result<(), DataError> {
+        if let Some(embedded) = &mut self.embedded {
+            embedded.configure_secrets(secrets)?;
+        }
+        Ok(())
+    }
     fn continuation(&mut self, token: u64) -> Option<Box<dyn FnOnce() -> Outcome + Send>> {
         self.embedded.as_mut()?.continuation(token)
+    }
+    fn host_continuation(&self, token: u64) -> bool {
+        self.embedded
+            .as_ref()
+            .is_some_and(|embedded| embedded.host_continuation(token))
     }
     fn placement(&self) -> exact_runner::Placement {
         self.embedded
@@ -331,12 +374,12 @@ impl<D: DataSource> DataSource for Swappable<D> {
             return embedded.overlay(source, args, answer, writes);
         }
         // Before activation the module can't overlay: the answer shows.
-        let Some(engine) = self.executor.as_mut() else {
+        if self.executor.is_none() {
             return Ok(None);
-        };
+        }
         let request =
             abi::overlay_request(source, args, answer, writes).map_err(DataError::Interface)?;
-        let bytes = engine.call(&request).map_err(DataError::Interface)?;
+        let bytes = self.run(&request)?;
         abi::overlay_reply(&bytes)
     }
     /// A replaced Rust module parks nothing.
@@ -389,12 +432,20 @@ impl<D: DataSource> DataSource for Swappable<D> {
             None => vec![None; let_go.len()],
         }
     }
+    fn keeps_sent(&self, fetch: u64) -> bool {
+        self.embedded
+            .as_ref()
+            .is_some_and(|embedded| embedded.keeps_sent(fetch))
+    }
     fn timer_before_reply(
         &mut self,
         store: &Store,
         in_flight: exact_runner::InFlight<'_>,
+        fetch: Option<u64>,
     ) -> Option<(u64, exact_runner::Request)> {
-        self.embedded.as_mut()?.timer_before_reply(store, in_flight)
+        self.embedded
+            .as_mut()?
+            .timer_before_reply(store, in_flight, fetch)
     }
     fn module_landed(
         &mut self,
@@ -405,6 +456,17 @@ impl<D: DataSource> DataSource for Swappable<D> {
         match self.embedded.as_mut() {
             Some(embedded) => embedded.module_landed(store, token, outcome),
             None => Ok(()),
+        }
+    }
+    fn module_delivery(
+        &mut self,
+        store: &mut Store,
+        token: u64,
+        outcome: Outcome,
+    ) -> Result<Option<exact_runner::Request>, DataError> {
+        match self.embedded.as_mut() {
+            Some(embedded) => embedded.module_delivery(store, token, outcome),
+            None => Ok(None),
         }
     }
     fn take_logs(&mut self) -> Vec<String> {
@@ -554,7 +616,20 @@ impl<D: DataSource> DataSource for Swappable<D> {
         self.canvas_surfaces.clone()
     }
     /// A replaced Rust module does not draw yet: its canvases report the
-    /// error through `state`.
+    /// error through `state` (LLP 1056 stage 1; QUEUE).
+    fn draw_2d(
+        &mut self,
+        surface: &str,
+        args: &[Value],
+        ctx: &exact_runner::exact_canvas::Context2d,
+        frame: &exact_runner::exact_canvas::Frame,
+    ) -> Result<bool, exact_runner::exact_canvas::DrawError> {
+        match self.embedded.as_mut() {
+            Some(embedded) => embedded.draw_2d(surface, args, ctx, frame),
+            None => Err("a replaced Rust module does not draw Canvas 2D yet".into()),
+        }
+    }
+
     fn draw(
         &mut self,
         request: &exact_runner::DrawRequest<'_>,
@@ -623,6 +698,27 @@ impl<D: DataSource> DataSource for Swappable<D> {
             embedded.answer_for(target, store, source, args)
         } else {
             self.call(store, source, args, None)
+        }
+    }
+    fn more_for(&mut self, target: Target) -> Vec<exact_runner::Request> {
+        self.embedded
+            .as_mut()
+            .map(|d| d.more_for(target))
+            .unwrap_or_default()
+    }
+    fn parse_fetch_for(
+        &mut self,
+        target: Target,
+        fetch: Option<u64>,
+        store: &mut Store,
+        source: &str,
+        args: &[Value],
+        outcome: Outcome,
+    ) -> Result<Option<Answer>, DataError> {
+        if let Some(embedded) = &mut self.embedded {
+            embedded.parse_fetch_for(target, fetch, store, source, args, outcome)
+        } else {
+            self.call(store, source, args, Some(&outcome)).map(Some)
         }
     }
     fn parse_for(

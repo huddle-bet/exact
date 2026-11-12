@@ -1,6 +1,6 @@
 //! Gradients for the reader to shade (`SHADER`, op 43): a box's
 //! `background-image` and an SVG fill or stroke ink, each drawn by the next
-//! shape op with an Android `Shader` in place of its colour.
+//! shape op with an Android `Shader` in place of its colour (LLP 1115.003 D2).
 //!
 //! `[43, len, kind, spread, g×6, m×6, n, (offset, ARGB)×n]`, `len` the words
 //! after it. `kind` 0 linear (`g` = x0 y0 x1 y1), 1 two-point radial (`g` =
@@ -27,7 +27,7 @@ impl Recorder {
         if s.rect.2 <= 0.0 || s.rect.3 <= 0.0 || g.stops.is_empty() {
             return;
         }
-        let bounds = super::clip::map(s.rect, ts);
+        let bounds = self.on_page(s.rect, ts);
         if self.culled(bounds) {
             return;
         }

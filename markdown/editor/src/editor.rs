@@ -94,7 +94,7 @@ pub enum SelectionMode {
     End,
 }
 
-/// The toolbar facts a `select` event carries.
+/// The toolbar facts a `select` event carries (LLP 1045 D6).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     /// Space-separated command names, pending formats applied.
@@ -106,7 +106,7 @@ pub struct Facts {
     /// Space-separated commands that do nothing here.
     pub unavailable: String,
     /// The atom's source when the selection is exactly one atom, else empty
-    /// (`MarkdownSelection.atom`).
+    /// (`MarkdownSelection.atom`, LLP 1045.000 D3).
     pub atom: String,
 }
 
@@ -171,7 +171,7 @@ const COALESCE_MS: f64 = 1500.0;
 /// and the host's words.
 const UNDO_STEPS: usize = 200;
 const UNDO_UNITS: usize = 1 << 22;
-/// Syntax left visible by an edit that used to be hidden is removed.
+/// Characters eligible for cleanup when their hidden syntax no longer holds.
 const ORPHANS: &[u8] = b"*_~`[]()#>-+.! ";
 
 struct Sim {
@@ -197,7 +197,7 @@ pub struct Editor {
     utf8: String,
     pub(crate) styled: Styled,
     pub(crate) proj: Projection,
-    /// The field's atom kinds and the app's faces.
+    /// The field's atom kinds and the app's faces (LLP 1045.000 D2).
     atoms: md::Atoms,
     sel: (u32, u32),
     /// A caret deliberately after an inline closer.
@@ -310,8 +310,8 @@ impl Editor {
         self.atoms.face(source)
     }
 
-    /// The host's words for the current state's lines (`paragraphDirs`),
-    /// opaque here. Each undo step keeps the words of the state it
+    /// The host's words for the current state's lines (`paragraphDirs`, LLP
+    /// 1045 D11), opaque here. Each undo step keeps the words of the state it
     /// returns to, and undo and redo give them back ([`Editor::words_back`]).
     pub fn set_words(&mut self, words: &[u16]) {
         self.words = Rc::from(words);
@@ -339,13 +339,13 @@ impl Editor {
     }
 
     /// Each source line's direction under `paragraphDirs`' `auto`
-    /// ([`crate::auto_directions`]).
+    /// ([`crate::auto_directions`], LLP 1045 D11).
     pub fn auto_directions(&self) -> Vec<u8> {
         crate::direction::auto_of(&self.utf8, &self.styled)
     }
 
     /// A field's declared kinds and the app's faces changed (`atoms`,
-    /// `atomFaces`): restyle. The source and its history
+    /// `atomFaces`, LLP 1045.000 D2): restyle. The source and its history
     /// stay; a selection now inside an atom moves by the caret and range rules.
     pub fn set_atoms(&mut self, atoms: md::Atoms) -> Change {
         if atoms == self.atoms {
@@ -372,7 +372,7 @@ impl Editor {
         md::plain_range(&self.utf8, Range::new(from, to), &self.atoms)
     }
 
-    /// An input method begins composing: over a range that
+    /// An input method begins composing (LLP 1045.000 D5): over a range that
     /// holds an atom, the range is deleted first, as an undo step of its
     /// own. The platform's text is left as it is, composing over the range.
     pub fn compose(&mut self, now: f64) -> Change {
@@ -429,7 +429,7 @@ impl Editor {
     }
 
     /// The app wrote a value. The changed middle is replaced and the selection
-    /// carried through it; the history resets, as it does on Apple.
+    /// carried through it; the history resets, as it does on Apple (LLP 1045 D1).
     pub fn set_value(&mut self, text: &[u16]) -> Change {
         let text = clean(text);
         if text == self.source {
@@ -484,9 +484,9 @@ impl Editor {
     }
 
     /// The app's `setSelectionRange`, in source code units. A caret in hidden
-    /// syntax moves to the visible edge the platform can draw it at;
-    /// a range is kept as given, but for an end inside an
-    /// atom, which goes to the atom's outer edge.
+    /// syntax moves to the visible edge the platform can draw it at
+    /// (LLP 1045 D6); a range is kept as given, but for an end inside an
+    /// atom, which goes to the atom's outer edge (LLP 1045.000 D5).
     pub fn set_selection(&mut self, from: u32, to: u32) -> Change {
         let (from, to) = self.clamp((from, to));
         self.pending = [None; 4];
@@ -541,6 +541,39 @@ impl Editor {
             self.sel = (self.snap(s), self.snap(s));
         }
         change
+    }
+
+    /// Move a dragged range to `at`, all in the original source coordinates.
+    /// The platform supplies the dropped text; deletion and insertion share
+    /// one undo step and the same hidden-syntax cleanup.
+    pub fn move_text(&mut self, from: u32, to: u32, at: u32, text: &[u16], now: f64) -> Change {
+        self.now = now;
+        let (from, to) = self.proj.outward(self.clamp((from, to)));
+        let at = self.snap(at.min(self.len()));
+        if (from..=to).contains(&at) {
+            return Change::default();
+        }
+        self.set_selection(from, to);
+        let reps = self
+            .proj
+            .visible_parts(from, to)
+            .into_iter()
+            .map(|(a, b)| (a, b, Vec::new()))
+            .collect::<Vec<_>>();
+        let removed = self.simulate(&reps, true);
+        let at = removed.caret(at);
+        // Resolve insertion against the source after deletion, including its
+        // syntax cleanup, without putting that intermediate state in history.
+        let mut moved = Self {
+            source: removed.result,
+            atoms: self.atoms.clone(),
+            ..Self::new()
+        };
+        moved.restyle();
+        moved.set_selection(at, at);
+        let (at, _) = moved.selection();
+        moved.insert(&clean(text), at, at);
+        self.commit(moved.source, moved.sel, moved.sticky.is_some(), Kind::Edit)
     }
 
     /// Select everything.
@@ -671,7 +704,7 @@ impl Editor {
         }
     }
 
-    /// ⌥⌫ or ⌥⌦ at `p`: an atom and the spaces between it
+    /// ⌥⌫ or ⌥⌦ at `p` (LLP 1045.000 D5): an atom and the spaces between it
     /// and the caret, stopping at a line break; `None` when no atom is there.
     fn word_atom(&self, p: u32, backward: bool) -> Option<(u32, u32)> {
         let space = |i: u32| matches!(self.source.get(i as usize), Some(32 | 9));
@@ -737,7 +770,7 @@ impl Editor {
         }
     }
 
-    /// A toolbar or shortcut command, by the shared vocabulary,
+    /// A toolbar or shortcut command, by the shared vocabulary (LLP 1045 D6),
     /// plus `undo` and `redo`. Bold, italic, code and strike at a caret
     /// toggle a pending format for the next insertion.
     pub fn command(&mut self, name: &str, argument: &str, now: f64) -> Change {
@@ -828,7 +861,7 @@ impl Editor {
             atom: String::new(),
         };
         // Exactly one atom: its source, its destination as a link's, and no
-        // `link` command over it.
+        // `link` command over it (LLP 1045.000 D3, D5).
         if let Some(atom) = self
             .proj
             .one_atom(self.sel.0, self.sel.1)
@@ -882,10 +915,12 @@ impl Editor {
         self.source = to.source;
         self.words = to.words;
         self.words_back = true;
-        self.sticky = None;
         self.pending = [None; 4];
         self.restyle();
         self.sel = self.clamp(to.sel);
+        // Undo keeps the edit's chosen side of hidden markers.
+        self.sticky =
+            (self.sel.0 == self.sel.1 && self.snap(self.sel.0) != self.sel.0).then_some(self.sel.0);
         Change {
             source: true,
             place: true,
@@ -939,9 +974,17 @@ impl Editor {
         self.commit(sim.result, (c, c), false, kind)
     }
 
-    /// Apply replacements, then remove syntax that was hidden before and is
-    /// visible after (half a bold pair, say): it would read as stray text.
+    /// Remove emptied inline pairs before reparsing, then hidden syntax exposed
+    /// by the edit. Otherwise the empty pair can become a rule, fence or new span.
     fn simulate(&self, reps: &[Rep], cleanup: bool) -> Sim {
+        let move_pair = |&(open, close): &(Range, Range), map: &Map| {
+            let moved = |r: Range| {
+                let start = map.char(r.start)?;
+                let end = map.char(r.end - 1)? + 1;
+                (end - start == r.end - r.start).then_some(Range::new(start, end))
+            };
+            Some((moved(open)?, moved(close)?))
+        };
         let (mut text, first) = splice(&self.source, reps);
         let mut sim = Sim {
             result: Vec::new(),
@@ -956,22 +999,35 @@ impl Editor {
         } else {
             Vec::new()
         };
-        sim.maps.push(first);
-        for _ in 0..3 {
-            if survivors.is_empty() {
-                break;
-            }
-            let styled = md::style_with(&utf8(&text), None, &self.atoms);
-            let proj = Projection::new(&text, &styled);
-            let orphans: Vec<u32> = survivors
+        let mut pairs: Vec<_> = if cleanup {
+            self.styled
+                .delimiters
                 .iter()
-                .copied()
-                .filter(|&i| {
-                    text.get(i as usize)
-                        .is_some_and(|&c| c < 128 && ORPHANS.contains(&(c as u8)))
-                        && !proj.is_hidden(i)
-                })
+                .filter_map(|pair| move_pair(pair, &first))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        sim.maps.push(first);
+        while !survivors.is_empty() {
+            let mut orphans: Vec<u32> = pairs
+                .iter()
+                .filter(|(open, close)| open.end == close.start)
+                .flat_map(|(open, close)| open.start..close.end)
                 .collect();
+            if orphans.is_empty() {
+                let styled = md::style_with(&utf8(&text), None, &self.atoms);
+                let proj = Projection::new(&text, &styled);
+                orphans = survivors
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        text.get(i as usize)
+                            .is_some_and(|&c| c < 128 && ORPHANS.contains(&(c as u8)))
+                            && !proj.is_hidden(i)
+                    })
+                    .collect();
+            }
             if orphans.is_empty() {
                 break;
             }
@@ -980,6 +1036,10 @@ impl Editor {
             let (next, map) = splice(&text, &reps);
             text = next;
             survivors = survivors.iter().filter_map(|&i| map.char(i)).collect();
+            pairs = pairs
+                .iter()
+                .filter_map(|pair| move_pair(pair, &map))
+                .collect();
             sim.maps.push(map);
         }
         sim.result = text;
@@ -1131,8 +1191,9 @@ impl Editor {
         let proj = &self.proj;
         if from == to {
             // At a line's text, Backspace drops its prefix: heading, bullet, quote.
-            if let Some(prefix) = proj.prefix_run(from.saturating_sub(1), from) {
-                if backward && prefix.end == from {
+            let at = proj.canonical(from);
+            if let Some(prefix) = proj.prefix_run(at.saturating_sub(1), at) {
+                if backward && prefix.end == at {
                     return self.commit_reps(
                         vec![(prefix.start, prefix.end, Vec::new())],
                         prefix.start,
@@ -1148,7 +1209,7 @@ impl Editor {
             let c = proj.cluster(from);
             let src = &self.source;
             // Backspace at an atom's end or Delete at its start removes its
-            // whole source in one edit.
+            // whole source in one edit (LLP 1045.000 D5).
             let atom = if backward {
                 proj.atom_ending(c.0)
             } else {
@@ -1223,14 +1284,11 @@ impl Editor {
             };
             let sim = self.simulate(&edit.reps, true);
             if sim.orphans == 0 || i == last {
-                let sel = if sim.orphans == 0 {
-                    edit.sel
-                } else {
-                    (sim.caret(a + 1), sim.caret(a + 1))
-                };
-                let change = self.commit(sim.result, sel, false, Kind::Edit);
-                self.sel = (self.snap(self.sel.0), self.snap(self.sel.1));
-                return change;
+                // The shared edit already mapped its selection through the first splice.
+                let mapped = |p| sim.maps[1..].iter().fold(p, |p, m| m.caret(p));
+                let sel = (mapped(edit.sel.0), mapped(edit.sel.1));
+                // Keep the shared edit's side of an opener through DOM selection echoes.
+                return self.commit(sim.result, sel, true, Kind::Edit);
             }
         }
         Change::default()

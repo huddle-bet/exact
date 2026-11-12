@@ -23,13 +23,17 @@ fn main() {
         "package_tool.rs",
         "engine_os.rs",
         "src/shim.cc",
+        "src/console.js",
         "src/pure.js",
         "src/standard.js",
+        "src/streams.js",
         "src/binary.js",
         "src/prelude.js",
         "src/process.js",
         "src/intl.js",
         "tests/fixtures/harden-probe.js",
+        // (imported by `pure.ts`, which the loop below names)
+        "tests/fixtures/pure-streams.ts",
         "../packages/oauth/index.ts",
     ] {
         println!("cargo:rerun-if-changed={source}");
@@ -104,12 +108,16 @@ fn main() {
         );
     };
 
-    // Ibex installs PURE | CRYPTO | ABORT first. These are only Exact's
-    // trusted policy and data-seam layers; application bytecode follows after
+    // Ibex's abort binding captures console.error at installation.
+    compile(&manifest.join("src/console.js"), &out.join("console.hbc"));
+
+    // Ibex installs PURE | CRYPTO | ABORT before Exact's trusted policy
+    // and data-seam layers; application bytecode follows after
     // Adapter::capture_intrinsics() and Adapter::harden().
     let prelude = [
         "src/pure.js",
         "src/standard.js",
+        "src/streams.js",
         "src/binary.js",
         "src/prelude.js",
         "src/process.js",
@@ -124,7 +132,7 @@ fn main() {
     } else {
         prelude
     };
-    // The hosts that start programs for data code:
+    // The hosts that start programs for data code (LLP 1133.007 §8):
     // `js/src/process.js` binds `@exact/child-process` to them, and every
     // other target answers NotSupportedError.
     let prelude = if matches!(target_os.as_str(), "macos" | "linux") {
@@ -174,7 +182,7 @@ fn main() {
         rolldown.display()
     );
     // The fixtures bundle as an app's data module does: `async` lowered and
-    // stepped by the answer-context helper.
+    // stepped by the answer-context helper (LLP 1133.002 D14).
     let bake = manifest.join("bake/src/typescript.mjs");
     println!("cargo:rerun-if-changed={}", bake.display());
     for name in [
@@ -188,6 +196,7 @@ fn main() {
         "pure",
         "spin",
         "shared-load",
+        "liveness",
         "overlay",
         "overlay-none",
         "overlay-some",
@@ -196,15 +205,18 @@ fn main() {
         "overlay-getter",
         "socket",
         "listen",
+        "mapper",
         "process",
         "heap",
         "snapshot",
         "context",
+        "network",
         "walk",
         "presence",
         "timers",
         "outlive",
         "kept-json",
+        "nul",
     ] {
         let source = manifest.join(format!("tests/fixtures/{name}.ts"));
         println!("cargo:rerun-if-changed={}", source.display());

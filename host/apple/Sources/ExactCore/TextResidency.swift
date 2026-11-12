@@ -10,22 +10,22 @@ import CExact
 package enum TextMetricKey {
     private static func fields(_ size: CGFloat, _ weight: Int, _ family: Int, _ italic: Bool,
                                _ lineHeight: CGFloat?, _ spacing: CGFloat, _ numeric: Int, _ ligatures: Int,
-                               _ stretch: CGFloat, _ variations: [FontAxis], _ h: inout Hasher) {
+                               _ stretch: CGFloat, _ variations: [FontAxis], _ features: [FontFeature], _ h: inout Hasher) {
         h.combine(size); h.combine(weight); h.combine(family); h.combine(italic)
-        h.combine(lineHeight); h.combine(spacing); h.combine(numeric); h.combine(ligatures); h.combine(stretch); h.combine(variations)
+        h.combine(lineHeight); h.combine(spacing); h.combine(numeric); h.combine(ligatures); h.combine(stretch); h.combine(variations); h.combine(features)
     }
     private static func fields(_ r: Run, _ h: inout Hasher) {
-        fields(r.size, r.weight, r.family, r.italic, r.lineHeight, r.letterSpacing, r.numeric, r.ligatures, r.stretch, r.variations, &h)
+        fields(r.size, r.weight, r.family, r.italic, r.lineHeight, r.letterSpacing, r.numeric, r.ligatures, r.stretch, r.variations, r.features, &h)
         // Only an expanded Markdown run has these; a plain run hashes as
-        // its request's does.
+        // its request's does (LLP 1045 D4).
         if r.indent != 0 || r.hang { h.combine(r.indent); h.combine(r.hang) }
-        // An image's box, as its request's hashes.
+        // An image's box (LLP 1011.002), as its request's hashes.
         if let b = r.box { h.combine(b) }
     }
     private static func fields(_ r: ExactTextRun, _ h: inout Hasher) {
         fields(CGFloat(r.font_size), Int(r.font_weight), Int(r.font_family), r.italic != 0,
                r.has_line_height != 0 ? CGFloat(r.line_height) : nil, CGFloat(r.letter_spacing),
-               Int(r.font_variant_numeric), Int(r.font_variant_ligatures), CGFloat(r.font_stretch), FontAxis.of(r), &h)
+               Int(r.font_variant_numeric), Int(r.font_variant_ligatures), CGFloat(r.font_stretch), FontAxis.of(r), FontFeature.of(r), &h)
         if let b = InlineBox(r) { h.combine(b) }
     }
     package static func hash(_ spec: Spec) -> Int {
@@ -66,7 +66,7 @@ package enum TextMetricKey {
         // source run; a plain request hashes as its Spec does.
         if request.markup != 0 {
             h.combine(Int(request.markup))
-            // A label's width is its face's.
+            // A label's width is its face's (LLP 1045.000 D2).
             if request.atoms_len > 0, let a = request.atoms { h.combine(bytes: UnsafeRawBufferPointer(start: a, count: request.atoms_len)) }
             if request.faces_len > 0, let f = request.faces { h.combine(bytes: UnsafeRawBufferPointer(start: f, count: request.faces_len)) }
         }
@@ -83,6 +83,7 @@ package enum TextMetricKey {
             && Int(raw.font_variant_ligatures) == owned.ligatures
             && CGFloat(raw.font_stretch) == owned.stretch
             && FontAxis.of(raw) == owned.variations
+            && FontFeature.of(raw) == owned.features
             && InlineBox(raw) == owned.box
     }
     package static func matches(_ request: ExactMeasureRequest, _ geometry: Spec) -> Bool {

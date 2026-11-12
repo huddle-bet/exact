@@ -1,3 +1,4 @@
+import './new-app-update.test.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { test } from 'bun:test';
@@ -11,24 +12,24 @@ import { authoredWorkspace } from '../scripts/cargo-check.mjs';
 import { appVerbs, beforeBuild } from '../scripts/app-cli.mjs';
 import { namesNative, nativePlatforms } from '../scripts/deploy.mjs';
 import { applyPattern, authoredApp, createApp, createGame, patternFiles, patterns, rosterSeeds, wireSnapback, withoutMember } from './new.mjs';
+// The Snapback scaffolds need the Snapback client (snapback4/), which this repository does not ship.
+const hasSnapback = existsSync(resolve(import.meta.dir, '../snapback4/web/device-build.mjs'));
 
-/** An app that authored its crates, as an older `exact new` wrote them (or one that needs Rust of its own): the
- * generated workspace copied up beside app.json, each crate's bake path one level up, then `update` to settle its paths. */
+/** An app that authored its crates, as `exact new` wrote them before LLP 1153 (or one that needs Rust of its own): the
+ * generated workspace copied up beside app.json as it is (LLP 1153 D1.4), then `update`, which settles its paths. */
 function authorCrates(dir) {
   const { crates } = ensureShells(dir);
   const shells = resolve(dir, '.exact/shells');
   for (const entry of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo', ...crates]) cpSync(resolve(shells, entry), resolve(dir, entry), { recursive: true });
-  for (const kind of crates) {
-    const script = resolve(dir, kind, 'build.rs');
-    writeFileSync(script, readFileSync(script, 'utf8').replace('Path::new("../../..")', 'Path::new("..")'));
-  }
   rmSync(shells, { recursive: true, force: true });
   createApp(dir, { update: true });
+  // Each crate's bake names the app: one level up now, not the three it was under .exact/shells/.
+  for (const kind of crates) assert.match(readFileSync(resolve(dir, kind, 'build.rs'), 'utf8'), /Path::new\("\.\."\)/, kind);
   return crates;
 }
 
-/** A fake exact2 at `sdk` runs the real app-cli.mjs that an app's exact.mjs hands its verb to, and the
- * verify.mjs whose server `test` runs for an app that has one. What verify.mjs imports from outside
+/** A fake exact2 at `sdk` runs the real app-cli.mjs that an app's exact.mjs hands its verb to (LLP 1116.006 D7), and the
+ * verify.mjs whose server `test` runs for an app that has one (LLP 1116.007 D2). What verify.mjs imports from outside
  * scripts/ is linked at its path, so each resolves its own siblings from the checkout. */
 const withCli = (sdk) => {
   const root = resolve(import.meta.dir, '..');
@@ -44,7 +45,7 @@ const withCli = (sdk) => {
   }
   // A bare `test` lists the app's authored tests through scripts/app.mjs.
   link('scripts/app.mjs');
-  // The settings module an app's build imports for `import.meta.env`.
+  // The settings module an app's build imports for `import.meta.env` (LLP 1153 D4).
   mkdirSync(resolve(sdk, 'js/bake/src'), { recursive: true });
   copyFileSync(resolve(root, 'js/bake/src/__exact_env.mjs'), resolve(sdk, 'js/bake/src/__exact_env.mjs'));
 };
@@ -54,34 +55,34 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
   try {
     const dir = resolve(parent, 'field-log');
     createApp(dir);
-    // Eight files and no Rust: the platforms are app.json's keys, the web's alone at first.
+    // Eight files and no Rust (LLP 1153 D1): the platforms are app.json's keys, the web's alone at first.
     assert.deepEqual(readdirSync(dir).sort(), ['.gitignore', '.vscode', 'AGENTS.md', 'CLAUDE.md', 'app.contract', 'app.json', 'app.test.contract', 'app.ts', 'exact.mjs', 'package.json']);
     assert.ok(!authoredApp(dir));
     assert.deepEqual(JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8')).host, { web: {} });
     assert.deepEqual(JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8')).deploy, { store: { web: '0' } });
     assert.ok(existsSync(resolve(dir, 'app.test.contract')));
     // Feedback is a required section, last: its triggers and the one-line note, and `feedback status`, which prints
-    // the diary's instructions. It orders nothing first: builders load this file as instructions, so
-    // each order is a step.
+    // the diary's instructions (LLP 1116 D3). It orders nothing first: builders load this file as instructions, so
+    // each order is a step (LLP 1116.012 D1).
     const agents = () => readFileSync(resolve(dir, 'AGENTS.md'), 'utf8');
     const feedback = /\n## Feedback \(required\)\n[^]*(?=<!-- exact:end -->)/.exec(agents())?.[0] ?? '';
     assert.match(feedback, /doc was wrong or missing, a workaround was needed, something took several tries or a\ncommand confused you/);
     assert.match(feedback, /`bun exact\.mjs feedback note "<what happened>"`[^]*never output or code\. `bun exact\.mjs feedback status` says\nwhether notes are sent and whether to keep a diary; under `never`, skip all of this\.\n$/);
     assert.doesNotMatch(agents(), /first;|before writing code|Read the card|Run `bun exact\.mjs feedback/, 'no ordered preface');
     assert.doesNotMatch(agents(), /## The authoring diary|### Needed/);
-    // 1.5 KB, read at step one and carried to the end, besides the checkout's path in each path it
+    // 1.5 KB, read at step one and carried to the end (LLP 1116.007 D2), besides the checkout's path in each path it
     // names and the Feedback section, which is held to 400 bytes of its own.
     const checkout = realpathSync(resolve(import.meta.dir, '..')), text = Buffer.byteLength(agents()) - (agents().split(checkout).length - 1) * checkout.length - Buffer.byteLength(feedback);
     assert.ok(text <= 1536, `AGENTS.md is ${text} bytes besides the checkout's paths and Feedback`);
     assert.ok(Buffer.byteLength(feedback) <= 400, `Feedback is ${Buffer.byteLength(feedback)} bytes`);
     assert.match(agents(), /exact\.mjs setup --check/);
     assert.match(readFileSync(resolve(dir, '.gitignore'), 'utf8'), /^\/\.exact\/$/m);
-    // A setting's local value (`import.meta.env`) stays out of the repository.
+    // A setting's local value (`import.meta.env`, LLP 1153 D4) stays out of the repository.
     assert.match(readFileSync(resolve(dir, '.gitignore'), 'utf8'), /^\/\.env\.local$/m);
-    // `npm start` and `bun start` serve the built site.
+    // `npm start` and `bun start` serve the built site (LLP 1153 D3.3).
     assert.deepEqual(JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).scripts, { build: 'bun exact.mjs web-build --out dist', start: 'bun exact.mjs serve dist' });
     assert.deepEqual(appVerbs('field-log', dir).serve, ['host/web/serve.mjs']);
-    // The runner is a few lines a builder can read: where the verbs are, and the checkout's app-cli.mjs.
+    // The runner is a few lines a builder can read (LLP 1116.006 D7): where the verbs are, and the checkout's app-cli.mjs.
     const launcher = readFileSync(resolve(dir, 'exact.mjs'), 'utf8');
     assert.ok(launcher.trimEnd().split('\n').length <= 25, `exact.mjs is ${launcher.split('\n').length} lines`);
     assert.match(launcher.split('\n')[2], /`bun exact\.mjs --help` lists the verbs/);
@@ -93,14 +94,57 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
       writeFileSync(resolve(sdk, file), 'console.log(JSON.stringify({args:process.argv.slice(2),app:process.env.EXACT_APP_DIR,offline:process.env.HERMES_LEAN_SYS_OFFLINE}));');
     }
     withCli(sdk);
-    const missing = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'web'], { cwd: parent, env: { ...process.env, EXACT2: resolve(parent, 'nowhere') }, encoding: 'utf8' });
-    assert.deepEqual([missing.status, /^no exact2 at .*nowhere \(no scripts\/app-cli\.mjs\): EXACT2 names the checkout$/m.test(missing.stderr)], [1, true], missing.stderr);
+    // EXACT names the checkout; EXACT2 is read when EXACT is unset (LLP 1036.001 D3).
+    const withoutNames = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['EXACT', 'EXACT2'].includes(key)));
+    const launchNamed = (verb, names) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), verb], { cwd: parent, env: { ...withoutNames, ...names }, encoding: 'utf8' });
+    const absent = resolve(parent, 'nowhere');
+    for (const names of [{ EXACT: absent }, { EXACT2: absent }, { EXACT: absent, EXACT2: sdk }]) {
+      const missing = launchNamed('web', names);
+      assert.deepEqual([missing.status, /^no Exact checkout at .*nowhere \(no scripts\/app-cli\.mjs\): EXACT names the checkout$/m.test(missing.stderr)], [1, true], `${JSON.stringify(names)}: ${missing.stderr}`);
+    }
+    const viaFallback = launchNamed('web-build', { EXACT2: sdk });
+    assert.equal(viaFallback.status, 0, viaFallback.stderr);
+    assert.deepEqual(JSON.parse(viaFallback.stdout), { args: ['field-log'], app: realpathSync(dir), offline: '1' });
+    // A git worktree of the app at another depth finds the checkout by the path from the app's folder in the main
+    // working tree, whatever GIT_DIR names, and `update` there writes what it writes in the main checkout.
+    {
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['EXACT', 'EXACT2'].includes(key) && !key.startsWith('GIT_')));
+      const git = (cwd, ...args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, env, encoding: 'utf8' }); assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`); return r.stdout; };
+      const launch = (app, extra = {}) => spawnSync(process.execPath, [resolve(app, 'exact.mjs'), 'web-build'], { cwd: parent, env: { ...env, ...extra }, encoding: 'utf8' });
+      const repoOf = (at, ...init) => {
+        cpSync(dir, at, { recursive: true });
+        writeFileSync(resolve(at, 'exact.mjs'), readFileSync(resolve(at, 'exact.mjs'), 'utf8').replace(/^const path = process\.env\.EXACT \?\? process\.env\.EXACT2 \?\? .*;$/m, 'const path = process.env.EXACT ?? process.env.EXACT2 ?? "../sdk";'));
+        git(at, 'init', '-q', ...init); git(at, 'add', '-A'); git(at, 'commit', '-qm', 'app'); git(at, 'worktree', 'add', '-q', resolve(at, '.worktrees/agent-1'));
+        return [at, resolve(at, '.worktrees/agent-1')];
+      };
+      const [repo, worktree] = repoOf(resolve(parent, 'repo')), other = resolve(parent, 'elsewhere/other');
+      mkdirSync(other, { recursive: true }); git(other, 'init', '-q');
+      for (const [app, extra] of [[repo], [worktree], [worktree, { GIT_DIR: resolve(other, '.git') }]]) {
+        const built = launch(app, extra);
+        assert.equal(built.status, 0, built.stderr);
+        assert.deepEqual(JSON.parse(built.stdout), { args: ['field-log'], app: realpathSync(app), offline: '1' });
+      }
+      // A --separate-git-dir repository's common dir names no working tree, so its worktree is refused rather than
+      // resolved from the git directory's parent, from which ../sdk is the checkout beside the app.
+      mkdirSync(resolve(parent, 'meta'));
+      const [, separate] = repoOf(resolve(parent, 'separate'), '--separate-git-dir', resolve(parent, 'meta/separate.git'));
+      const refused = launch(separate);
+      assert.deepEqual([refused.status, refused.stderr.trim()], [1, `no Exact checkout at ${resolve(realpathSync(separate), '../sdk')} (no scripts/app-cli.mjs): EXACT names the checkout`]);
+      createApp(repo, { update: true });
+      git(repo, 'commit', '-qam', 'update');
+      git(worktree, 'merge', '-q', '--ff-only', git(repo, 'branch', '--show-current').trim());
+      createApp(worktree, { update: true });
+      assert.equal(git(worktree, 'status', '--porcelain'), '', 'update in the worktree writes what it wrote in the main checkout');
+      const helped = spawnSync(process.execPath, [resolve(repo, 'exact.mjs'), 'help'], { cwd: repo, env, encoding: 'utf8' });
+      assert.equal(helped.status, 0, helped.stderr);
+    }
     const testArgs = host => [host, '--app', 'field-log', '--test', resolve(realpathSync(dir), 'app.test.contract')];
-    // A drive builds first: web-build, or agent-build for ios and macos, its output on
+    // A drive builds first (LLP 1116.002 D4): web-build, or agent-build for ios and macos, its output on
     // stderr so stdout stays the drive's; a phone's build stays explicit.
     const webBuild = ['field-log'], ios = ['ios', '--app', 'field-log'];
     for (const [command, args, built = null] of [
       [['web-build'], ['field-log']],
+      [['add', '@exact/in-app-browser'], ['add', '@exact/in-app-browser']],
       [['test'], testArgs('web'), webBuild],
       [['test', 'web'], testArgs('web'), webBuild],
       // An iOS drive shows UIKit's bars, and an Apple agent drive's screenshots are a pixel a point.
@@ -114,21 +158,21 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
       [['contract', 'types', 'app.contract', '-o', 'app.contract.d.ts'], ['contract', 'types', resolve(realpathSync(dir), 'app.contract'), '-o', resolve(realpathSync(dir), 'app.contract.d.ts')]],
       [['contract', 'vocab', 'background-color'], ['contract', 'vocab', 'background-color']],
     ]) {
-      const result = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), { args, app: realpathSync(dir), offline: '1' });
       assert.deepEqual(result.stderr.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line).args)[0] ?? null, built, `${command.join(' ')} builds first`);
     }
     // From inside the app, a path from its parent finds the same file; one found nowhere is named.
-    const inside = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'contract', 'build', 'field-log/app.contract'], { cwd: dir, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const inside = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'contract', 'build', 'field-log/app.contract'], { cwd: dir, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     assert.deepEqual(JSON.parse(inside.stdout).args, ['contract', 'build', resolve(realpathSync(dir), 'app.contract')]);
     assert.match(inside.stderr, /field-log\/app\.contract is .*field-log\/app\.contract \(the app is /);
-    const nowhere = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'contract', 'build', 'nope.contract'], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const nowhere = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'contract', 'build', 'nope.contract'], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     assert.match(nowhere.stderr, /no nope\.contract in .* or in the app, /);
     assert.deepEqual(JSON.parse(nowhere.stdout).args, ['contract', 'build', 'nope.contract']);
     // App farm wave 1: `test --help` ran the suite, `web --help` started a server. Help builds nothing; a verb whose
     // script has more to say is asked for its usage alone, and the rest print their line.
-    const helped = (...command) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const helped = (...command) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     const testHelp = helped('test', '--help');
     assert.equal(testHelp.status, 0, testHelp.stderr);
     assert.match(testHelp.stdout, /^bun exact\.mjs test /);
@@ -137,14 +181,14 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
       const said = helped(...command);
       assert.equal(said.status, 0, said.stderr);
       assert.match(said.stdout, new RegExp(`^bun exact\\.mjs ${command[0]}(?: |\\n)`));
-      assert.ok(!said.stdout.includes('{'), `${command[0]} --help ran its script`);
+      assert.ok(!/^\{/m.test(said.stdout), `${command[0]} --help ran its script`);
     }
     assert.match(helped('--help').stdout, /^bun exact\.mjs <verb>[^]*  test +/ );
     // chat F19, calendar F13: the files named, from the current directory (a glob too), each run in turn.
     mkdirSync(resolve(dir, 'tests'));
     for (const name of ['b.test.contract', 'a.test.contract']) writeFileSync(resolve(dir, 'tests', name), '');
     const files = (command, cwd = dir) => {
-      const result = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
       return result.stdout.trim().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l).args);
     };
@@ -152,17 +196,17 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
     assert.deepEqual(files(['test', 'ios', 'tests/b.test.contract', '--size', '800x600']), [tested('ios', 'tests/b.test.contract', '--size', '800x600', '--chrome', 'platform')]);
     assert.deepEqual(files(['test', 'macos', 'tests/*.test.contract']), [tested('macos', 'tests/a.test.contract'), tested('macos', 'tests/b.test.contract')]);
     assert.deepEqual(files(['test', 'ios', '--test', 'field-log/tests/a.test.contract'], parent), [tested('ios', 'tests/a.test.contract', '--chrome', 'platform')]);
-    assert.equal(spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'test', 'ios', 'none/*.test.contract'], { cwd: dir, env: { ...process.env, EXACT2: sdk } }).status, 2);
+    assert.equal(spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'test', 'ios', 'none/*.test.contract'], { cwd: dir, env: { ...process.env, EXACT: sdk } }).status, 2);
     writeFileSync(resolve(sdk, 'scripts/agent.mjs'), 'process.exit(7);');
-    const refused = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'test', 'ios'], { cwd: parent, env: { ...process.env, EXACT2: sdk } });
+    const refused = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'test', 'ios'], { cwd: parent, env: { ...process.env, EXACT: sdk } });
     assert.equal(refused.status, 7, 'a failed app test fails the generated command');
     writeFileSync(resolve(sdk, 'scripts/agent-build.mjs'), 'process.exit(5);');
-    const unbuilt = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'agent', 'macos', 'tree'], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const unbuilt = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'agent', 'macos', 'tree'], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     assert.deepEqual([unbuilt.status, unbuilt.stdout], [5, ''], 'a failed build fails the drive, which never starts');
     const logged = readFileSync(resolve(dir, '.exact/commands.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(logged.map(c => [c.verb, c.exit]).slice(-3), [['test ios', 2], ['test ios', 7], ['agent macos', 5]], 'each command is logged, without its arguments, a glob that matched nothing and a failed build too');
     assert.ok(logged.some(c => c.verb === 'contract' && c.exit === 0), 'the contract command is logged too');
-    // An app that authored its crates (one an older `exact new` wrote) keeps update's Cargo path: a drifted
+    // An app that authored its crates (one `exact new` wrote before LLP 1153) keeps update's Cargo path: a drifted
     // workspace is told what to paste, and a checkout that moved is followed.
     namePlatform(dir, 'ios');
     authorCrates(dir);
@@ -190,7 +234,7 @@ test('a new outside app passes the checks every run makes, and a drifted one is 
     // An app from before the diary joined the generated block loses its old diary block, keeps its own text, and ignores .exact/.
     writeFileSync(resolve(dir, 'AGENTS.md'), '# Mine\n\n<!-- exact diary: old -->\nstale\n<!-- /exact diary -->\n\nAfter.\n');
     writeFileSync(resolve(dir, '.gitignore'), '/target/');
-    assert.match(createApp(dir, { update: true }), /\.gitignore, AGENTS\.md, exact2 paths in web\/Cargo\.toml/);
+    assert.match(createApp(dir, { update: true }), /\.gitignore, AGENTS\.md, exact2 paths in Cargo\.toml, web\/Cargo\.toml/);
     assert.match(agents(), /^# Mine\n\nAfter\.\n\n<!-- exact:begin[^]*feedback status[^]*<!-- exact:end -->\n$/);
     assert.ok(!agents().includes('stale'));
     assert.equal(readFileSync(resolve(dir, '.gitignore'), 'utf8'), '/target/\n/.exact/\n/.env.local\n');
@@ -230,7 +274,7 @@ writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 setInterval(() => {}, 1000);`);
     for (const signal of ['SIGTERM', 'SIGKILL']) {
       rmSync(pidFile, { force: true });
-      const launcher = spawn(process.execPath, [resolve(dir, 'exact.mjs'), 'web'], { cwd: parent, env: { ...process.env, EXACT2: sdk }, stdio: 'ignore' });
+      const launcher = spawn(process.execPath, [resolve(dir, 'exact.mjs'), 'web'], { cwd: parent, env: { ...process.env, EXACT: sdk }, stdio: 'ignore' });
       const dev = await until(() => existsSync(pidFile) && Number(readFileSync(pidFile, 'utf8')));
       launcher.kill(signal);
       await until(() => !alive(dev));
@@ -249,13 +293,13 @@ test('the app\'s own verbs live in app.json, so update keeps them', () => {
     writeFileSync(resolve(sdk, 'scripts/agent.mjs'), '');
     const manifest = JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8'));
     writeFileSync(resolve(dir, 'app.json'), JSON.stringify({ ...manifest, commands: { seed: ['bun', 'seed.mjs', '--quick'] } }, null, 2));
-    writeFileSync(resolve(dir, 'seed.mjs'), 'console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),app:process.env.EXACT_APP_DIR,exact2:process.env.EXACT2})); process.exit(3);');
+    writeFileSync(resolve(dir, 'seed.mjs'), 'console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),app:process.env.EXACT_APP_DIR,exact:process.env.EXACT,exact2:process.env.EXACT2})); process.exit(3);');
     readManifest(dir, 'field-log');
-    const exact = (...args) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...args], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const exact = (...args) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...args], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     createApp(dir, { update: true });
     const seeded = exact('seed', 'web');
     assert.equal(seeded.status, 3, seeded.stderr);
-    assert.deepEqual(JSON.parse(seeded.stdout), { cwd: realpathSync(dir), args: ['--quick', 'web'], app: realpathSync(dir), exact2: sdk });
+    assert.deepEqual(JSON.parse(seeded.stdout), { cwd: realpathSync(dir), args: ['--quick', 'web'], app: realpathSync(dir), exact: sdk, exact2: sdk });
     assert.match(exact('nope').stderr, /Usage: bun exact\.mjs <status\|web\|[^>]*\|seed>/);
     assert.deepEqual(JSON.parse(readFileSync(resolve(dir, '.exact/commands.jsonl'), 'utf8').trim().split('\n')[0]).verb, 'seed');
     // A built-in verb's name is the generated file's, and an empty command is no command.
@@ -267,6 +311,23 @@ test('the app\'s own verbs live in app.json, so update keeps them', () => {
 }, 60_000); // Two offline Cargo resolutions.
 
 // A verb added to exact.mjs decides whether it reads what before_build makes, rather than skipping it unasked.
+test('an app forwards add with its own directory, from any working directory, without before_build', () => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'exact-add-'));
+  try {
+    const dir = resolve(parent, 'field-log'), sdk = resolve(parent, 'sdk');
+    createApp(dir);
+    const manifest = JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8'));
+    writeFileSync(resolve(dir, 'app.json'), JSON.stringify({ ...manifest, before_build: ['no-build-for-add'] }));
+    withCli(sdk);
+    writeFileSync(resolve(sdk, 'scripts/exact.mjs'), 'console.log(JSON.stringify({args:process.argv.slice(2),app:process.env.EXACT_APP_DIR}));');
+    const result = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'add', '@exact/in-app-browser'], {
+      cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args: ['add', '@exact/in-app-browser'], app: realpathSync(dir) });
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
 test('every verb of exact.mjs says whether it runs before_build first', () => {
   const verbs = new Set([false, true].flatMap((game) => Object.keys(appVerbs('app', '/app', { game }))));
   assert.deepEqual([...verbs].filter((verb) => !(verb in beforeBuild)), [], 'verbs app-cli.mjs\'s beforeBuild does not name');
@@ -305,7 +366,7 @@ test('app.json\'s before_build runs before each command that builds, and its fai
     const declare = (before_build, more = {}) => writeFileSync(resolve(dir, 'app.json'), JSON.stringify({ ...manifest, before_build, ...more }, null, 2));
     declare(['bun', 'fetch.mjs', '--small']);
     readManifest(dir, 'gallery');
-    const exact = (args, env = {}, app = dir) => spawnSync(process.execPath, [resolve(app, 'exact.mjs'), ...args], { cwd: parent, env: { ...process.env, EXACT2: sdk, ...env }, encoding: 'utf8' });
+    const exact = (args, env = {}, app = dir) => spawnSync(process.execPath, [resolve(app, 'exact.mjs'), ...args], { cwd: parent, env: { ...process.env, EXACT: sdk, ...env }, encoding: 'utf8' });
     const runs = (app = dir) => { const log = resolve(app, 'runs.log'), lines = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []; rmSync(log, { force: true }); return lines; };
     const built = exact(['web-build']);
     assert.equal(built.status, 0, built.stderr);
@@ -394,7 +455,7 @@ test('app.json\'s before_build runs before each command that builds, and its fai
     assert.deepEqual(runs(), ['fetch --small in app']);
     assert.match(failed.stderr, /app\.json before_build \["bun","fetch\.mjs","--small"\] exited 4 in .*, so web-build did not run; what it said is above/);
     // A signal passed on stops the command even when the preparation then exits 0.
-    const held = spawn(process.execPath, [resolve(dir, 'exact.mjs'), 'web-build'], { cwd: parent, env: { ...process.env, EXACT2: sdk, FETCH_HOLD: '1' }, stdio: 'ignore' });
+    const held = spawn(process.execPath, [resolve(dir, 'exact.mjs'), 'web-build'], { cwd: parent, env: { ...process.env, EXACT: sdk, FETCH_HOLD: '1' }, stdio: 'ignore' });
     const ended = new Promise((done) => held.on('exit', (code, signal) => done({ code, signal })));
     for (let i = 0; i < 800 && !existsSync(resolve(dir, 'holding')); i++) await Bun.sleep(25);
     assert.ok(existsSync(resolve(dir, 'holding')), 'the preparation started');
@@ -425,6 +486,81 @@ test('app.json\'s before_build runs before each command that builds, and its fai
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000);
 
+// Issue #104: a script takes the built artifact from `--json`'s one object, not from the build's log. Every way a build
+// verb ends under `--json` prints exactly one object: the artifact, or `{code, error}` with a non-zero status.
+test('a build verb under --json prints one object on stdout however it ends, the build\'s own output on stderr', () => {
+  const parent = realpathSync(mkdtempSync(resolve(tmpdir(), 'exact new-')));
+  try {
+    const dir = resolve(parent, 'field-log'), sdk = resolve(parent, 'sdk');
+    createApp(dir);
+    withCli(sdk);
+    // Each fake build talks on stdout, directly and through a child, as SwiftPM and Cargo do, then names an artifact
+    // whose path has a space in it; BUILD_EXIT fails it, BUILD_SILENT names none and BUILD_THROW throws.
+    const build = (target, artifact) => `import { spawnSync } from 'node:child_process';
+      import { appendFileSync, mkdirSync } from 'node:fs';
+      import { reportBuilt } from '../../scripts/help.mjs';
+      appendFileSync(process.env.EXACT_APP_DIR + '/runs.log', process.argv.slice(2).join(' ') + '\\n');
+      console.log('[1/2] compiling');
+      spawnSync(process.execPath, ['-e', 'console.log("[2/2] linking")'], { stdio: 'inherit' });
+      if (process.env.BUILD_EXIT) process.exit(Number(process.env.BUILD_EXIT));
+      if (process.env.BUILD_THROW) throw new Error('the build threw');
+      const path = process.env.EXACT_APP_DIR + ${JSON.stringify(artifact)};
+      mkdirSync(path, { recursive: true });
+      if (!process.env.BUILD_SILENT && process.argv.includes('--json')) reportBuilt({ path, target: '${target}', trust: 'development' });`;
+    for (const file of ['host/web', 'host/apple']) mkdirSync(resolve(sdk, file), { recursive: true });
+    writeFileSync(resolve(sdk, 'host/web/build.mjs'), build('web', '/target/web dist'));
+    writeFileSync(resolve(sdk, 'host/apple/build.mjs'), build('ios-simulator', '/target/clients/x/ios-simulator/Field Log.app'));
+    const exact = (args, env = {}) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...args], { cwd: parent, env: { ...process.env, EXACT: sdk, ...env }, encoding: 'utf8' });
+    const runs = () => { const log = resolve(dir, 'runs.log'), lines = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []; rmSync(log, { force: true }); return lines; };
+    // stdout is one line, one object; its keys and, for a failure, its code.
+    const one = (r, status) => {
+      assert.equal(r.status, status, r.stderr);
+      assert.equal(r.stdout.split('\n').length, 2, `stdout is one line: ${r.stdout}`);
+      return JSON.parse(r.stdout);
+    };
+    const built = [[['web-build', '--json'], 'target/web dist', 'web']];
+    // The launcher refuses an Apple build on Windows, as the object says.
+    if (process.platform !== 'win32') built.push([['ios', '--no-install', '--json'], 'target/clients/x/ios-simulator/Field Log.app', 'ios-simulator']);
+    else assert.equal(one(exact(['ios', '--no-install', '--json']), 2).code, 'platform_refused');
+    for (const [args, path, target] of built) {
+      const r = exact(args);
+      const result = one(r, 0);
+      assert.deepEqual(result, { path: resolve(dir, path), target, trust: 'development' });
+      assert.ok(existsSync(result.path), result.path);
+      assert.match(r.stderr, /\[1\/2\] compiling\r?\n\[2\/2\] linking\r?\n/);
+      assert.equal(runs().length, 1);
+    }
+    // Without --json the build's output is stdout's, as before.
+    assert.match(exact(['web-build']).stdout, /^\[1\/2\] compiling\r?\n\[2\/2\] linking\r?\n$/);
+    runs();
+    // A failed build, one that names no artifact, one that throws, and a launch, a build left running or a test run,
+    // or a flag the script refuses, each before any build: `{code, error}`.
+    for (const [args, env, status, code] of [[['web-build', '--json'], { BUILD_EXIT: '3' }, 3, 'build_failed'], [['web-build', '--json'], { BUILD_SILENT: '1' }, 1, 'build_failed'],
+      [['web-build', '--json'], { BUILD_THROW: '1' }, 1, 'build_failed']]) {
+      const failed = one(exact(args, env), status);
+      assert.deepEqual(Object.keys(failed), ['code', 'error']);
+      assert.equal(failed.code, code, args.join(' '));
+    }
+    assert.equal(runs().length, 3);
+    for (const [args, status, code] of [[['ios', '--run', '--json'], 2, 'json_flags'], [['mac', '--prebuild', '--json'], 2, 'json_flags'], [['ios', '--test', '--json'], 2, 'json_flags'],
+      [['web-build', '--bogus', '--json'], 2, 'unknown_flag'], [['windows', '--bogus', '--json'], 2, 'unknown_flag']]) {
+      const refused = one(exact(args), status);
+      assert.equal(refused.code, code, args.join(' '));
+      if (code === 'unknown_flag') assert.match(refused.error, /unknown flag --bogus/);
+    }
+    assert.deepEqual(runs(), [], 'a refusal builds nothing');
+    // app.json that does not parse, an own command that takes a verb's name, and a before_build that fails.
+    const manifest = readFileSync(resolve(dir, 'app.json'), 'utf8');
+    for (const [text, status] of [['{ not json', 1], [JSON.stringify({ ...JSON.parse(manifest), commands: { 'web-build': ['bun', 'x.mjs'] } }), 2],
+      [JSON.stringify({ ...JSON.parse(manifest), before_build: [process.execPath, '-e', 'process.exit(5)'] }), 1]]) {
+      writeFileSync(resolve(dir, 'app.json'), text);
+      const failed = one(exact(['web-build', '--json']), status);
+      assert.equal(failed.code, text.includes('before_build') ? 'before_build' : 'app_json', text);
+    }
+    assert.deepEqual(runs(), []);
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+}, 60_000);
+
 test('a new app and a new game get VS Code tasks over their own verbs, and update writes only a missing file', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
   try {
@@ -452,7 +588,7 @@ test('a new app and a new game get VS Code tasks over their own verbs, and updat
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000); // Three offline Cargo resolutions.
 
-test('a game outside this checkout gets an app\'s runner, with its own verbs and no app.json, and update rewrites it', () => {
+test('a game outside this checkout gets an app\'s runner, with its own verbs and no app.json, and update rewrites it (the platformer\'s diary, R1)', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
   try {
     const dir = resolve(parent, 'block-hop'), sdk = resolve(parent, 'sdk');
@@ -470,7 +606,7 @@ test('a game outside this checkout gets an app\'s runner, with its own verbs and
     writeFileSync(resolve(sdk, 'snapback4/web/device-build.mjs'), 'export function devicePreflight() { throw new Error("a manifest-free game has no Snapback device"); }');
     withCli(sdk);
     const real = realpathSync(dir);
-    const drive = (command) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const drive = (command) => spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), ...command], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     for (const [command, args] of [
       [['test-rust'], [real, '--test']],
       [['prove', '--repin'], [real, '--repin']],
@@ -499,7 +635,9 @@ test('a new app refuses a name no host crate can carry, and a directory that is 
     assert.throws(() => createApp(resolve(parent, 'Field_Log')), /lowercase-hyphenated/);
     assert.throws(() => createApp(resolve(parent, 'field-web')), /no host suffix/);
     // A folder named after the SDK would write exact-apple, exact-linux and exact-web beside exact2's own.
-    assert.throws(() => createApp(resolve(parent, 'exact')), /the folder's name exact would make the crate exact-apple, which is one of exact2's own/);
+    assert.throws(() => createApp(resolve(parent, 'exact')), {
+      message: `exact new ${resolve(parent, 'exact')}: the folder's name exact would make the crate exact-apple, which is one of exact2's own; name the app directory something else, e.g. exact new ${resolve(parent, 'exact-app')}`,
+    });
     assert.throws(() => createApp(resolve(parent, 'exact-js')), /would make the crate exact-js-web/);
     assert.ok(!existsSync(resolve(parent, 'exact')) && !existsSync(resolve(parent, 'exact-js')), 'a refused name writes nothing');
     mkdirSync(resolve(parent, 'field-log'));
@@ -519,7 +657,7 @@ test('exact new names the app and its bundle id before any build, and refuses an
     createApp(dir, { title: 'Field "Log" $5', id: 'com.yourcompany.fieldlog' });
     const manifest = JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8'));
     assert.deepEqual([manifest.app, manifest.name, manifest.short_name, manifest.id], [{ id: 'com.yourcompany.fieldlog', name: 'Field "Log" $5' }, 'Field "Log" $5', 'Field "Log" $5', 'com.yourcompany.fieldlog']);
-    // The id is app.json's alone: app.ts names none.
+    // The id is app.json's alone: app.ts names none (LLP 1030 D2).
     assert.doesNotMatch(readFileSync(resolve(dir, 'app.ts'), 'utf8'), /appId/);
     const view = readFileSync(resolve(dir, 'app.contract'), 'utf8');
     assert.match(view, /^component FieldLog$/m, 'the component keeps the folder\'s name, which is always an identifier');
@@ -534,6 +672,13 @@ test('exact new names the app and its bundle id before any build, and refuses an
     assert.deepEqual([game.status, /--name and --bundle-id name an app; a game/.test(game.stderr)], [1, true], game.stderr);
     const bare = cli(dir, '--name');
     assert.deepEqual([bare.status, /--name takes a value, as in --name "Field Log"/.test(bare.stderr)], [1, true], bare.stderr);
+    // A repeated --with adds its platforms, before the path or after it; a one-value flag given twice is refused.
+    const twice = cli('--with', 'ios', '--with', 'android,mac', resolve(parent, 'two'));
+    assert.equal(twice.status, 0, twice.stderr);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(resolve(parent, 'two/app.json'), 'utf8')).host), ['web', 'ios', 'android', 'macos']);
+    assert.ok(!existsSync(resolve(parent, 'android')), 'a --with value is never the path');
+    const named = cli(resolve(parent, 'three'), '--name', 'A', '--name', 'B');
+    assert.deepEqual([named.status, /--name is given twice; it takes one value/.test(named.stderr), existsSync(resolve(parent, 'three'))], [1, true, false], named.stderr);
   } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 
@@ -556,7 +701,7 @@ test('a sibling app\'s generated workspace resolves every host dependency from e
     if (result.status !== 0) return assert.deepEqual(readFileSync(resolve(workspace, 'Cargo.lock')), readFileSync(resolve(root, 'Cargo.lock')));
     const packages = JSON.parse(result.stdout).packages;
     assert.deepEqual(packages.map(p => p.name).sort(), [`${basename(dir)}-apple`, `${basename(dir)}-linux`, `${basename(dir)}-web`]);
-    const paths = { 'exact-logic': 'logic', 'exact-apple': 'host/apple', 'exact-apple-update': 'host/apple-update', 'exact-linux': 'host/linux', 'exact-web': 'host/web', 'exact-web-capabilities': 'host/web-capabilities', 'exact-js': 'js', 'exact-js-web': 'js/web', 'exact-js-bake': 'js/bake' };
+    const paths = { 'ibex2-sqlite': 'vendor/ibex/crates/ibex2-sqlite', 'exact-logic': 'logic', 'exact-apple': 'host/apple', 'exact-apple-update': 'host/apple-update', 'exact-linux': 'host/linux', 'exact-web': 'host/web', 'exact-web-capabilities': 'host/web-capabilities', 'exact-js': 'js', 'exact-js-web': 'js/web', 'exact-js-bake': 'js/bake' };
     for (const pkg of packages) for (const dep of pkg.dependencies) {
       assert.equal(realpathSync(dep.path), realpathSync(resolve(root, paths[dep.name])), `${pkg.name}: ${dep.name}`);
     }
@@ -593,20 +738,20 @@ test('failed creation removes the half-written app', () => {
   } finally { rmSync(parent, { recursive: true, force: true }); }
 });
 
-test('a new app tells its agent where the guides are, and update keeps what the author added', () => {
+test('a new app tells its agent where the guides are, and update keeps what the author added (LLP 1086 D1, D5)', () => {
   const root = realpathSync(resolve(import.meta.dir, '..')), parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
   try {
     const dir = resolve(parent, 'field-log');
     createApp(dir);
     const notes = readFileSync(resolve(dir, 'AGENTS.md'), 'utf8');
-    // The one required read; everything else is start-here's to name.
+    // The one required read; everything else is start-here's to name (LLP 1116 D3, LLP 1116.007 D2).
     assert.ok(notes.includes(resolve(root, 'docs/start-here.md')));
     assert.ok(existsSync(resolve(root, 'docs/start-here.md')));
-    // A website's starter guide in its place.
+    // A website's starter guide in its place (LLP 1115 D7's amendment).
     assert.ok(notes.includes(resolve(root, 'docs/start-here-site.md')));
     assert.ok(existsSync(resolve(root, 'docs/start-here-site.md')));
     assert.match(notes, /the only\s+required reading/);
-    // Where to start, not an order of steps: the nearest pattern, the guide, a name in question
+    // Where to start, not an order of steps (LLP 1116.012 D1): the nearest pattern, the guide, a name in question
     // answered by the card, `verify` when the features work and `verify ios` once at the end; `help` lists the verbs.
     assert.match(notes, /already in your instructions\. Start from the nearest pattern: `bun exact\.mjs\s+pattern` lists them and `pattern <name>` writes one/);
     assert.match(notes, /`bun exact\.mjs contract vocab <name>` answers a\s+name/);
@@ -634,9 +779,9 @@ test('a new app tells its agent where the guides are, and update keeps what the 
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000);
 
-// The scaffold writes a Linux host crate (the Android host is the same crate), with
+// LLP 1086 / LLP 1107: the scaffold writes a Linux host crate (the Android host is the same crate), with
 // `linux` and `android` build verbs; an app made before it gains the crate on update.
-test('a native verb names its platform, and the generated workspace follows app.json', () => {
+test('a native verb names its platform, and the generated workspace follows app.json (LLP 1153 D1)', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
   try {
     const dir = resolve(parent, 'field-log');
@@ -647,7 +792,7 @@ test('a native verb names its platform, and the generated workspace follows app.
     assert.deepEqual(namePlatform(dir, 'ios'), [], 'named once');
     assert.deepEqual(manifest().host.ios, { minimumOS: '17.0', deviceFamily: ['iphone', 'ipad'] });
     assert.deepEqual(namePlatform(dir, 'android'), ['host.android'], 'no store for Android');
-    // Windows's host refuses any store level but "0", and an absent key reads as "A".
+    // Windows's host refuses any store level but "0", and an absent key reads as "A" (LLP 1115.004 D15).
     assert.deepEqual(namePlatform(dir, 'windows'), ['host.windows', 'deploy.store.windows']);
     assert.deepEqual([manifest().host.windows.painter, manifest().host.windows.window.width, manifest().deploy.store.windows], [undefined, 1024, '0']);
     const windows = ensureShells(dir).workspace;
@@ -659,11 +804,11 @@ test('a native verb names its platform, and the generated workspace follows app.
     assert.deepEqual([first.wrote, first.crates, ensureShells(dir).wrote], [true, ['web', 'apple', 'linux', 'android'], false]);
     assert.match(readFileSync(resolve(first.workspace, 'Cargo.toml'), 'utf8'), /^members = \["web", "apple", "linux", "android"\]$/m);
     assert.match(readFileSync(resolve(first.workspace, 'linux/Cargo.toml'), 'utf8'), /^name = "field-log-linux"$/m);
-    // Android's library for the Canvas reader: a cdylib, empty off Android, baked by `build_android`.
+    // Android's library for the Canvas reader (LLP 1107): a cdylib, empty off Android, baked by `build_android`.
     const android = readFileSync(resolve(first.workspace, 'android/Cargo.toml'), 'utf8');
     assert.match(android, /^name = "field-log-android"$/m);
     assert.match(android, /^crate-type = \["cdylib"\]$/m);
-    assert.match(android, /^\[target\.'cfg\(target_os = "android"\)'\.dependencies\]\nexact-logic = /m);
+    assert.match(android, /^\[target\.'cfg\(target_os = "android"\)'\.dependencies\]\nibex2-sqlite = [^\n]+\nexact-logic = /m);
     assert.match(readFileSync(resolve(first.workspace, 'android/build.rs'), 'utf8'), /exact_js_bake::build_android\(std::path::Path::new\("\.\.\/\.\.\/\.\."\)\)/);
     assert.match(readFileSync(resolve(first.workspace, 'android/src/lib.rs'), 'utf8'), /exact_linux::canvas_jni!\(super::AppData, hatches = crate::android::exact_hatches\(\)\);/);
     assert.ok(!existsSync(resolve(dir, 'Cargo.toml')) && !existsSync(resolve(dir, 'linux')), 'nothing Rust in the author\'s tree');
@@ -679,7 +824,7 @@ test('a native verb names its platform, and the generated workspace follows app.
       if (was === undefined) delete process.env.EXACT_APP_DIR; else process.env.EXACT_APP_DIR = was;
       if (target !== undefined) process.env.CARGO_TARGET_DIR = target;
     }
-    // A platform dropped takes its crate with it; the last native one may go (deploy reads none as none).
+    // A platform dropped takes its crate with it; the last native one may go (deploy reads none as none, D1.5).
     assert.match(createApp(dir, { update: true, without: 'android' }), /without android \(removed host\.android\)/);
     assert.deepEqual(ensureShells(dir).crates, ['web', 'apple']);
     assert.ok(!existsSync(resolve(first.workspace, 'linux')) && !existsSync(resolve(first.workspace, 'android')));
@@ -699,7 +844,7 @@ test('a native verb names its platform, and the generated workspace follows app.
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000);
 
-// An app that authored its crates before the scaffold wrote a Linux host gains one on update,
+// LLP 1086 / LLP 1107: an app that authored its crates before the scaffold wrote a Linux host gains one on update,
 // and `update --without linux` takes it away again with its workspace member and lock entries.
 test('an authored app gains a Linux crate on update and loses it with --without linux', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
@@ -708,10 +853,22 @@ test('an authored app gains a Linux crate on update and loses it with --without 
     createApp(dir, { with: ['ios'] });
     assert.deepEqual(authorCrates(dir), ['web', 'apple']);
     assert.match(readFileSync(resolve(dir, 'Cargo.toml'), 'utf8'), /^members = \["web", "apple"\]$/m);
+    // A host crate's build script the author wrote is theirs, though it names a path three levels up as a copied one
+    // did; authorCrates above saw the generated ones rewritten.
+    const own = 'fn main() {\n    let _ = std::fs::read(std::path::Path::new("../../..").join("schemas/input.json"));\n}\n';
+    const kept = Object.fromEntries(['web', 'apple'].map(crate => [crate, readFileSync(resolve(dir, crate, 'build.rs'), 'utf8')]));
+    for (const crate of ['web', 'apple']) writeFileSync(resolve(dir, crate, 'build.rs'), own);
+    createApp(dir, { update: true });
+    for (const crate of ['web', 'apple']) assert.equal(readFileSync(resolve(dir, crate, 'build.rs'), 'utf8'), own, crate);
+    for (const [crate, text] of Object.entries(kept)) writeFileSync(resolve(dir, crate, 'build.rs'), text);
     const manifest = resolve(dir, 'Cargo.toml');
     assert.doesNotMatch(createApp(dir, { update: true }), /linux\/ host crate/, 'no store, no crate');
     namePlatform(dir, 'linux');
+    // The copied-up root has what the crates update adds inherit: it is used as it is, its members aside.
+    const members = (text) => text.replace(/^members = .*$/m, '');
+    const copied = readFileSync(manifest, 'utf8');
     assert.match(createApp(dir, { update: true }), /a linux\/ host crate/);
+    assert.equal(members(readFileSync(manifest, 'utf8')), members(copied));
     const linux = readFileSync(resolve(dir, 'linux/Cargo.toml'), 'utf8');
     assert.match(linux, /^name = "field-log-linux"$/m);
     assert.match(linux, /^exact-linux = \{ path = "[^"]*host\/linux" \}$/m);
@@ -779,7 +936,7 @@ test('update --without edits any spelling of the workspace member, and a refusal
     assert.ok(existsSync(resolve(dir, 'linux/Cargo.toml')));
     assert.deepEqual(readdirSync(dir).filter(f => f.startsWith('.linux')), []);
     // The last native key may go: with the native hosts gone too, the manifest names no native platform and ships
-    // none.
+    // none (LLP 1153 D1.5).
     writeFileSync(apple, appleManifest);
     app.host = { web: {}, linux: {} };
     app.deploy.store = { web: '0', linux: '0' };
@@ -792,7 +949,7 @@ test('update --without edits any spelling of the workspace member, and a refusal
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000);
 
-// Authoring bench: an app copied into a folder of another name kept its `todo-list-*` crates,
+// Authoring bench (LLP 1087): an app copied into a folder of another name kept its `todo-list-*` crates,
 // and `update` wrote an exact.mjs that asked Cargo for `todo-apple`.
 test('update names an authored app by its crates, and a generated one by its folder', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
@@ -821,9 +978,36 @@ test('update names an authored app by its crates, and a generated one by its fol
   }
 }, 60_000);
 
-// Two apps that share an id share their stores, since a store is named by the app's id. A
-// new app's id is its own; an app made before keeps the id it has, since its stores,
-// bundle and update stream are named by it.
+// Another checkout of an app in a folder of another name (a git worktree) builds the crates its exact.mjs names: the
+// native verb's workspace (app-cli.mjs, bringPlatform) and the build's (resolveApp) both take the launcher's name.
+test('a generated workspace is named by the app\'s exact.mjs, not its folder', () => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-')), root = resolve(import.meta.dir, '..');
+  try {
+    const made = resolve(parent, 'note-list'), other = resolve(parent, 'note-list-feature'), sdk = resolve(parent, 'sdk');
+    createApp(made, { with: ['ios'] });
+    cpSync(made, other, { recursive: true });
+    withCli(sdk);
+    symlinkSync(resolve(root, 'scripts/app-shells.mjs'), resolve(sdk, 'scripts/app-shells.mjs'));
+    // The build reads the crate the native verb's hook generated, then the one resolveApp builds.
+    mkdirSync(resolve(sdk, 'host/apple'), { recursive: true });
+    writeFileSync(resolve(sdk, 'host/apple/build.mjs'), `import { readFileSync } from 'node:fs';
+import { resolveApp } from ${JSON.stringify(resolve(root, 'scripts/app.mjs'))};
+const crate = () => /^name = "(.+)"$/m.exec(readFileSync(process.env.EXACT_APP_DIR + '/.exact/shells/apple/Cargo.toml', 'utf8'))[1];
+const hooked = crate();
+resolveApp(process.argv.at(-1)).workspace;
+console.log(JSON.stringify({ args: process.argv.slice(2), crates: [hooked, crate()] }));
+`);
+    const built = spawnSync(process.execPath, [resolve(other, 'exact.mjs'), 'ios'], { cwd: other, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
+    assert.equal(built.status, 0, built.stderr);
+    assert.deepEqual(JSON.parse(built.stdout.trim().split('\n').at(-1)), { args: ['--ios', 'note-list-apple'], crates: ['note-list-apple', 'note-list-apple'] });
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// LLP 1116.004 D8: bake-off contacts, round 6, drove an earlier round's contacts.json: both rounds' apps were
+// `com.example.contacts-exact2`, and a store is named by the app's id. A new app's id is its own; an app made
+// before keeps the id it has, since its stores, bundle and update stream are named by it.
 test('a new app\'s id is its own, and update keeps the id an older app has', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-id-'));
   try {
@@ -853,7 +1037,7 @@ test('a new app\'s id is its own, and update keeps the id an older app has', () 
   }
 }, 60_000); // Three offline Cargo resolutions.
 
-// A pattern replaces the template's three files with the app's own id and name; a file the
+// LLP 1116.001 D3: a pattern replaces the template's three files with the app's own id and name; a file the
 // author edited is refused unless forced; rest and site bring their server, and site its setting and app.json keys,
 // which go with them.
 test('a pattern replaces the template, refuses an edited file unless forced, and takes its extras with it', () => {
@@ -864,7 +1048,7 @@ test('a pattern replaces the template, refuses an edited file unless forced, and
     assert.deepEqual(patterns().map(p => p.name), ['one-screen', 'list-detail', 'tabs', 'dashboard', 'rest', 'site']);
     for (const { line } of patterns()) assert.ok(line.length > 20 && line.length <= 92 && !line.startsWith('//'), line);
     const read = (file) => readFileSync(resolve(dir, file), 'utf8');
-    // The app's own id, which app.json carries.
+    // The app's own id (LLP 1116.004 D8), which app.json carries.
     const id = JSON.parse(read('app.json')).app.id;
     assert.match(id, /^com\.example\.field-log-[0-9a-f]{6}$/);
     const { said } = applyPattern(dir, 'list-detail');
@@ -882,14 +1066,14 @@ test('a pattern replaces the template, refuses an edited file unless forced, and
     applyPattern(dir, 'dashboard', { force: true });
     assert.doesNotMatch(read('app.ts'), /\/\/ mine/);
     assert.throws(() => applyPattern(dir, 'nope'), /no pattern nope; there are one-screen, list-detail/);
-    // rest: its server, which `test` and `verify` run, no command of its own; another pattern takes it away again.
+    // rest: its server, which `test` and `verify` run (LLP 1116.007 D2), no command of its own; another pattern takes it away again.
     assert.match(applyPattern(dir, 'rest').next, /bun exact\.mjs test web$/);
     assert.ok(existsSync(resolve(dir, 'server.ts')) && !existsSync(resolve(dir, 'test.mjs')));
     assert.equal(JSON.parse(read('app.json')).commands, undefined);
     assert.equal(JSON.parse(read('app.json')).app.id, id);
     assert.match(applyPattern(dir, 'one-screen').said, /removed server\.ts$/);
     assert.ok(!existsSync(resolve(dir, 'server.ts')) && JSON.parse(read('app.json')).commands === undefined);
-    // site: its API's stand-in and the setting naming it, with the keys app.json gains; another
+    // site: its API's stand-in and the setting naming it (LLP 1153 D8), with the keys app.json gains; another
     // pattern takes them away again, and keeps a key the author changed.
     assert.match(applyPattern(dir, 'site').said, /^site: wrote app\.contract, app\.ts, app\.test\.contract, \.env, server\.ts as Field Log/);
     assert.match(read('.env'), /^API_BASE_URL=http:\/\/127\.0\.0\.1:8787$/m);
@@ -909,7 +1093,7 @@ test('a pattern replaces the template, refuses an edited file unless forced, and
     assert.throws(() => applyPattern(dir, 'site'), /app\.json's "env" was edited/);
     applyPattern(dir, 'tabs');
     assert.deepEqual([JSON.parse(read('app.json')).env, JSON.parse(read('app.json')).server], [['API_BASE_URL', 'TILE_URL'], undefined]);
-    // The same values in an app that never applied site (a chat app's `server`) are the app's: another pattern keeps them.
+    // The same values in an app that never applied site (excord's `server`) are the app's: another pattern keeps them.
     writeFileSync(resolve(dir, 'app.json'), JSON.stringify({ ...manifest, env: ['API_BASE_URL'], server: { database: false } }));
     applyPattern(dir, 'dashboard');
     assert.deepEqual([JSON.parse(read('app.json')).env, JSON.parse(read('app.json')).server], [['API_BASE_URL'], { database: false }]);
@@ -921,9 +1105,9 @@ test('a pattern replaces the template, refuses an edited file unless forced, and
   }
 });
 
-// `exact new --snapback`: the README's setup block, run. The
+// `exact new --snapback` (the author's ruling of 2026-10-12, via the sb4 app farm): the README's setup block, run. The
 // backend is the directory above; the device build is `bun exact.mjs snapback`'s, skipped here (`build: false`).
-test('a new Snapback app is wired to the backend above it, and update follows a moved checkout\'s mount', () => {
+test.skipIf(!hasSnapback)('a new Snapback app is wired to the backend above it, and update follows a moved checkout\'s mount', () => {
   const root = realpathSync(resolve(import.meta.dir, '..')), parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
   try {
     const dir = resolve(parent, 'app'), manifest = () => JSON.parse(readFileSync(resolve(dir, 'app.json'), 'utf8'));
@@ -1016,7 +1200,7 @@ writeFileSync('snapback/generated/api.ts', 'export const api = {};');`);
     mkdirSync(resolve(sdk, 'scripts'), { recursive: true });
     writeFileSync(resolve(sdk, 'scripts/exact.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)));');
     withCli(sdk);
-    const verb = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'snapback'], { cwd: parent, env: { ...process.env, EXACT2: sdk }, encoding: 'utf8' });
+    const verb = spawnSync(process.execPath, [resolve(dir, 'exact.mjs'), 'snapback'], { cwd: parent, env: { ...process.env, EXACT: sdk }, encoding: 'utf8' });
     assert.deepEqual(JSON.parse(verb.stdout), ['snapback', realpathSync(dir)]);
     // An appId that disagrees is named. A checkout that moved: update rewrites the mount, as it does the Cargo paths.
     writeFileSync(resolve(dir, 'app.ts'), ts.replace(/export const appId = '[^']*'/, "export const appId = 'com.example.other'"));
@@ -1039,7 +1223,7 @@ writeFileSync('snapback/generated/api.ts', 'export const api = {};');`);
 }, 90_000); // Three offline Cargo resolutions.
 
 
-test('the online scaffold calls existing generated query/mutation handles and preserves authored apps', () => {
+test.skipIf(!hasSnapback)('the online scaffold calls existing generated query/mutation handles and preserves authored apps', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-online-'));
   try {
     mkdirSync(resolve(parent, 'snapback/generated'), {recursive: true});
@@ -1071,7 +1255,7 @@ test('the online scaffold calls existing generated query/mutation handles and pr
   } finally {rmSync(parent, {recursive: true, force: true});}
 });
 
-test('roster scaffolds seed fresh from a test-relative file and preserve backend fixtures', () => {
+test.skipIf(!hasSnapback)('roster scaffolds seed fresh from a test-relative file and preserve backend fixtures', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-roster-'));
   const schema = `use personas alice, bob
 table owners:
@@ -1174,7 +1358,7 @@ test('a script moves to the pinned Bun, and a test file, whose `bun test` cannot
   } finally {rmSync(parent, {recursive: true, force: true});}
 });
 
-// A native verb names its platform only after that platform's setup rows, and writes nothing when one
+// LLP 1153 D1.2: a native verb names its platform only after that platform's setup rows, and writes nothing when one
 // is missing, the report could not be read, or the machine cannot build it at all.
 test('a native verb refuses before writing when its platform\'s setup is missing, and names it otherwise', async () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));
@@ -1214,7 +1398,7 @@ test('a native verb refuses before writing when its platform\'s setup is missing
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 60_000);
 
-// The app's files say whether it authored a workspace; a workspace above it owns it only when its
+// LLP 1153 D1.4, D2.1: the app's files say whether it authored a workspace; a workspace above it owns it only when its
 // members list the app or one of its crates, as Cargo reads them.
 test('an app authored its workspace when its files say so, not because a directory above it has one', () => {
   const parent = mkdtempSync(resolve(tmpdir(), 'exact-new-'));

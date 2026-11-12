@@ -1117,25 +1117,7 @@ theorem ty_sound_aux {p : Program} (hfn : ProgOK p) {E : Err → Prop}
           rw [hr] at hm
           simp only [bind, Except.bind, hdir]
           exact sortByKeys_good (evalMap_length hr) hxs hm hk
-      | pending hfd _ _ hin' =>
-        simp only [eval, hp, hfd]
-        split
-        · next hr =>
-          rcases hres _ hin' hr with hs | hs
-          · obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hs
-            simp [hv, GoodW, ValTy]
-          · cases lookup _ env.resources <;> simp [GoodW, ValTy, hs]
-        · simp [GoodW, ValTy]
-      | failed hfd hr _ hin' =>
-        simp only [eval, hp, hfd]
-        split
-        · next hr =>
-          rcases hres _ hin' hr with hs | hs
-          · obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hs
-            simp [hv, GoodW, ValTy]
-          · cases lookup _ env.resources <;> simp [GoodW, ValTy, hs]
-        · simp [GoodW, ValTy]
-      | failure hfd hr _ hin' =>
+      | pending hfd _ _ hin' | failed hfd _ _ hin' | failure hfd _ _ hin' | current hfd _ _ hin' =>
         simp only [eval, hp, hfd]
         split
         · next hr =>
@@ -1150,6 +1132,8 @@ theorem ty_sound_aux {p : Program} (hfn : ProgOK p) {E : Err → Prop}
         · cases hargs with | cons _ h2 => cases h2 with | cons h3 _ => cases h3
         · cases hargs with | cons _ h2 => cases h2 with | cons h3 _ => cases h3
         · cases hargs with | cons _ h2 => cases h2 with | cons h3 _ => cases h3
+        · cases hargs with | cons _ h2 => cases h2 with | nil =>
+            delta rosterTy routerTy unsupportedTy at hr; simp at hr
         · cases hargs with | cons _ h2 => cases h2 with | nil =>
             delta rosterTy routerTy unsupportedTy at hr; simp at hr
         · cases hargs with | cons _ h2 => cases h2 with | nil =>
@@ -1375,7 +1359,7 @@ theorem ValTyL.length_le {p : Program} : ∀ {vs : List Value} {ts us : List Ty}
   | [], [], _ :: _, _, hl | _ :: _, _ :: _, [], _, hl => by simp [Ty.leAll] at hl
 
 /-- `hacts`: every action's body is typed under its parameters, which a
-call runs. -/
+call (LLP 1089 D9) runs. -/
 theorem exec_sound_aux {p : Program} (hfn : ProgOK p) {E : Err → Prop}
     (hE : ∀ e, Legit e → e ≠ .pending → E e) {G : Scope}
     (hacts : ∀ a ∈ p.actions, StmtsTy p G a.params.reverse a.body) : ∀ n {env Γ ls ss fx},

@@ -55,15 +55,15 @@ pub(super) struct Subst<'m, T> {
     /// and `match` variables) are values, never callable, so a call that
     /// spells one names a function (`t("key")` beside `for t in …`).
     calls: bool,
-    /// States, device facts and derives replace value reads only, even
-    /// when a derive's body is shaped like a curried action binding.
+    /// Value props, injects, states, device facts and derives replace value
+    /// reads only, even when a derive's body looks like a curried action.
     pub(super) value_only: BTreeSet<String>,
     /// The declared record constructors: shapes that are not `fn`s. A call
-    /// spelling one constructs that record ahead of any scoped name,
-    /// so its head is never replaced — its arguments are.
+    /// spelling one constructs that record ahead of any scoped name (LLP
+    /// 1035.005.000 D3), so its head is never replaced — its arguments are.
     records: &'m BTreeSet<String>,
     /// What a called action's body is substituted with past its parameters'
-    /// `let`s: nothing, when this substitution is of the
+    /// `let`s (LLP 1089 D2): nothing, when this substitution is of the
     /// caller's own names, which the callee never reads; the component's
     /// names, when lifting substitutes them into caller and callee alike.
     callee: Option<&'m BTreeMap<String, T>>,
@@ -224,6 +224,9 @@ pub(super) fn subst_expr<T: SubstitutionValue>(e: &Expr, s: &mut Subst<'_, T>) -
                     all.extend(args);
                     Expr::Call(f.clone(), all, *span)
                 }
+                // Types refuses a non-callable action binding at its supplier.
+                // Keep that value instead of leaving an unknown callee here.
+                Some(Replacement::Expr(value)) => value.clone(),
                 _ => Expr::Call(n.clone(), args, *span),
             }
         }
@@ -320,7 +323,7 @@ pub(super) fn subst_expr<T: SubstitutionValue>(e: &Expr, s: &mut Subst<'_, T>) -
 /// A child action's body, its names substituted: assignment targets renamed
 /// with `names`, expressions through `s` (props, injects, renamed states
 /// and actions, derives as expressions). A `let` binds for the rest of its
-/// block and is renamed apart, as a `match` binding
+/// block (LLP 1035.005.000 D2) and is renamed apart, as a `match` binding
 /// is, when a replacement mentions its name.
 pub(super) fn subst_stmts(
     stmts: &[Stmt],
@@ -407,7 +410,7 @@ pub(super) fn subst_stmts(
             }
             // The arguments, and the parameters' `let`s that bind them, are
             // the caller's expressions. The rest of the body is the callee's,
-            // closed over the caller's names, so a
+            // closed over the caller's names (LLP 1089 D2), so a
             // substitution of those stops at the `let`s; lifting carries the
             // component's own names on into it.
             Stmt::Call {

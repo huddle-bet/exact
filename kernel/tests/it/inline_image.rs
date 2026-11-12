@@ -1,4 +1,4 @@
-//! An image in a paragraph's text: its paragraph's measurer
+//! An image in a paragraph's text (LLP 1011.002): its paragraph's measurer
 //! reserves its margin box in the line, the line grows to hold it as CSS's
 //! line box does, and the kernel places the image where the box went.
 
@@ -214,6 +214,41 @@ fn a_hidden_image_is_no_run() {
     let runs = k.node(2).unwrap().text_runs();
     assert_eq!(runs.len(), 2);
     assert!(runs.iter().all(|r| r.inline.is_none()));
+}
+
+#[test]
+fn a_nonvisible_image_keeps_its_box_but_contributes_no_readable_label() {
+    for visibility in ["visible", "hidden", "collapse"] {
+        let mut k = paragraph(
+            &[
+                (StyleId::Height, "20px"),
+                (StyleId::Width, "30px"),
+                (StyleId::Visibility, visibility),
+            ],
+            "ab",
+        );
+        k.apply(
+            1,
+            2,
+            &[Op::SetProp {
+                id: 4,
+                prop: PropId::AccessibilityLabel,
+                value: "star".into(),
+            }],
+        )
+        .unwrap();
+        let paragraph = k.node(2).unwrap();
+        assert_eq!(paragraph.text_runs()[1].inline.unwrap().width, 30.0);
+        assert_eq!(
+            paragraph.read_runs(),
+            [
+                "ab",
+                if visibility == "visible" { "star" } else { "" },
+                " ef"
+            ],
+            "{visibility}"
+        );
+    }
 }
 
 #[test]

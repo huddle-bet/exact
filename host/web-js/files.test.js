@@ -5,7 +5,8 @@ mock.module('./rt.js', () => ({
   inflight: { n: 0 }, Hosts: {}, OnHooks: {}, viewId: () => 1, Views: new Map(), data: {}, painted: () => Promise.resolve(),
 }));
 mock.module('./pointer.js', () => ({ record: () => {} }));
-const { inertAncestor, liveById } = await import('../web/navigation.js');
+const { inertAncestor } = await import('../web/navigation/layers.js');
+const { liveById } = await import('../web/navigation/routes.js');
 mock.module('./navigation.js', () => ({ inertAncestor, liveById, reportPlace: () => '' }));
 // The real admission over the grant set the Rust parser writes for
 // `fs.read "app:/data/a b"` (runner/src/grants.rs `normalized_json`, pinned
@@ -41,7 +42,7 @@ test('a wildcard in a mixed accept preserves the original HEIC type', () => {
   expect(deliveredType('image/heic', ['image/jpeg'])).toBe('image/jpeg');
 });
 
-// The JS target's share holds its files under the agent, and
+// LLP 1125 D12: the JS target's share holds its files under the agent, and
 // refuses a picture of an element, a file outside `fs.read`, a path that is
 // no app file, and nothing to share, in the runner's words (share.rs).
 test('a share holds its files under the agent and refuses what the web cannot share', () => {

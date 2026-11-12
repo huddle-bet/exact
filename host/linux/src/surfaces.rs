@@ -1,6 +1,7 @@
 //! Device-free canvas ownership over the same dynamic module ABI as Apple.
-//! One library per GPU artifact: the primary, and each declared
+//! One library per GPU artifact (LLP 1009 D6): the primary, and each declared
 //! module, opened the first time a canvas of one of its surfaces appears.
+//! @ref LLP 1046.001 D7; LLP 1015 §7
 #![allow(unsafe_code)]
 use crate::{Host, Presenter};
 use base64::Engine;
@@ -18,6 +19,8 @@ use std::{
 #[cfg(target_os = "android")]
 #[path = "surfaces/android.rs"]
 mod android;
+#[cfg(any(target_os = "android", test))]
+mod fingers;
 #[cfg(any(target_os = "android", test))]
 mod retry;
 #[cfg(target_os = "android")]
@@ -287,7 +290,7 @@ fn module_path(
     compat: &Value,
     override_path: Option<PathBuf>,
 ) -> PathBuf {
-    // A development build's own development module: never a
+    // A development build's own development module (LLP 1024 D5): never a
     // production one's, whatever its card says.
     if compat["embedded"]["gpu"]["trust"] == "development" && !production(compat) {
         if let Some(path) = override_path {
@@ -301,7 +304,7 @@ fn production(compat: &Value) -> bool {
     exact_runner::delivery::production(&compat.to_string())
 }
 /// The baked identity of `artifact`: "" the primary's, else a declared
-/// module's, one signed digest each.
+/// module's (LLP 1009 D6), one signed digest each.
 fn gpu_card<'a>(compat: &'a Value, artifact: &str) -> &'a Value {
     if artifact.is_empty() {
         &compat["embedded"]["gpu"]
@@ -375,7 +378,7 @@ pub(crate) struct ControlBinding {
 struct Canvas {
     id: u32,
     name: String,
-    /// The artifact that created it: "" the primary.
+    /// The artifact that created it (LLP 1009 D6): "" the primary.
     artifact: String,
     owner: bool,
     since: u64,
@@ -465,6 +468,8 @@ pub(crate) struct Surfaces {
     /// Windows readers gave canvases, by view (Android).
     #[cfg(target_os = "android")]
     windows: BTreeMap<u32, android::Window>,
+    #[cfg(any(target_os = "android", test))]
+    fingers: fingers::Fingers,
 }
 /// Posts held per surface name until a canvas of that name is live; past it a
 /// post is dropped and logged. The same bound and rule on every host.
@@ -532,17 +537,9 @@ impl Surfaces {
             .filter(|id| host.kernel().node(*id).is_none())
             .collect();
         for view in dead {
-            let c = self.canvases.remove(&view).unwrap();
-            self.edits_admitted |= self.abis[&c.artifact].agent(c.id, &json!({"op":"state"}))
-                ["world"]["developmentEdits"]
-                == true;
-            self.abis[&c.artifact].destroy(c.id);
+            changed |= self.retire(view, host);
             #[cfg(target_os = "android")]
             self.windows.remove(&view);
-            if c.owner {
-                self.error = self.error.take().or(host.surface_record(&c.name, None));
-                changed = true;
-            }
         }
         let updates = host.take_surface_updates();
         if updates.is_empty() && self.canvases.is_empty() && !self.work.is_empty() {
@@ -567,9 +564,9 @@ impl Surfaces {
                 continue;
             }
             // A module that is not there (no baked identity, no file) is
-            // logged and its canvases stay Contract-painted; one that is there
-            // and refuses (its ABI, its device, a shader pack) is the reply's
-            // error.
+            // logged and its canvases stay Contract-painted (a99d55103); one
+            // that is there and refuses (its ABI, its device, a shader pack,
+            // LLP 1015.004) is the reply's error.
             let present = !absent(Abi::file(&compat, &artifact));
             let opened = Abi::open(&compat, &artifact).and_then(|mut abi| {
                 if artifact.is_empty() {
@@ -626,15 +623,7 @@ impl Surfaces {
                 .get(&update.view)
                 .is_some_and(|c| c.name != update.name)
             {
-                let old = self.canvases.remove(&update.view).unwrap();
-                self.edits_admitted |= self.abis[&old.artifact]
-                    .agent(old.id, &json!({"op":"state"}))["world"]["developmentEdits"]
-                    == true;
-                self.abis[&old.artifact].destroy(old.id);
-                if old.owner {
-                    self.error = self.error.take().or(host.surface_record(&old.name, None));
-                    changed = true;
-                }
+                changed |= self.retire(update.view, host);
             }
             let Some(abi) = self.abis.get(&artifact) else {
                 continue;
@@ -1108,7 +1097,7 @@ impl<D: DataSource> Presenter<D> {
 
     /// Settle mounted GPU surfaces after first pixel and forward their public state.
     pub fn sync_surfaces(&mut self) {
-        // The module's GPU tier is the page's.
+        // The module's GPU tier is the page's (LLP 1139.003 D2).
         if let Some(tier) = self.surfaces.tier() {
             let page = self.host.runner().page();
             if page.gpu_tier != tier {
@@ -1120,7 +1109,7 @@ impl<D: DataSource> Presenter<D> {
                 }
             }
         }
-        // The 2D canvases' draws for this turn's commits.
+        // LLP 1056: the 2D canvases' draws for this turn's commits.
         self.dirty |= self
             .host
             .sync_canvases(self.brush.scale as f64, false, &self.assets);
@@ -1286,7 +1275,7 @@ impl<D: DataSource> Presenter<D> {
             }
         };
         // A back or forward button's release steps history unless its
-        // `pointerup` was prevented, as Chrome's does.
+        // `pointerup` was prevented, as Chrome's does (LLP 1115.000 D5.5).
         let released = before & !after;
         if !prevented && released & 8 != 0 {
             self.system_back(at);
@@ -1485,6 +1474,8 @@ mod tests;
 #[path = "surface_controls_tests.rs"]
 mod control_tests;
 
+#[path = "surfaces/retire.rs"]
+mod retire;
 #[path = "surfaces/tier.rs"]
 mod tier;
 use tier::agent_tier;

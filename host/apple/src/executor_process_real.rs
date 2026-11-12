@@ -1,4 +1,4 @@
-//! Real children, over ibex2's process transport: a
+//! Real children (LLP 1133.007 D9), over ibex2's process transport: a
 //! process group of the child's own, its output read by a thread per pipe
 //! and handed to the supervisor a few chunks ahead at most (so a full queue
 //! stops the reading and the child waits on its pipe), its stdin written by
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 /// Chunks a reader hands the supervisor before it waits for one to be
 /// delivered.
 const AHEAD: usize = 4;
-/// The login shell's limits, and `launchctl`'s.
+/// The login shell's limits (D5), and `launchctl`'s.
 const SHELL_LIMIT: Duration = Duration::from_secs(5);
 const LAUNCHCTL_LIMIT: Duration = Duration::from_secs(2);
 
@@ -70,11 +70,13 @@ pub(super) fn home_dir() -> Option<PathBuf> {
     os::home_dir()
 }
 
-/// The app bundle's `Contents`, read only: where `host.macos.resources`
+/// The app bundle's `Contents`, read only (D6): where `host.macos.resources`
 /// copied its trees. Linux bundles none yet.
 pub(super) fn bundle() -> Result<PathBuf, String> {
     if !cfg!(target_vendor = "apple") {
-        return Err("bundle: paths wait for the Linux host to bundle resources".into());
+        return Err(
+            "bundle: paths wait for the Linux host to bundle resources (LLP 1133.007 D6)".into(),
+        );
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let contents = exe
@@ -87,11 +89,11 @@ pub(super) fn bundle() -> Result<PathBuf, String> {
 }
 
 /// The program a spawn names, as a native path: a `path:` name looked up on
-/// the login shell's `PATH`, never on one the call writes, and refused
-/// where one of the app's `fs.write` lines (`app`) lets it write; a
+/// the login shell's `PATH`, never on one the call writes (D7), and refused
+/// where one of the app's `fs.write` lines (`app`) lets it write (§9); a
 /// namespace path resolved; then checked again against the line that
 /// admitted it, by whole names after realization, so a symlink under a
-/// granted directory that leads outside it is outside it.
+/// granted directory that leads outside it is outside it (D6, D7).
 pub(crate) fn program(
     shared: &Shared,
     grants: &str,
@@ -143,7 +145,7 @@ pub(crate) fn program(
 }
 
 /// A `path:` name's program on `path`, as realized, refused where one of
-/// the app's `fs.write` lines (`app`) lets it write. What runs is the
+/// the app's `fs.write` lines (`app`) lets it write (§9). What runs is the
 /// file checked, as realized: a link on the way to it that the app could
 /// replace later (a `PATH` entry through a directory it writes) is not read
 /// again, at this start or a keep-alive restart.
@@ -160,7 +162,7 @@ fn on_path(shared: &Shared, app: &str, name: &str, path: &str) -> Result<PathBuf
         Some(line) => Err(failed(
             FailureKind::Refused,
             format!(
-                "spawn path:{name}: {} is where the app may write (`{line}`): a program there runs only by a `process.spawn` line that names its path",
+                "spawn path:{name}: {} is where the app may write (`{line}`): a program there runs only by a `process.spawn` line that names its path (LLP 1133.007 §9)",
                 found.display()
             ),
         )),
@@ -428,7 +430,8 @@ fn write(fd: OwnedFd, n: u32, ctl: Arc<ChildCtl>) -> Arc<Stdin> {
     let _ = std::thread::Builder::new()
         .name("exact-child-stdin".into())
         .spawn(move || {
-            let mut file = std::fs::File::from(fd);
+            // `None` once the child closed its stdin (`EPIPE`).
+            let mut file = Some(std::fs::File::from(fd));
             loop {
                 let next = {
                     let mut q = queue.queue.lock().unwrap();
@@ -445,17 +448,15 @@ fn write(fd: OwnedFd, n: u32, ctl: Arc<ChildCtl>) -> Arc<Stdin> {
                 let Some(bytes) = next else {
                     break;
                 };
-                if file.write_all(&bytes).is_err() {
-                    // The child closed its stdin: what is queued is dropped.
-                    queue.queue.lock().unwrap().0.clear();
-                    queue.queued.store(0, Ordering::Release);
-                    ctl.send(Input::Child(n, Seen::Drained));
-                    break;
+                // Once the child closed its stdin, what is queued and every
+                // later write is dropped, so the queue still drains.
+                if file.as_mut().is_some_and(|f| f.write_all(&bytes).is_err()) {
+                    file = None;
                 }
                 let after = queue.queued.fetch_sub(bytes.len() as u64, Ordering::AcqRel)
                     - bytes.len() as u64;
                 // Empty: the supervisor looks, and a write that answered
-                // `false` hears `drain` (as Node's Writable).
+                // `false` hears `drain` (D2, as Node's Writable).
                 if after == 0 {
                     ctl.send(Input::Child(n, Seen::Drained));
                 }
@@ -464,7 +465,7 @@ fn write(fd: OwnedFd, n: u32, ctl: Arc<ChildCtl>) -> Arc<Stdin> {
     stdin
 }
 
-/// `execFile` on a real program: to `close`, with `input` on stdin,
+/// `execFile` on a real program (D3): to `close`, with `input` on stdin,
 /// output kept to `maxBuffer` (past it the group is ended, as Node's is),
 /// and the timeout on the supervision clock.
 pub(super) fn exec(
@@ -511,7 +512,7 @@ pub(super) fn exec(
             child.signal("SIGKILL");
             escalate = None;
         }
-        // Output past the drain after its exit is not waited for.
+        // Output past the drain after its exit is not waited for (D2).
         if exited_at
             .is_some_and(|at| at.elapsed() > Duration::from_millis(spec.drain_timeout as u64))
         {
@@ -535,9 +536,16 @@ pub(super) fn exec(
             Ok(Input::Child(_, Seen::Out(err, bytes))) => {
                 child.taken();
                 let into = if err { &mut stderr } else { &mut stdout };
-                into.extend_from_slice(&bytes);
+                // One byte past `maxBuffer` is kept, which says which pipe
+                // overflowed; nothing past it is held.
+                let room = (spec.max_buffer + 1).saturating_sub(into.len());
+                into.extend_from_slice(&bytes[..bytes.len().min(room)]);
                 if into.len() > spec.max_buffer && !overflow {
+                    // As Node's execFile does, the output ends before the
+                    // signal: a child that outlives it is read no further.
                     overflow = true;
+                    child.close_pipes();
+                    eof = [true, true];
                     child.signal(&spec.kill_signal);
                     escalate = Some(clock.now() + 5000.0);
                 }
@@ -601,7 +609,7 @@ fn writable(shared: &Shared, app: &str, path: &Path, real: &Path) -> Option<Stri
     line
 }
 
-/// `execPath`: the native path a spawn of `program` would run, or `None`.
+/// `execPath` (D7): the native path a spawn of `program` would run, or `None`.
 pub(super) fn resolve(shared: &Shared, grants: &str, app: &str, spec: &Spec) -> Option<String> {
     program(shared, grants, app, spec, &Ran::Real)
         .ok()
@@ -609,7 +617,7 @@ pub(super) fn resolve(shared: &Shared, grants: &str, app: &str, spec: &Spec) -> 
         .map(|path| path.display().to_string())
 }
 
-/// The login shell's variables `names`, captured once a launch.
+/// The login shell's variables `names`, captured once a launch (D5).
 pub(super) fn login_environment(shared: &Shared, names: &[&str]) -> HashMap<String, String> {
     static CAPTURED: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
     let captured = CAPTURED.get_or_init(Mutex::default);
@@ -630,7 +638,7 @@ pub(super) fn login_environment(shared: &Shared, names: &[&str]) -> HashMap<Stri
         .collect()
 }
 
-/// The capture: `$SHELL -ilc` printing each variable between markers,
+/// D5's algorithm: `$SHELL -ilc` printing each variable between markers,
 /// in a session of its own with stdin `/dev/null` and a 5 s limit; then
 /// `/bin/zsh` on macOS, or `/bin/sh -l` elsewhere, if that gave no `PATH`;
 /// on macOS then `launchctl getenv PATH`; failing all, the app's own.
@@ -654,7 +662,7 @@ fn capture_with(
 ) -> HashMap<String, String> {
     let mut found = HashMap::new();
     // Each name goes into the shell's command line: only a variable's name
-    // may (the grammars refuse any other).
+    // may (the grammars refuse any other, LLP 1133.007 D5).
     let names: Vec<&str> = (names.iter().copied()).filter(|n| shell_name(n)).collect();
     let names = names.as_slice();
     for (shell, flags) in shells {

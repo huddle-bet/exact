@@ -1,4 +1,4 @@
-// Locked secrets on a Mac. A Mac keeps a locked secret only
+// Locked secrets on a Mac (LLP 1133.010 D7). A Mac keeps a locked secret only
 // in the data-protection keychain, whose access groups come from the app's
 // code-signing entitlements, which a provisioning profile must authorize
 // (TN3137). It never falls back to the login keychain, whose access model
@@ -6,7 +6,7 @@
 // built, since no Mac it was built on had one: a build says it keeps no
 // locked secret, and why, and a release build whose grants say a name must
 // be locked is refused.
-import { installedProfiles, decodeProfile, profilesFor, byExpiry } from './devices.mjs';
+import { installedProfiles, decodeProfile, profilesFor, byExpiry, signedEnvironment } from './devices.mjs';
 
 const POLICIES = ['user-presence', 'biometry-any', 'biometry-current-set', 'device-credential'];
 
@@ -38,9 +38,9 @@ export function macPresence(app, ceiling, { release = false, distribution = fals
     ? `the macOS profile "${profile.name}" (team ${profile.team}) grants ${app.id}'s keychain group, and signing a Mac build with it is not built yet`
     : `no macOS provisioning profile for ${app.id} grants keychain-access-groups; install a development one with Keychain Sharing, or name one with EXACT_MAC_PROFILE`;
   if (release && mandatory.length) {
-    throw new Error(`grant-needs-profile: ${mandatory.join(', ')} must be kept locked, and a Mac keeps a locked secret only in the data-protection keychain, which a provisioning profile authorizes: ${why}. Or write \`optional\` on the line.`);
+    throw new Error(`grant-needs-profile: ${mandatory.join(', ')} must be kept locked, and a Mac keeps a locked secret only in the data-protection keychain, which a provisioning profile authorizes (LLP 1133.010 D7): ${why}. Or write \`optional\` on the line.`);
   }
-  log(`Locked secrets: this build keeps none, since ${why}: ${effect}.`);
+  log(`Locked secrets: this build keeps none, since ${why} (LLP 1133.010 D7): ${effect}.`);
 }
 
 /** The RP IDs a Mac needs an associated domain for: every `auth.passkey` line but `localhost`, which only the web admits. */
@@ -50,28 +50,40 @@ export function passkeyLines(ceiling = '') {
 }
 
 /** The bake's associated domains for an entitlement. A passkey RP ID's `webcredentials:` in a development build is
- * `?mode=developer`, so the device fetches the association from the domain rather than Apple's CDN;
- * a release build never asks for it. */
+ * `?mode=developer`, so the device fetches the association from the domain rather than Apple's CDN (LLP 1133.011
+ * D6); a release build never asks for it. */
 export function associatedDomains(auth, debuggable) {
   const passkeys = new Set((auth?.passkeys ?? []).map((rp) => `webcredentials:${rp}`));
   return (auth?.associatedDomains ?? []).map((d) => debuggable && passkeys.has(d) ? `${d}?mode=developer` : d);
 }
 
-/** Sign in with Apple's entitlement, which follows the signing, not the grant: a simulator takes it;
- * a device's profile must authorize it, and reading that from the profile is not built, so a device build signs none. */
-export function signInEntitlement(auth, simulator) {
-  return (auth?.signIn?.apple ?? []).length && simulator ? { 'com.apple.developer.applesignin': ['Default'] } : {};
+/** Sign in with Apple's entitlement, which follows the signing, not the grant (LLP 1133.014 D7, D8): a simulator
+ * takes it, and a device build takes it when its profile's entitlements (`allows`) include it. A development profile
+ * and a distribution one carry it alike, when the App ID has the capability. Elsewhere it is left out, since an
+ * entitlement the profile does not authorize stops the app installing. */
+export function signInEntitlement(auth, { simulator = false, team = null, allows = [] } = {}) {
+  const signable = (simulator && !team) || allows.includes('com.apple.developer.applesignin');
+  return (auth?.signIn?.apple ?? []).length && signable ? { 'com.apple.developer.applesignin': ['Default'] } : {};
 }
 
-/** A grant's entitlement's value (`reach.entitlements`): `true`, or the string the build chooses.
- * App Attest's environment is `development` for a debuggable build and `production` for a release; Apple
- * uses production for TestFlight and App Store builds whatever it says. */
+/** A grant's entitlement's value (`reach.entitlements`): `true`, or the string the build chooses (LLP 1133.028 D15
+ * item 1). An environment follows the signing, not the compiler: `debuggable` is the signing profile's
+ * `get-task-allow`, true on a simulator, so `development` there and under a development profile and `production`
+ * under the others. App Attest's and push's (`aps-environment`, LLP 1133.004 §9 P2, which a Live Activity that takes
+ * pushes signs too); Apple uses production for TestFlight and App Store builds whatever they say. */
 export function entitlementValue(name, debuggable) {
-  if (name === 'com.apple.developer.devicecheck.appattest-environment') return debuggable ? 'development' : 'production';
+  if (name === 'com.apple.developer.devicecheck.appattest-environment' || name === 'aps-environment') return signedEnvironment(debuggable);
   return true;
 }
 
-/** The device rows whose entitlement a Mac takes only with a provisioning profile: App Attest's
+/** The grant entitlements (`reach.entitlements`) a bundle of `app` signs, and so the ones its profile must allow:
+ * all of them for the app, none of push's for an App Clip, whose notifications are ephemeral (`NSAppClip`), or for an
+ * extension, which reads no token (LLP 1133.004 §9 P2). The signature and the profile check both read this. */
+export function grantEntitlements(app, names = []) {
+  return app.clipParent || app.widgetAppId ? names.filter((name) => name !== 'aps-environment') : names;
+}
+
+/** The device rows whose entitlement a Mac takes only with a provisioning profile (LLP 1133.028 D17): App Attest's
  * environment and the Declared Age Range. */
 const MAC_PROFILE_ROWS = { attestation: 'attestationStatus().available is false and attest fails NotSupportedError',
   'age-range': 'ageRangeStatus().available is false and requestAgeRange fails NotSupportedError' };
@@ -84,12 +96,12 @@ export function macProfileRows(app, ceiling, { release = false, log = console.lo
   if (!rows.length) return;
   const lines = rows.map((r) => `device.${r}`).join(', ');
   const one = rows.length === 1;
-  const why = `${one ? 'its entitlement needs' : 'their entitlements need'} a macOS provisioning profile for ${app.id}, and signing a Mac build with one is not built yet`;
+  const why = `${one ? 'its entitlement needs' : 'their entitlements need'} a macOS provisioning profile for ${app.id}, and signing a Mac build with one is not built yet (LLP 1133.010 D7)`;
   if (release) throw new Error(`grant-needs-profile: ${lines}: ${why}.`);
   log(`${lines}: this build signs ${one ? 'no entitlement for it' : 'neither entitlement'}, since ${why}: ${rows.map((r) => MAC_PROFILE_ROWS[r]).join('; ')} outside the agent.`);
 }
 
-/** What a macOS build of `app` says of its passkey lines, or refuses: `webcredentials:` is a
+/** What a macOS build of `app` says of its passkey lines, or refuses (LLP 1133.011 D6): `webcredentials:` is a
  * restricted entitlement on macOS, which only a provisioning profile authorizes (TN3125), and signing a Mac build
  * with one is not built. So the build signs no associated domain, its ceremonies fail `NotSupportedError`, and a
  * release build with a passkey line is refused (`grant-needs-profile`). */
@@ -97,12 +109,12 @@ export function macPasskeys(app, ceiling, { release = false, log = console.log }
   const ids = passkeyLines(ceiling);
   if (!ids.length) return;
   const lines = ids.map((rp) => `auth.passkey ${rp}`).join(', ');
-  const why = `the Associated Domains entitlement needs a macOS provisioning profile for ${app.id}, and signing a Mac build with one is not built yet`;
+  const why = `the Associated Domains entitlement needs a macOS provisioning profile for ${app.id}, and signing a Mac build with one is not built yet (LLP 1133.010 D7)`;
   if (release) throw new Error(`grant-needs-profile: ${lines}: ${why}.`);
   log(`Passkeys: this build signs no associated domain, since ${why}: getClientCapabilities().available is false and create and get fail NotSupportedError.`);
 }
 
-/** The `payment.apple-pay` grants' merchant IDs, where they can be signed: on a simulator, or
+/** @ref LLP 1133.034 D13 — the `payment.apple-pay` grants' merchant IDs, where they can be signed: on a simulator, or
  * with a profile whose entitlements (`allows`) include Apple Pay's. Elsewhere (an ad hoc Mac build) Apple Pay is
  * unavailable, and a profile without it would refuse the build. */
 export function merchantEntitlement(reach, { simulator = false, team = null, allows = [] } = {}) {

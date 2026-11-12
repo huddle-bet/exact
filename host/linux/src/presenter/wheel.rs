@@ -102,8 +102,8 @@ impl<D: DataSource> Presenter<D> {
     }
 
     /// A wheel at a point (the web's sign: a positive `dy` scrolls down).
-    /// A phase-less tick is its own gesture and is not split
-    /// (Chrome's measured tick): the innermost scroll container under the point
+    /// A phase-less tick is its own gesture and is not split (LLP 1070 G2,
+    /// Chrome's measured tick): the innermost scroll container under the point
     /// that can take ANY of its components takes those it can, clamped, and
     /// the rest is dropped. One that can take none chains to the next scroller
     /// up, then the page, unless its `overscroll-behavior` is `contain` or
@@ -115,7 +115,10 @@ impl<D: DataSource> Presenter<D> {
         {
             return;
         }
-        if self.overlay_wheel(x, y, dy) || self.alert_inert() && self.hit(x, y).is_none() {
+        if self.menu_wheel(x, y, dy)
+            || self.overlay_wheel(x, y, dy)
+            || self.alert_inert() && self.hit(x, y).is_none()
+        {
             return;
         }
         self.person_scrolls += 1;
@@ -126,9 +129,14 @@ impl<D: DataSource> Presenter<D> {
         if self.wheel_event(x, y, dx, dy) || canvas {
             return;
         }
-        // A UI wheel can take over a UI gesture, but does not release a game's
-        // captured pointer. Browser wheel events do not end pointer capture.
-        if self.contact_canvas().is_none() {
+        // A scrollbar drag bypasses contact recognition.
+        if self.brush.scrollbars.drag.take().is_some() {
+            self.dirty = true;
+        }
+        self.brush.scrollbars.pressed = false;
+        // A wheel takes over a recognized UI gesture, leaving pending presses
+        // and game pointer capture intact (LLP 1015.002, 1057.001 §6).
+        if self.contact_canvas().is_none() && self.contact_has_gesture() {
             if let Err(error) = self.pointer_cancel(self.pointer_now()) {
                 self.host.log(error);
             }
@@ -202,6 +210,16 @@ impl<D: DataSource> Presenter<D> {
         dx: f32,
         dy: f32,
     ) -> bool {
+        let dx = if self
+            .brush
+            .field_text
+            .get(&id)
+            .is_some_and(|field| field.scrolls_from_right())
+        {
+            -dx
+        } else {
+            dx
+        };
         let (ox, oy) = bounds.axes;
         let max = bounds.max;
         let off = self.scroll.get(&id).copied().unwrap_or((0.0, 0.0));

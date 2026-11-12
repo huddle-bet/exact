@@ -1,4 +1,4 @@
-//! The instanced painter's adapter.
+//! The instanced painter's adapter. @ref LLP 1149 D1.2, D2, D3.1.
 use crate::image::Bitmap;
 use crate::paint::border::BorderFill;
 use crate::paint::{Backend, FrameTarget, GradientPaint, Rect4, Shape, POINTER};
@@ -185,19 +185,16 @@ impl Ink {
             b.right().ceil() - b.left().floor() > limit
                 || b.bottom().ceil() - b.top().floor() > limit
         });
-        if !self.rows.capture.is_empty() && oversized {
+        let geometry = (!self.rows.capture.is_empty()).then(|| rows::PathGeometry {
+            path: path.clone(),
+            rule,
+            clips: clips.iter().map(|(p, r)| ((*p).clone(), *r)).collect(),
+            transform: self.record_transform(ts),
+        });
+        if geometry.is_some() && oversized {
             let mut instance = Instance::new(Kind::Coverage, Brush::Solid, [0.; 4]);
             instance.xform = affine(dev);
-            return Ok(Some((
-                instance,
-                Bindings::default(),
-                Some(rows::PathGeometry {
-                    path: path.clone(),
-                    rule,
-                    clips: clips.iter().map(|(p, r)| ((*p).clone(), *r)).collect(),
-                    transform: self.record_transform(ts),
-                }),
-            )));
+            return Ok(Some((instance, Bindings::default(), geometry)));
         }
         let coverage = exact_ink::path::coverage(
             &mut self.paths,
@@ -218,7 +215,7 @@ impl Ink {
                     path: c.entry.texture,
                     ..Default::default()
                 },
-                None,
+                geometry,
             )
         }))
     }
@@ -568,6 +565,10 @@ impl Backend for Ink {
     fn surface_image(&mut self, pixels: Arc<Pixmap>, dst: Rect4) {
         self.canvas(&pixels, dst, &[], Transform::identity());
     }
+    fn supports_island_image(&self) -> bool {
+        true
+    }
+
     fn island_image(&mut self, pixels: Arc<Pixmap>, dst: Rect4, ts: Transform, mode: u8) {
         self.observe_transform(ts);
         let result = self.blended_image(&pixels, dst, ts, mode);
@@ -853,7 +854,7 @@ impl Backend for Ink {
     fn layer_begin(&mut self, key: u64, ts: Transform, pivot: (f32, f32), base: [f32; 7]) -> bool {
         self.observe_transform(ts);
         // Transforming a rasterized group would move the stationary outer clips.
-        // Let the walk apply motion before clipping.
+        // @ref LLP 1149 D4: let the walk apply motion before clipping.
         if base[0] != 0. || base[1] != 0. || base[2] != 1. || base[3] != 0. {
             return false;
         }

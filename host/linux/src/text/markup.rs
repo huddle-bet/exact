@@ -1,5 +1,5 @@
-//! A `markup="markdown"` text's source into the paragraph's runs:
-//! `exact_markdown::pieces`, the expansion every host measures and
+//! A `markup="markdown"` text's source into the paragraph's runs (LLP 1045
+//! D3, D4): `exact_markdown::pieces`, the expansion every host measures and
 //! paints, so the measured paragraph is the painted one. Headings are bigger
 //! and bolder, code is `ui-monospace`, a list item's runs carry its indent
 //! and hung marker (`shaping`'s line insets), and links keep a target the
@@ -62,6 +62,7 @@ pub fn expand(source: &Run) -> Vec<Run> {
                 letter_spacing: source.letter_spacing,
                 font_variant_numeric: source.font_variant_numeric,
                 font_variant_ligatures: source.font_variant_ligatures,
+                font_features: source.font_features,
                 indent: p.indent,
                 hang: p.hang,
                 mark,

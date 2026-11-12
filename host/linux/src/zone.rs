@@ -1,4 +1,4 @@
-//! Locale, IANA zone, launch seed and UTC offset.
+//! Locale, IANA zone, launch seed and UTC offset (LLP 1027.000.000).
 #![allow(unsafe_code)]
 
 /// The local zone's current UTC offset in minutes east, from the C
@@ -24,7 +24,7 @@ pub fn local_offset_minutes() -> f64 {
 
 /// Under the agent, the date at the clock's zero (`EXACT_AGENT_EPOCH`, Unix
 /// milliseconds; default 2026-01-01T00:00:00Z) and the agent zone's offset
-/// at that instant; `None` reads the machine.
+/// at that instant; `None` reads the machine (LLP 1027.000.000 D3).
 pub fn agent_time(
     env: impl Fn(&str) -> Option<String>,
     zone: &str,
@@ -86,75 +86,30 @@ pub fn launch_place(
         exact_runner::time::Place {
             locale: env("EXACT_AGENT_LOCALE").unwrap_or_else(|| "en-US".into()),
             time_zone: env("EXACT_AGENT_TIME_ZONE").unwrap_or_else(|| "UTC".into()),
-            seed: agent_seed(env("EXACT_AGENT_SEED"))?,
+            seed: exact_runner::time::agent_seed(env("EXACT_AGENT_SEED"))?,
             format_locale: env("EXACT_AGENT_FORMAT_LOCALE").unwrap_or_default(),
         }
     } else {
         #[cfg(windows)]
         crate::com::ensure_mta().map_err(|error| format!("launch COM: {error}"))?;
-        // Below 2^32: four bytes of entropy.
+        let (locale, format_locale) = exact_runner::time::posix_locales(&env);
+        // Below 2^32 (LLP 1116.005 D5): four bytes of entropy.
         let mut bytes = [0; 4];
         getrandom::fill(&mut bytes).map_err(|e| format!("launch seed: {e}"))?;
         exact_runner::time::Place {
-            locale: locale(&env, "LC_MESSAGES"),
+            locale,
             time_zone: env("TZ")
                 .and_then(|zone| zone_name(&zone))
                 .or_else(|| iana_time_zone::get_timezone().ok())
                 .unwrap_or_else(|| "UTC".into()),
             seed: f64::from(u32::from_ne_bytes(bytes)),
-            // POSIX's category for dates and times (`LC_TIME`) beside the
-            // messages' language; none of its variables set, none apart
-            // from the locale.
-            format_locale: if ["LC_ALL", "LC_TIME", "LANG"]
-                .iter()
-                .any(|key| env(key).is_some_and(|s| !s.is_empty()))
-            {
-                locale(&env, "LC_TIME")
-            } else {
-                Default::default()
-            },
+            format_locale,
         }
     };
     place
         .validate()
         .map_err(|e| format!("launch place: {e:?}"))?;
     Ok(place)
-}
-
-/// The drive's seed as given (default 1), refused unless it is a whole
-/// number below 2^32, the range every host draws.
-fn agent_seed(value: Option<String>) -> Result<f64, String> {
-    let Some(value) = value else { return Ok(1.0) };
-    value.parse::<u32>().map(f64::from).map_err(|_| {
-        format!(
-            "EXACT_AGENT_SEED: a whole number from 0 through 2^32 - 1 (4294967295), not {value:?}"
-        )
-    })
-}
-
-/// `category`'s locale as BCP 47: `LC_ALL`, else the category, else `LANG`.
-fn locale(env: impl Fn(&str) -> Option<String>, category: &str) -> String {
-    let value = ["LC_ALL", category, "LANG"]
-        .into_iter()
-        .find_map(|key| env(key).filter(|s| !s.is_empty()))
-        .unwrap_or_default();
-    let tag = value.split(['.', '@']).next().unwrap_or("");
-    if tag.is_empty() || matches!(tag, "C" | "POSIX") {
-        return "en-US".into();
-    }
-    let mut parts = tag.split('_');
-    let language = parts.next().unwrap().to_ascii_lowercase();
-    let region = parts.next().map(str::to_ascii_uppercase);
-    let script = match value.split_once('@').map(|(_, modifier)| modifier) {
-        Some("latin") => Some("Latn"),
-        Some("cyrillic") => Some("Cyrl"),
-        _ => None,
-    };
-    [Some(language.as_str()), script, region.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 fn zone_name(value: &str) -> Option<String> {
@@ -182,35 +137,6 @@ fn zone_name(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn locale_environment_precedence_and_posix_normalization() {
-        for (all, messages, lang, expected) in [
-            ("fr_CA.UTF-8", "de_DE.UTF-8", "en_US.UTF-8", "fr-CA"),
-            ("", "de_DE.UTF-8", "en_US.UTF-8", "de-DE"),
-            ("", "", "en_US.UTF-8", "en-US"),
-            ("C.UTF-8", "fr_FR", "en_US", "en-US"),
-            ("POSIX", "", "", "en-US"),
-            ("", "", "sr_RS.UTF-8@latin", "sr-Latn-RS"),
-            ("", "", "", "en-US"),
-        ] {
-            assert_eq!(
-                locale(
-                    |key| Some(
-                        match key {
-                            "LC_ALL" => all,
-                            "LC_MESSAGES" => messages,
-                            "LANG" => lang,
-                            _ => unreachable!(),
-                        }
-                        .into()
-                    ),
-                    "LC_MESSAGES"
-                ),
-                expected
-            );
-        }
-    }
 
     #[test]
     fn the_format_locale_is_lc_time() {
@@ -278,7 +204,7 @@ mod tests {
         assert_eq!(custom.time_zone, "America/Toronto");
         assert_eq!(custom.seed, 4_294_967_295.0);
         assert_eq!(custom.format_locale, "fr-FR");
-        // A seed past 2^32 is refused, not wrapped.
+        // A seed past 2^32 is refused, not wrapped (LLP 1116.005 D5).
         for bad in ["4294967296", "9007199254740991", "-1", "1.5", "seven"] {
             let refused = launch_place(|key| match key {
                 "EXACT_AGENT" => Some("1".into()),
@@ -319,7 +245,7 @@ mod tests {
         assert_eq!(a.time_zone, "Europe/Paris");
         assert_ne!(a.seed, b.seed);
         assert!(a.validate().is_ok() && b.validate().is_ok());
-        // The drawn seed is a whole number below 2^32.
+        // The drawn seed is a whole number below 2^32 (LLP 1116.005 D5).
         for _ in 0..64 {
             let seed = launch_place(env).unwrap().seed;
             assert!(

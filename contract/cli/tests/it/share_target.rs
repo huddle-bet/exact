@@ -1,5 +1,5 @@
-//! A received share is one location, and its files arrive by token after its
-//! text.
+//! @ref LLP 1133.024 D2, D3 — a received share is one location, and its
+//! files arrive by token after its text.
 use exact_kernel::{Kernel, PropValue};
 use exact_runner::share_in::{self, Claims, Pending, PendingFile, ShareTarget, SharedFiles};
 use exact_runner::time::{launching_with, Launch};
@@ -106,7 +106,7 @@ fn a_cold_share_shows_its_text_first_with_its_files_pending_then_they_land() {
     let token = share_in::token(7.0, 0);
     assert_eq!(
         claimed.location,
-        format!("/share?text=hello%20there&files={token}")
+        format!("/share?text=hello+there&files={token}")
     );
     assert_eq!(
         claimed.line,

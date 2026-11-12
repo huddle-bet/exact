@@ -1,4 +1,5 @@
-// tamber/1.16 on both web pages: an inherited row names the node it comes from by its source, and `inspect` `select` moves the selection up
+// tamber/1.16 (stage 13 E, the design tool's second hands-on pass; theme2's 09:29 and 10:03 rulings) on both web
+// pages: an inherited row names the node it comes from by its source, and `inspect` `select` moves the selection up
 // the call-site chain, past the outermost to the root.
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -7,8 +8,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnOwned, stopAll } from './test-children.mjs';
 import { suiteBrowser } from './agent-launch.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 afterEach(() => stopAll());
 
 /** A dev loop on `app` (`flags`: `--wasm` for the wasm page), as scripts/tamber-server.test.mjs starts one. */

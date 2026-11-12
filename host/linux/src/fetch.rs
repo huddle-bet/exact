@@ -1,23 +1,25 @@
-//! The network form of the dev plan on Linux: given the app URL — the one a
-//! browser opens — resolve the envelope, negotiated or through `index.html`'s
-//! `rel=alternate` link, fetch the plan, verify its length and SHA-256, and
-//! hand back the bytes to boot. One shot, at process start: a headless run is
-//! per-invocation (the fleet's shape — run, read, run again), and the display
-//! loop's live SSE half is not yet verified on a Linux display.
+//! The network form of the dev plan (LLP 1023 Stage 1, Linux): given the
+//! app URL — the one a browser opens — resolve the envelope, negotiated or
+//! through `index.html`'s `rel=alternate` link, fetch the plan and selected
+//! Rust pair, verify their lengths and SHA-256, and hand them back to boot.
+//! After first pixel, `EXACT_DEV_PLAN` URLs are polled by the display,
+//! Android reader and stdio agent loops, with a 500 ms pause after each
+//! completed poll.
+//! The host applies accepted generations with state carried.
 //!
 //! The transport is ibex2's default — rustls off Apple, the platform's on a
-//! Mac — used directly: grants govern *app* authority; this
+//! Mac — used directly: grants govern *app* authority (ibex LLP 0067); this
 //! is host apparatus, the same standing as the Apple host's URLSession use
-//! in `PlanURL.swift`. Redirects are not followed in v1: the error names
-//! the limitation and the direct URL fixes it. Every line goes to stderr —
-//! in agent mode stdout is the protocol.
+//! in `PlanURL.swift`. Redirects are not followed: the error names the
+//! limitation and the `Location` header when supplied. Every line goes to
+//! stderr — in agent mode stdout is the protocol.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const ENVELOPE_TYPE: &str = "application/vnd.exact.envelope+json";
 /// A dev loop's answer while its producers start, or after their start
-/// failed (host/web/dev-phase.mjs): a status, said once.
+/// failed (llp/1023.001; host/web/dev-phase.mjs): a status, said once.
 const DEV_STATUS_TYPE: &str = "application/vnd.exact.dev-status+json";
 /// How a dev loop's status reads as a poll's error while its producers start,
 const LOOP_PREPARING: &str = "dev loop: ";
@@ -27,7 +29,7 @@ const LOOP_FAILED: &str = "dev loop failed to start: ";
 /// a page and an envelope are small documents, a plan is the only large one.
 /// These reach the transport as `Request::max_body` and are enforced while
 /// the bytes arrive — a reachable dev server that answers and never stops
-/// sending is refused at the ceiling rather than after it.
+/// sending is refused at the ceiling rather than after it (ibex2 LLP 0057 §3).
 const MAX_PAGE_BYTES: usize = 64 * 1024;
 const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
@@ -95,7 +97,7 @@ pub struct Generation {
 
 type FetchOutcome = Result<Option<Generation>, String>;
 
-/// The design the dev server's builds run:
+/// The design the dev server's builds run (LLP 1121 stage 4):
 /// `Some(Some(snapshot))` on a 200; `Some(None)` on a 204, the published
 /// plan's own design; `None` when there is no answer to act on (no server
 /// that keeps one, or a failed request).
@@ -118,6 +120,9 @@ pub(crate) struct Poller {
     url: String,
     compat: String,
     pub identity: Option<String>,
+    /// A generation the host holds (preparing its module, or waiting on
+    /// requests) or could not run: the poll does not download it again.
+    pub held: Option<String>,
     due: std::time::Instant,
     worker: Option<std::sync::mpsc::Receiver<Tick>>,
     /// The in-flight tick asked for `/__dev/design`.
@@ -125,7 +130,7 @@ pub(crate) struct Poller {
     /// The dev server's design snapshot, as last polled, for the presenter
     /// to apply (a build on it already applies nothing).
     pub design: Option<String>,
-    /// The build channel, polled on its own worker: a slow
+    /// The build channel (LLP 1122 D4), polled on its own worker: a slow
     /// plan download must not leave the stream unpolled past the server's
     /// 5 s, which drops it and the pins sent meanwhile.
     pub link: Option<crate::build_channel::Link>,
@@ -163,7 +168,7 @@ const TICK: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Poller {
     pub fn new(url: String, compat: String, identity: Option<String>) -> Self {
-        // No channel in a production build, dev plan or not.
+        // No channel in a production build (LLP 1122 D4), dev plan or not.
         let link = (is_url(&url) && !exact_runner::delivery::production(&compat))
             .then(|| crate::build_channel::Link::new(identity.clone()));
         let now = std::time::Instant::now();
@@ -171,6 +176,7 @@ impl Poller {
             url,
             compat,
             identity,
+            held: None,
             due: now,
             worker: None,
             asked_design: false,
@@ -300,16 +306,16 @@ impl Poller {
         if self.worker.is_none() && std::time::Instant::now() >= self.due {
             let url = self.url.clone();
             let compat = self.compat.clone();
-            let previous = self.identity.clone();
+            let (previous, held) = (self.identity.clone(), self.held.clone());
             // Once the channel is on, live frames come down its poll and
-            // the snapshot is fetched only when asked.
+            // the snapshot is fetched only when asked (LLP 1122 D4).
             let design = self.link.as_mut().is_none_or(|link| link.take_design());
             self.asked_design = design;
             let (send, receive) = std::sync::mpsc::channel();
             self.worker = Some(receive);
             let waker = self.waker.clone();
             std::thread::spawn(move || {
-                let changed = fetch_changed(&url, &compat, previous.as_deref());
+                let changed = fetch_unless(&url, &compat, &[previous.as_deref(), held.as_deref()]);
                 let design = design.then(|| fetch_design(&url)).flatten();
                 let _ = send.send((changed, design));
                 wake(&waker);
@@ -351,6 +357,17 @@ pub fn fetch_changed(
     compat: &str,
     previous: Option<&str>,
 ) -> Result<Option<Generation>, String> {
+    fetch_unless(page, compat, &[previous])
+}
+
+/// Fetch only when the envelope's generation is none of `known`: the one
+/// running, and one the host holds or could not run, which another download
+/// would not change.
+fn fetch_unless(
+    page: &str,
+    compat: &str,
+    known: &[Option<&str>],
+) -> Result<Option<Generation>, String> {
     let transport = ibex2::transport::default_transport();
     let get = |url: &str, accept: &str, limit: usize| -> Result<(u16, Vec<u8>, String), String> {
         let mut req = ibex2::stdlib::fetch::Request::get(url);
@@ -361,6 +378,13 @@ pub fn fetch_changed(
         // a plan, four hundred times too generous for an envelope.
         req.max_body = Some(limit);
         let r = transport.send(&req).map_err(|e| format!("{url}: {e}"))?;
+        if matches!(r.status, 301 | 302 | 303 | 307 | 308) {
+            let mut error = format!("{url}: HTTP {}; redirects are not followed", r.status);
+            if let Some(location) = r.headers.get("location") {
+                error.push_str(&format!("; Location: {location}"));
+            }
+            return Err(error);
+        }
         let kind = r
             .headers
             .get("content-type")
@@ -380,9 +404,10 @@ pub fn fetch_changed(
     {
         (decode_envelope(&body)?, page.to_string())
     } else {
-        // The link rung: a bounded, parser-free scan of the page's first 16 KB
-        // for the alternate-representation link, resolved against the page URL.
-        // No redirects, so the page URL is the base.
+        // The link rung: a bounded, parser-free scan of the page's first
+        // 16 KB (exact1 LLP 0268's rule) for the alternate-representation
+        // link, resolved against the page URL. No redirects, so the page
+        // URL is the base.
         let href = envelope_link(&body)
             .ok_or_else(|| format!("{page} is not an Exact app: no envelope and no link"))?;
         let url = join(page, &href)?;
@@ -413,7 +438,7 @@ pub fn fetch_changed(
         }
     }
     let identity = format!("{:x}", Sha256::digest(fingerprint.as_bytes()));
-    if previous == Some(identity.as_str()) {
+    if known.contains(&Some(identity.as_str())) {
         return Ok(None);
     }
     let fetch_card = |card: &PlanCard, limit: usize| -> Result<Vec<u8>, String> {
@@ -445,19 +470,28 @@ pub fn fetch_changed(
         }
         Ok(bytes)
     };
+    // The Rust variant this binary runs is chosen before anything is
+    // downloaded: an envelope it cannot take costs no plan.
+    let variant = match &envelope.rust {
+        Some(variants) => {
+            let compat: serde_json::Value =
+                serde_json::from_str(compat).map_err(|e| e.to_string())?;
+            let mode = compat["inputs"]["rustMode"].as_str().unwrap_or("off");
+            if variants.keys().any(|k| k != "native" && k != "wasm") {
+                return Err("invalid Rust executor manifest".into());
+            }
+            let variant = variants
+                .get(mode)
+                .ok_or("no Rust replacement matching this binary's executor")?;
+            if mode == "native" && variant.target.as_deref() != compat["target"].as_str() {
+                return Err("Rust replacement target does not match this binary".into());
+            }
+            Some(variant)
+        }
+        None => None,
+    };
     let plan = fetch_card(&envelope.plan, MAX_PLAN_BYTES)?;
-    let module = if let Some(variants) = envelope.rust {
-        let compat: serde_json::Value = serde_json::from_str(compat).map_err(|e| e.to_string())?;
-        let mode = compat["inputs"]["rustMode"].as_str().unwrap_or("off");
-        if variants.keys().any(|k| k != "native" && k != "wasm") {
-            return Err("invalid Rust executor manifest".into());
-        }
-        let variant = variants
-            .get(mode)
-            .ok_or("no Rust replacement matching this binary's executor")?;
-        if mode == "native" && variant.target.as_deref() != compat["target"].as_str() {
-            return Err("Rust replacement target does not match this binary".into());
-        }
+    let module = if let Some(variant) = variant {
         Some(crate::delivery::Module {
             receipt: String::from_utf8(fetch_card(&variant.receipt, 1 << 20)?)
                 .map_err(|e| e.to_string())?,
@@ -528,7 +562,7 @@ pub(crate) fn join(base: &str, href: &str) -> Result<String, String> {
     ))
 }
 
-/// Same-origin only in v1: scheme, host, and effective port
+/// Same-origin only in v1 (LLP 1023 D2): scheme, host, and effective port
 /// must match the page's. Explicit default ports equal their implicit form.
 fn same_host(page: &str, url: &str) -> Result<(), String> {
     if origin(page).is_some() && origin(page) == origin(url) {
@@ -666,9 +700,46 @@ mod tests {
         format!("http://127.0.0.1:{port}/")
     }
 
-    /// A dev loop whose producers start answers its status, read as what it is:
-    /// preparing, or the error its start ended with; anything else is the HTTP
-    /// error it was.
+    #[test]
+    fn redirects_name_the_limitation_and_location() {
+        let mut answers = Vec::new();
+        for status in [301, 302, 303, 307, 308, 404] {
+            for location in [Some("/app/"), None] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let page = format!("http://{}/app", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    drop(listener);
+                    assert_eq!(read_request_path(&mut stream), "/app");
+                    let header = location
+                        .map(|value| format!("Location: {value}\r\n"))
+                        .unwrap_or_default();
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} Test\r\n{header}Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                });
+                let error = fetch_app(&page).unwrap_err();
+                server.join().unwrap();
+                answers.push((page, status, location, error));
+            }
+        }
+        for (page, status, location, error) in answers {
+            let mut expected = format!("{page}: HTTP {status}");
+            if status != 404 {
+                expected.push_str("; redirects are not followed");
+                if let Some(location) = location {
+                    expected.push_str(&format!("; Location: {location}"));
+                }
+            }
+            assert_eq!(error, expected);
+        }
+    }
+
+    /// A dev loop whose producers start answers its status, read as what
+    /// it is (dtool2's pass 3 #8): preparing, or the error its start ended
+    /// with; anything else is the HTTP error it was.
     #[test]
     fn a_loops_status_is_read_as_preparing_or_failed() {
         let preparing = serve_status(
@@ -690,10 +761,11 @@ mod tests {
         assert_eq!(loop_status("text/plain", b"{}"), None);
     }
 
-    /// Its status is said once however often the host polls, for the Linux
-    /// display and the Android reader alike: both poll through this `Poller`
-    /// and say what `says` lets through (`Presenter::tick_development`); a
-    /// change, or another error first, is said again.
+    /// Its status is said once however often the host polls (theme2's
+    /// condition c), for the Linux display and the Android reader alike:
+    /// both poll through this `Poller` and say what `says` lets through
+    /// (`Presenter::tick_development`); a change, or another error first,
+    /// is said again.
     #[test]
     fn a_loops_status_is_said_once_across_polls() {
         let page = serve_status(
@@ -831,7 +903,7 @@ mod tests {
         let serving_revision = revision.clone();
         let serving_payloads = payload_requests.clone();
         let server = std::thread::spawn(move || {
-            for connection in listener.incoming().take(9) {
+            for connection in listener.incoming().take(11) {
                 let mut stream = connection.unwrap();
                 let path = read_request_path(&mut stream);
                 let module =
@@ -880,6 +952,21 @@ mod tests {
         assert_ne!(next.identity, first.identity);
         assert_eq!(next.module.unwrap().bytes, b"wasm revision 2");
         assert_eq!(payload_requests.load(SeqCst), 6);
+        // A generation the host holds or refused is not downloaded again, and
+        // one whose Rust this binary cannot run costs no plan.
+        assert!(super::fetch_unless(
+            &page,
+            compat,
+            &[Some(&first.identity), Some(&next.identity)]
+        )
+        .unwrap()
+        .is_none());
+        assert!(super::fetch_changed(&page, r#"{"inputs":{"rustMode":"native"}}"#, None).is_err());
+        assert_eq!(
+            payload_requests.load(SeqCst),
+            6,
+            "only the envelope, for a held generation and an unrunnable one"
+        );
         server.join().unwrap();
     }
 }

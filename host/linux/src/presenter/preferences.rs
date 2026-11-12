@@ -1,7 +1,8 @@
 //! What the host tells the app about the device and its user, after boot:
-//! the date, the display preferences and the page's facts. The presenter reads
+//! the date (LLP 1027.000.000), the display preferences (LLP 1061 D5; LLP
+//! 1069.000 D1) and the page's facts (LLP 1069.000 D2). The presenter reads
 //! no system setting itself. On Android the reader reads the device's and
-//! tells them whole ([`Presenter::set_device`]); an agent
+//! tells them whole ([`Presenter::set_device`], LLP 1115.001 D3); an agent
 //! sets them one at a time (`prefer`). Until either speaks, as on desktop
 //! Linux, the app is told no preference, a light system, a visible page,
 //! online, with focus (the app is the whole display: no other window can take
@@ -51,7 +52,7 @@ impl<D: DataSource> Presenter<D> {
 
     /// The date, as the clock `performanceNow()` reads: Unix ms at clock zero (the
     /// runner's clock starts at boot) and the local zone's offset, in
-    /// minutes east of UTC, as Apple and the web read theirs.
+    /// minutes east of UTC, as Apple and the web read theirs (LLP 1054 R12).
     pub fn set_time(&mut self, epoch_at_zero: f64, utc_offset: f64) -> Option<String> {
         let error = self.host.set_time(epoch_at_zero, utc_offset);
         if error.is_some() {
@@ -60,17 +61,26 @@ impl<D: DataSource> Presenter<D> {
         self.after_commit()
     }
 
-    /// The local zone's offset now, told when it is not the runner's: the
-    /// display loop asks before each advance, so a DST change or a new zone
-    /// reaches the timer that fires after it. An agent drive's
-    /// offset is the drive's (`agent.rs` `retell_offset`), never this.
+    /// The machine's date at the live clock's zero and the local zone's
+    /// offset, told when either moved from the runner's: the offset, or the
+    /// date by a second or more (the runner's own threshold). The date moves
+    /// when the clock is set, and through a suspend, which the live clock
+    /// (`Instant`: `CLOCK_MONOTONIC` on Linux and Android) does not count.
+    /// Each loop asks before its advance and frame, and on the platform's
+    /// notice of a clock change or a resume, so the timer that fires after
+    /// a DST change, a new zone or a sleep reads the date (habits F6).
+    /// Under a driver's clock (no live clock) the date and offset are the
+    /// drive's (`agent.rs` `retell_offset`), never this.
     pub fn follow_local_offset(&mut self) -> Option<String> {
+        let clock = self.live_clock.as_ref()?;
+        let epoch = unix_ms() - clock();
         let time = self.host.runner().wall_time();
         let offset = crate::zone::local_offset_minutes();
-        if time.epoch_at_zero <= 0.0 || offset == time.utc_offset {
+        let moved = (epoch - time.epoch_at_zero).abs() >= 1000.0;
+        if time.epoch_at_zero <= 0.0 || (!moved && offset == time.utc_offset) {
             return None;
         }
-        self.set_time(time.epoch_at_zero, offset)
+        self.set_time(epoch, offset)
     }
 
     /// `prefers-reduced-motion`, `-reduced-transparency`, `-contrast` and
@@ -94,15 +104,15 @@ impl<D: DataSource> Presenter<D> {
         self.after_commit()
     }
 
-    /// A live design batch or snapshot frame, in place;
+    /// A live design batch or snapshot frame (LLP 1121 stage 4), in place;
     /// a colour the full wide table refused is reported on the build
-    /// channel, or to stderr with none.
+    /// channel (LLP 1122 D4), or to stderr with none.
     pub fn apply_live(&mut self, frame: &str) -> Option<String> {
         // The trace's (EXACT_SCRUB_TRACE): when taken, and the design before,
         // so a frame the runner drops (an older one) is no line.
         let traced = scrub_trace().then(|| (unix_ms(), self.host.runner().design()));
         let (error, full, roles) = self.host.apply_live(frame);
-        // Nothing kept from a paint under the old overrides stands.
+        // Nothing kept from a paint under the old overrides stands (LLP 1121 stage 5).
         if roles {
             self.brush.colors_changed();
             self.dirty = true;
@@ -126,7 +136,7 @@ impl<D: DataSource> Presenter<D> {
         after
     }
 
-    /// App modes: `setMode` from the agent's `prefer mode`.
+    /// App modes (LLP 1121 D5): `setMode` from the agent's `prefer mode`.
     pub fn set_modes(&mut self, pins: &[(&str, &str)]) -> Option<String> {
         let error = self.host.set_modes(pins);
         if error.is_some() {
@@ -135,7 +145,7 @@ impl<D: DataSource> Presenter<D> {
         self.after_commit()
     }
 
-    /// The root font size `rem` lengths follow: 16, a
+    /// The root font size `rem` lengths follow (LLP 1069.000 D3): 16, a
     /// browser's `medium`, until the device's shell says its font scale
     /// ([`Presenter::set_device`]: 16 times it) or an agent a size.
     pub fn set_root_font_size(&mut self, px: f64) -> Option<String> {
@@ -146,7 +156,7 @@ impl<D: DataSource> Presenter<D> {
         self.after_commit()
     }
 
-    /// `devicePosture` and the viewport segments: what the
+    /// `devicePosture` and the viewport segments (LLP 1078 D7): what the
     /// agent's `prefer posture` and `prefer segments` set on this host,
     /// which has no fold of its own; kept for `layout.env`.
     pub fn set_segments(
@@ -181,9 +191,14 @@ impl<D: DataSource> Presenter<D> {
         self.apply_scheme();
     }
 
-    /// Report an individual view's appearance.
+    /// Report an individual view's appearance (LLP 1062 D4).
     pub fn set_view_scheme(&mut self, view: ViewId, dark: bool) {
+        let before = self.host.presented(view).dark;
         self.host.set_view_scheme(view, dark);
+        // View reports are paint state, outside the kernel's commit epoch.
+        if before != self.host.presented(view).dark {
+            self.window.status_bar.invalidate();
+        }
         self.dirty = true;
     }
 
@@ -192,7 +207,7 @@ impl<D: DataSource> Presenter<D> {
         self.apply_scheme();
     }
 
-    /// What a `light-dark()` colour resolves to here.
+    /// What a `light-dark()` colour resolves to here (LLP 1034 D2).
     fn apply_scheme(&mut self) {
         let dark = self.scheme.0.unwrap_or(self.scheme.1);
         self.dirty |= self.brush.dark != dark;
@@ -208,8 +223,8 @@ impl<D: DataSource> Presenter<D> {
         self.brush.dark
     }
 
-    /// A request for MIDI on the display's clock: this host has none.
-    /// Under the agent's clock the runner answered it already.
+    /// A request for MIDI on the display's clock: this host has none (LLP
+    /// 1125 D6). Under the agent's clock the runner answered it already.
     pub(super) fn midi_unavailable(&mut self) {
         if self.live_clock.is_none() {
             return;
@@ -223,7 +238,7 @@ impl<D: DataSource> Presenter<D> {
         }
     }
 
-    /// `prefer extension`: the runner's, committed as `midi_agent`'s is.
+    /// `prefer extension` (LLP 1124 D7): the runner's, committed as `midi_agent`'s is.
     pub fn extension_agent(&mut self, request: &str) -> Option<Result<String, String>> {
         let reply = self.host.extension_agent(request)?;
         Some(match self.after_commit() {
@@ -232,7 +247,7 @@ impl<D: DataSource> Presenter<D> {
         })
     }
 
-    /// The agent's `prefer midi.*` and `tap midi`: `None` for
+    /// The agent's `prefer midi.*` and `tap midi` (LLP 1125 §4): `None` for
     /// another request, else the reply or the refusal.
     pub fn midi_agent(&mut self, request: &str) -> Option<Result<String, String>> {
         let reply = self.host.midi_agent(request)?;

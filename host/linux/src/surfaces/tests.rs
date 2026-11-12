@@ -57,6 +57,7 @@ fn surface_work_scope_is_refused_before_presenter_effects() {
     let request = |ticket, mut request: exact_runner::Request| {
         request.grants = Some("surface.read other".into());
         RequestOut {
+            class: exact_runner::RequestClass::Ordered,
             ticket,
             target: "save".into(),
             request,
@@ -84,6 +85,7 @@ fn surface_work_scope_is_refused_before_presenter_effects() {
     allowed.grants = Some("surface.read world".into());
     surfaces.enqueue(
         RequestOut {
+            class: exact_runner::RequestClass::Ordered,
             ticket: 8,
             target: "save".into(),
             request: allowed,
@@ -556,8 +558,8 @@ fn oversized_module_output_is_a_structured_refusal() {
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
-/// A surface record past the limit (a game's HUD after a harvest) must not
-/// fail the agent's `clock`. A refused record is
+/// Grow a Garden's HUD went past the record limit after a harvest and the
+/// agent's `clock` failed with it (diary 004, limit 2). A refused record is
 /// the surface's: the operation that carried it answers, `state` names the
 /// refusal with the record's size and the limit, and the last record stands.
 #[test]
@@ -593,7 +595,7 @@ fn an_oversized_record_is_reported_in_state_not_as_the_operations_error() {
     assert_eq!(state["surfaceRefusals"], json!({}));
 }
 
-// postMessage parity: a post waits for its surface's canvas, at
+// postMessage parity (review S2): a post waits for its surface's canvas, at
 // most POST_BOUND per name, on every host.
 #[test]
 fn posts_wait_for_their_surface_up_to_the_bound() {
@@ -681,7 +683,7 @@ fn a_module_is_absent_only_without_an_identity_or_a_file() {
     let _ = std::fs::remove_file(here);
 }
 
-/// The module's tier (here its own choice, low) is the
+/// LLP 1139.003 D2: the module's tier (here its own choice, low) is the
 /// page's `gpuTier`; `prefer gpu-tier` tells every module and remakes its
 /// renderers, and the page follows the module's answer.
 #[test]
@@ -715,6 +717,64 @@ fn the_page_fact_follows_the_modules_gpu_tier() {
     assert_eq!(unsafe { retiers() }, 1);
     p.sync_surfaces();
     assert_eq!(p.host.runner().page().gpu_tier(), "mid");
+    drop(p);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+/// A reload renumbers the tree from 1, so the canvas's old view id can name
+/// another node: the surface goes with the old tree and the canvas makes its
+/// own, which owns its name.
+#[test]
+fn a_reload_that_renumbers_the_tree_gives_the_canvas_its_own_surface() {
+    let (path, compat) = fixture();
+    let plan = |above: &str| {
+        let source = format!(
+            "component App\n  state n = 0\n  view\n    column\n{above}      canvas surface=world(n) width=50 height=50\n"
+        );
+        contract::compile(&source).unwrap().encode()
+    };
+    let (mut p, _) = Presenter::boot(
+        &plan(""),
+        (),
+        (100., 100.),
+        1.,
+        path.parent().unwrap().into(),
+    )
+    .unwrap();
+    p.surfaces
+        .abis
+        .insert(String::new(), Abi::open_path(&path, &compat, "").unwrap());
+    p.surfaces.attempted.insert(String::new());
+    p.compat = compat.to_string();
+    let canvases = |p: &Presenter<()>| {
+        (p.surfaces.canvases.iter())
+            .map(|(view, c)| {
+                let node = p.host.kernel().node(*view).map(|n| n.node_type);
+                (*view, c.name.clone(), c.owner, node)
+            })
+            .collect::<Vec<_>>()
+    };
+    let canvas = exact_kernel::NodeType::Canvas;
+    p.sync_surfaces();
+    let before = canvases(&p);
+    assert_eq!(before.len(), 1);
+    assert_eq!(
+        (&before[0].1, before[0].2, before[0].3),
+        (&"world".into(), true, Some(canvas))
+    );
+
+    assert!(p
+        .reload(&plan("      text \"new\"\n"), ())
+        .unwrap()
+        .is_none());
+    p.sync_surfaces();
+    let after = canvases(&p);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(
+        (&after[0].1, after[0].2, after[0].3),
+        (&"world".into(), true, Some(canvas))
+    );
+    assert_ne!(after[0].0, before[0].0, "the plan moved the canvas");
     drop(p);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

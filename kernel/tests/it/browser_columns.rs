@@ -1,4 +1,4 @@
-//! CSS multi-column layout against literal Chrome.
+//! CSS multi-column layout (LLP 1093) against literal Chrome.
 //!
 //! Chrome 154, 2026-10-04, by the method of `browser_cases.rs` (the outer box
 //! is the kernel root, everything `box-sizing: content-box` in a 16px/18px
@@ -11,8 +11,8 @@
 //! (`id>parent>declarations`, then `>` and a text node's lines joined by
 //! `|`), Chrome's rects (`id=x,y,w,h`, fragments joined by `/`), the
 //! multi-column containers' scroll sizes (`id=w,h`) and each paragraph's
-//! line starts (`id:x,y;x,y`). A case of a declared deviation (its name
-//! begins `deviation:`) carries three more fields, the kernel's own rects, scroll sizes and line
+//! line starts (`id:x,y;x,y`). A case D10 declares (its name says which)
+//! carries three more fields, the kernel's own rects, scroll sizes and line
 //! starts (`-` where the kernel matches Chrome), and both comparisons use
 //! those: each row holds the deviation to exactly what is declared.
 use crate::browser_cases::{css_rows, props};
@@ -157,7 +157,7 @@ fn columns_land_where_chrome_puts_them() {
         let name = field[0];
         let list = nodes(field[2]);
         let k = lay_out(field[1], &list);
-        // A deviation case's kernel columns, where it says the kernel differs.
+        // A D10 case's kernel columns, where it says the kernel differs.
         let want = |i: usize| match field.get(i + 3) {
             Some(own) if *own != "-" => *own,
             _ => field[i],
@@ -276,7 +276,7 @@ fn a_paragraph_s_height_bound_caps_its_columns() {
 
 /// A height bound that holds a percentage caps the columns where its basis
 /// is definite, as layout resolved it: an authored height or a stretched
-/// flex item gives one (Chrome 154 puts the fourth 20-point
+/// flex item gives one (LLP 1116 D5; Chrome 154 puts the fourth 20-point
 /// block at the top of the second column of a 60-point cap, the sixth of a
 /// 100-point one).
 #[test]
@@ -368,4 +368,106 @@ fn a_calculated_height_bound_caps_the_columns() {
         "200,0,200,20",
         "the sixth block opens the second column"
     );
+}
+
+/// `align-content` aligns a multi-column container's columns as one subject
+/// (CSS Box Alignment 3 §5.1), with block layout's fallbacks. The free space
+/// is the content box less the columns' height, which with
+/// `column-fill: auto` is the content's while it fits one column. Chrome
+/// 156.0.8078.4, by `columns_land_where_chrome_puts_them`'s method: each
+/// child's fragments' corners.
+#[test]
+fn align_content_moves_the_columns_as_one() {
+    let blocks = &["height:20px"; 2][..];
+    let monolithic = |h: &[u32]| -> Vec<String> {
+        h.iter()
+            .map(|h| format!("height:{h}px;overflow:hidden"))
+            .collect()
+    };
+    let cases: Vec<(&str, Vec<String>, &str)> = vec![
+        ("height:100px;align-content:flex-end", own(blocks), "0,80 160,80"),
+        ("height:100px;align-content:center", own(blocks), "0,40 160,40"),
+        ("align-content:flex-end", own(blocks), "0,0 160,0"),
+        ("min-height:100px;align-content:end", own(blocks), "0,80 160,80"),
+        ("height:100px;align-content:space-between", own(blocks), "0,0 160,0"),
+        ("height:100px;align-content:space-around", own(blocks), "0,40 160,40"),
+        ("height:100px;align-content:stretch", own(blocks), "0,0 160,0"),
+        (
+            "height:100px;padding-top:10px;padding-bottom:5px;border-width:3px;border-style:solid;align-content:end",
+            own(blocks),
+            "3,93 163,93",
+        ),
+        (
+            "height:100px;align-content:end",
+            monolithic(&[20, 30, 10]),
+            "0,60 160,60 160,90",
+        ),
+        ("height:30px;align-content:center", monolithic(&[40, 40]), "0,0 160,0"),
+        (
+            "height:100px;align-content:end;column-fill:auto",
+            own(blocks),
+            "0,60 0,80",
+        ),
+        (
+            "min-height:100px;align-content:center;column-fill:auto",
+            own(blocks),
+            "0,30 0,50",
+        ),
+        (
+            "height:100px;align-content:end;column-fill:auto",
+            own(&["height:20px", "height:30px;break-before:column"]),
+            "0,0 160,0",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (css, children, want) in &cases {
+        let k = aligned(css, children);
+        let got = corners(&k, children.len());
+        if got != *want {
+            wrong.push(format!("{css} {children:?}: kernel {got}, Chrome {want}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+    // The used height is no input to the flow thread, so a box that grows
+    // lands where a fresh layout puts it.
+    for css in ["align-content:center", "height:100px;align-content:end"] {
+        let mut k = aligned(css, &own(blocks));
+        let patch = Box::new(props(&css_rows("height:30px")));
+        k.apply(0, 2, &[Op::SetStyle { id: 4, patch }]).unwrap();
+        k.compute_layout(1, Offer::definite(800.0, 600.0)).unwrap();
+        let mut fresh = k.rehydrate(Box::new(exact_kernel::MonospaceMeasurer::default()));
+        fresh
+            .compute_layout(1, Offer::definite(800.0, 600.0))
+            .unwrap();
+        assert_eq!(corners(&k, 2), corners(&fresh, 2), "{css}");
+    }
+}
+
+fn own(css: &[&str]) -> Vec<String> {
+    css.iter().map(|c| c.to_string()).collect()
+}
+
+// A two-column container with `css` holding blocks #3, #4, … with `children`.
+fn aligned(css: &str, children: &[String]) -> Kernel {
+    let mut field = format!("2>1>width:320px;column-count:2;column-gap:0px;{css}");
+    for (i, child) in children.iter().enumerate() {
+        field += &format!(" & {}>2>{child}", 3 + i);
+    }
+    lay_out("display:block", &nodes(&field))
+}
+
+// The top-left corner of each fragment of blocks #3, #4, ….
+fn corners(k: &Kernel, count: usize) -> String {
+    (3..3 + count as u32)
+        .map(|id| {
+            let rects = rects(k, id);
+            let corners = rects.split('/').map(|r| {
+                let r: Vec<_> = r.split(',').collect();
+                format!("{},{}", r[0], r[1])
+            });
+            corners.collect::<Vec<_>>().join("/")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

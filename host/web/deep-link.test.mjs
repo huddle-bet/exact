@@ -1,8 +1,8 @@
 // A navigation to a location whose last segment has a dot is the app's
-// document, not a missing file (`/profile/alice.example` is a profile, not
-// a file to 404); a request that is no navigation (an asset's fetch)
+// document, not a missing file (bsky5, b32: `/profile/jay.bsky.team` 404'd
+// on the dev server); a request that is no navigation (an asset's fetch)
 // still finds nothing, and a file that exists is still that file.
-import {afterAll, afterEach, beforeAll, describe, test, expect, spyOn} from 'bun:test';
+import {afterAll, afterEach, beforeAll, describe, test, expect, spyOn, mock} from 'bun:test';
 import {mkdirSync, mkdtempSync, rmSync, readFileSync, renameSync, writeFileSync, symlinkSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {createServer as httpServer} from 'node:http';
@@ -15,7 +15,7 @@ import {createApp} from '../../game/new.mjs';
 import {developmentBuildEnv} from '../../scripts/app.mjs';
 import {tmpdir} from 'node:os';
 import {resolve} from 'node:path';
-import {acceptsHTML, appDocumentPath, DirectoryOrigin, webRootPath} from '../../scripts/origin.mjs';
+import {acceptsHTML, appDocumentPath, DirectoryOrigin, prefersMarkdown, webRootPath} from '../../scripts/origin.mjs';
 import {publishRoot} from '../../scripts/deploy.mjs';
 import {canonical, locationOf, matchPattern} from '../web-js/route-pattern.js';
 import {buildTreeFile, buildTreeFileAsync, planRouteTable, readWebRequest, readModuleFile, serveBuildTree} from './serve.mjs';
@@ -30,16 +30,16 @@ test('a navigation to a dotted deep link is the document; a fetch of one is not'
     mkdirSync(resolve(dist, 'assets'));
     writeFileSync(resolve(dist, 'assets/app.css'), 'body{}');
     const html = 'text/html,application/xhtml+xml,*/*;q=0.8';
-    expect(appDocumentPath('/profile/alice.example')).toBe(false);
-    expect(appDocumentPath('/profile/alice.example', true)).toBe(true);
+    expect(appDocumentPath('/profile/jay.bsky.team')).toBe(false);
+    expect(appDocumentPath('/profile/jay.bsky.team', true)).toBe(true);
     expect(appDocumentPath('/.exact/x', true)).toBe(false);
     expect(appDocumentPath('/profile/photos.zip', true)).toBe(false);
-    expect((await readWebRequest(dist, '/profile/alice.example', html)).found?.route).toBe('/index.html');
-    expect((await readWebRequest(dist, '/profile/alice.example')).found).toBe(null);
+    expect((await readWebRequest(dist, '/profile/jay.bsky.team', html)).found?.route).toBe('/index.html');
+    expect((await readWebRequest(dist, '/profile/jay.bsky.team')).found).toBe(null);
     expect((await readWebRequest(dist, '/assets/app.css', html)).found?.route).toBe('/assets/app.css');
-    expect(buildTreeFile(dist, '/profile/alice.example', html)?.route).toBe('/shell.html');
-    expect(buildTreeFile(dist, '/profile/alice.example')).toBe(null);
-    // A build tree's shell is a navigation's: a fetch of a route's path, dotted or not, is no page.
+    expect(buildTreeFile(dist, '/profile/jay.bsky.team', html)?.route).toBe('/shell.html');
+    expect(buildTreeFile(dist, '/profile/jay.bsky.team')).toBe(null);
+    // A build tree's shell is a navigation's (LLP 1153 D3.2): a fetch of a route's path, dotted or not, is no page.
     expect(buildTreeFile(dist, '/profile/alice', html)?.route).toBe('/shell.html');
     for (const accept of ['', '*/*', 'application/json']) expect(buildTreeFile(dist, '/profile/alice', accept), accept).toBe(null);
     // A missing file a page or an iframe navigates to is still missing.
@@ -47,6 +47,12 @@ test('a navigation to a dotted deep link is the document; a fetch of one is not'
     expect((await readWebRequest(dist, '/assets/missing.pdf', html)).found).toBe(null);
     expect(buildTreeFile(dist, '/deck/missing.html', html)).toBe(null);
     expect((await readWebRequest(dist, '/assets/hero.model', html)).found).toBe(null);
+    // The one dot path a build tree serves beside the install pages: the association file Apple's CDN fetches.
+    mkdirSync(resolve(dist, '.well-known'));
+    writeFileSync(resolve(dist, '.well-known/apple-app-site-association'), '{}');
+    writeFileSync(resolve(dist, '.well-known/other'), '{}');
+    expect(buildTreeFile(dist, '/.well-known/apple-app-site-association')?.route).toBe('/.well-known/apple-app-site-association');
+    expect(buildTreeFile(dist, '/.well-known/other')).toBe(null);
   } finally { rmSync(dist, {recursive: true, force: true}); }
 });
 
@@ -60,6 +66,18 @@ test('acceptsHTML reads the media type, any case, at a quality above zero', () =
   expect(acceptsHTML('application/json;profile="a,text/html,b"')).toBe(false);
   expect(acceptsHTML('application/json;profile="a\\",text/html"')).toBe(false);
   expect(acceptsHTML('application/vnd.exact.envelope+json, text/html;q=0.9')).toBe(true);
+});
+
+test('prefersMarkdown names text/markdown no lower than the most specific range taking text/html', () => {
+  expect(prefersMarkdown('text/markdown')).toBe(true);
+  expect(prefersMarkdown('text/markdown, text/html;q=0.9')).toBe(true);
+  expect(prefersMarkdown('text/html, text/markdown;q=0.5')).toBe(false);
+  expect(prefersMarkdown('text/markdown;q=0.5, text/*')).toBe(false);
+  expect(prefersMarkdown('text/markdown;q=0.5, text/*;q=0.2, */*')).toBe(true);
+  expect(prefersMarkdown('text/markdown, */*;q=0.1')).toBe(true);
+  expect(prefersMarkdown('text/*, */*')).toBe(false);
+  expect(prefersMarkdown('text/markdown;q=0')).toBe(false);
+  expect(prefersMarkdown(undefined)).toBe(false);
 });
 
 // Use the compiler's wire format, so the server's route reader is checked
@@ -127,7 +145,7 @@ test('declared routes disambiguate file extensions on both serving paths and fol
   } finally { rmSync(dist, {recursive: true, force: true}); }
 });
 
-// A JS-target build is served as any static host serves it: a file, else for an HTML navigation a declared
+// LLP 1153 D3: a JS-target build is served as any static host serves it: a file, else for an HTML navigation a declared
 // route's shell with 200, else 404.html with 404. With no 404.html a page's miss gets the shell, whose client draws
 // the notfound route; a request for anything but HTML at a route's path is a miss.
 test('a build tree answers a miss with 404 and its 404.html, or a page with the shell', async () => {
@@ -174,6 +192,16 @@ test('the shared pattern matcher retains the route corpus semantics without notf
     const matched = index < 0 ? null : {name: routes[index].name, params};
     expect(matched, location).toEqual(expected?.name === 'notfound' ? null : expected);
   }
+});
+
+test('the JS query reader agrees with the shared route corpus', async () => {
+  // The build copies navigation.js from host/web and generates names.js.
+  mock.module('../web-js/navigation.js', () => import('./navigation.js'));
+  mock.module('../web-js/names.js', () => ({sourceTypes: {}}));
+  const {x_searchParam} = await import('../web-js/router.js');
+  const {search} = JSON.parse(readFileSync(new URL('../../route/tests/corpus.json', import.meta.url), 'utf8'));
+  const values = search.map(({url, name}) => x_searchParam([0, '', url, '', [], ''], name));
+  expect(values).toEqual(search.map(({expected}) => expected));
 });
 
 afterEach(() => stopAll());

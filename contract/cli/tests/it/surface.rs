@@ -99,7 +99,7 @@ fn viewport_and_delivery_readers_choose_subsets_without_source_unification() {
     ] {
         let text = format!("shape A\n  {}\nshape B\n  {}\ncomponent App\n  resource a = {source}() as shape A\n  resource b = {source}() as shape B\n  view\n    text \"facts\"\n", fields[0], fields[1]);
         let p = contract::compile(&text).unwrap();
-        // Named once in the plan's source table, never unified.
+        // Named once in the plan's source table (LLP 1030 D7), never unified.
         assert_eq!(p.sources.len(), 1);
         contract::bake(p, NoData).unwrap();
     }
@@ -222,6 +222,39 @@ fn named_surface_arguments_survive_plan_roundtrip_and_live_updates() {
 }
 
 #[test]
+fn view_binders_preserve_surface_names() {
+    let source =
+        include_str!("../../../../semantics/corpus/components/view-surface-names.contract");
+    for prefix in ["", "component App\n  view\n    Scene()\n"] {
+        let plan = contract::compile(&format!("{prefix}{source}")).unwrap();
+        for surface in &plan.surfaces {
+            assert_eq!(plan.str(surface.name), "world");
+        }
+        let mut r = Runner::boot(
+            plan,
+            NoData,
+            Kernel::with_monospace(),
+            Default::default(),
+            "/",
+        )
+        .unwrap();
+        let updates = r.take_surface_updates();
+        let args: Vec<_> = updates.iter().map(|u| u.arguments_json()).collect();
+        assert_eq!(
+            args,
+            [
+                "{}",
+                r#"{"seed":9}"#,
+                "{}",
+                r#"{"seed":1}"#,
+                "{}",
+                r#"{"seed":2}"#
+            ]
+        );
+    }
+}
+
+#[test]
 fn d6_empty_v5_surface_call_is_named_and_v4_refuses() {
     let plan = contract::compile("component App\n  view\n    canvas surface=world()\n").unwrap();
     assert_eq!(plan.surfaces[0].mode, exact_plan::SurfaceArgsMode::Named);
@@ -250,7 +283,7 @@ fn r13_colon_call_refuses_with_equals_hint() {
     assert!(error.contains("seed="), "{error}");
 }
 
-/// A game's declaration from before an `Options` edit
+/// The platformer's diary, R4: a declaration from before an `Options` edit
 /// never hides the compile's own refusals, warns rather than refuses while the
 /// game's Rust is newer, and never stops `contract rust`.
 #[test]
@@ -483,7 +516,7 @@ component App
         .is_err());
 }
 
-/// A button's `aria-keyshortcuts` on a key the game's
+/// LLP 1132 D11: a button's `aria-keyshortcuts` on a key the game's
 /// `Actions` bind (`.shells/keys.json`, from its GPU build) is a warning
 /// naming both, through a component prop too; it refuses nothing, and a
 /// key no action binds, or a game without the declaration, says nothing.

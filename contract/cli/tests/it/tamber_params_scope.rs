@@ -1,5 +1,5 @@
-//! Where a component may name its params, and what the build and the IR
-//! make of them.
+//! @ref LLP 1121 D15 (stage 7 A, review round 1) — where a component may
+//! name its params, and what the build and the IR make of them.
 
 use std::path::PathBuf;
 
@@ -14,6 +14,37 @@ fn app(name: &str, files: &[(&str, &str)]) -> PathBuf {
 }
 
 const DESIGN: &str = "tamber t\n\ntheme\n  accent.fill = #0a7aff\n";
+
+#[test]
+fn a_components_url_prop_keeps_dotted_param_text() {
+    let url = "https://param.example.com/icon.png";
+    for row in [format!("image \"{url}\""), format!("Icon(src=\"{url}\")")] {
+        let src = format!(
+            "component App\n  view\n    column\n      {row}\ncomponent Icon\n  props\n    src: string\n  view\n    image src\n"
+        );
+        let plan = contract::compile(&src).unwrap_or_else(|e| panic!("{row}: {e:?}"));
+        assert!(
+            plan.strings.iter().any(|s| s == url),
+            "{row}: {:?}",
+            plan.strings
+        );
+    }
+}
+
+#[test]
+fn a_row_cannot_write_a_params_internal_token_name() {
+    let token = contract_lower::params::token_name("app.contract#App", "ink");
+    for (component, row) in [("App", 6), ("Chip", 11)] {
+        let src = format!(
+            "component App\n  params\n    ink: color = \"#333333\"\n  view\n    column\n      image \"symbol:add\" color=\"{}\" aria-label=\"a\"\n      Chip()\ncomponent Chip\n  view\n    column\n      image \"symbol:add\" color=\"{}\" aria-label=\"a\"\n",
+            if component == "App" { &token } else { "param.ink" },
+            if component == "Chip" { &token } else { "red" },
+        );
+        let error = contract::compile(&src).unwrap_err();
+        assert_eq!(error.id, "tamber-param-unknown", "{error:?}");
+        assert_eq!(error.span.line, row, "{error:?}");
+    }
+}
 
 /// This thread's CPU time: what an in-process build's work takes, not the
 /// wall clock, which a loaded machine (the suite's other tests, another
@@ -45,7 +76,7 @@ fn build(name: &str, src: &str) -> Result<exact_plan::Plan, contract::CompileErr
 #[test]
 fn a_style_owned_in_its_file_and_applied_from_another_is_shared() {
     // `Look` is Card's in card.contract; the app applying it too makes it
-    // shared, its `param.` names no one's.
+    // shared, its `param.` names no one's (LLP 1139 D3).
     let card = "style Look\n  padding = \"param.inset\"\ncomponent Card\n  params\n    inset: length = \"8px\"\n  view\n    column class=Look\n      text \"c\"\n";
     let app_src = "use Card, Look from \"./card.contract\"\ncomponent App\n  view\n    column class=Look\n      Card()\n";
     let path = app(
@@ -84,7 +115,7 @@ component App
       text "x"
 "##;
     // One component alone applies the style: it reads that component's
-    // params. A second applying it: no one's.
+    // params (LLP 1139 D3, stage 12 C3). A second applying it: no one's.
     build("style", style).unwrap();
     let shared =
         format!("{style}component Other\n  view\n    column class=Card\n      text \"y\"\n");
@@ -337,7 +368,7 @@ fn a_short_name_is_a_components_a_text_has_an_identity_and_icons_fold() {
 /// Many ranged params, each given a value in the design's `params` block,
 /// build in moments: the lines resolved by one index and their values folded
 /// together, a probe per value index, not a fold of the design per value
-/// (the checker's work in param counts).
+/// (the checker's work in param counts, Astra's round 1).
 #[test]
 fn many_ranged_params_set_by_the_design_build_in_moments() {
     let n = 1500;
@@ -372,9 +403,9 @@ fn many_ranged_params_set_by_the_design_build_in_moments() {
 }
 
 /// A ranged line whose value reads a param through a theme token is folded
-/// alone, with that param's `when` lines as written: folded beside its
-/// siblings, the other line's dark value would be pinned to its default and the
-/// out-of-range value would go unseen.
+/// alone, with that param's `when` lines as written (Grok's round 2 on the
+/// counts: folded beside its siblings, the other line's dark value was
+/// pinned to its default and the out-of-range value went unseen).
 #[test]
 fn a_value_reading_a_param_through_a_token_is_checked_against_the_design() {
     let src = r##"component App
@@ -402,8 +433,8 @@ fn a_value_reading_a_param_through_a_token_is_checked_against_the_design() {
 
 /// Ranged params each with a `when` line reading one dial fold together
 /// too: the batch reads the dial beside them, so it stays moving a token
-/// (with its `when` lines cleared it would be inert, and every value would
-/// fold alone).
+/// (Astra's round 2 on the counts: cleared `when` lines left it inert and
+/// every value folded alone).
 #[test]
 fn many_ranged_params_reading_a_dial_build_in_moments() {
     let n = 1500;
@@ -441,8 +472,9 @@ fn many_ranged_params_reading_a_dial_build_in_moments() {
 
 /// Ranged params whose values name a theme token that reads no param fold
 /// together, each line's k-th value in one probe: only a token that reads a
-/// param, directly or through another, folds its values alone, so a
-/// token-valued line is not a fold of the whole design.
+/// param, directly or through another, folds its values alone (Astra's and
+/// Grok's round 3 on the counts: every token-valued line was a fold of the
+/// design).
 #[test]
 fn many_ranged_params_naming_a_token_build_in_moments() {
     let n = 5000;
@@ -485,7 +517,8 @@ fn many_ranged_params_naming_a_token_build_in_moments() {
 }
 
 /// The dials' readers a batch adds never take an authored token's place: a
-/// design with tokens under the readers' first stems is checked as written.
+/// design with tokens under the readers' first stems is checked as written
+/// (Astra's round 3 on the counts).
 #[test]
 fn a_batchs_dial_readers_take_no_authored_name() {
     let src = r##"component App
@@ -510,8 +543,8 @@ fn a_batchs_dial_readers_take_no_authored_name() {
 
 /// An icon's name is taken too: the readers' stem skips it, so the batch
 /// folds and a range error in a `when` value reading the dial is still found
-/// (a reader named as the icon would fail the batch, and the value alone
-/// would leave the dial inert, so the error would go unseen).
+/// (Astra's narrow re-check: a reader named as the icon failed the batch,
+/// and the value alone left the dial inert, so the error went unseen).
 #[test]
 fn a_batchs_dial_readers_take_no_icons_name() {
     let src = r##"component App
@@ -534,7 +567,8 @@ fn a_batchs_dial_readers_take_no_icons_name() {
 }
 
 /// A design read again unchanged through `fold_with` (what `describe` and
-/// `resolve` read) is answered from the last few checked, not folded again.
+/// `resolve` read) is answered from the last few checked, not folded again
+/// (both reviewers' round 3 on the counts).
 #[test]
 fn fold_with_answers_an_unchanged_design_from_the_last() {
     let src = "component App\n  params\n    p0: number = \"0.5\"  range=\"0..1\"\n  view\n    column opacity=\"param.p0\"\n      text \"x\"\n";
@@ -554,7 +588,7 @@ fn fold_with_answers_an_unchanged_design_from_the_last() {
     assert!(!params.failed && params.tokens.len() == 1, "{params:?}");
     let vocab = contract_lower::tamber_vocab();
     let began = std::time::Instant::now();
-    let first = contract::tamber_params::fold_with(&design, &params, &vocab)
+    let first = contract::tamber_params::fold_with(&design, &params, &vocab, None)
         .map(|(f, _)| f.tokens.len())
         .ok();
     let cold = began.elapsed();
@@ -563,7 +597,7 @@ fn fold_with_answers_an_unchanged_design_from_the_last() {
     let warm = (0..5)
         .map(|_| {
             let began = std::time::Instant::now();
-            let again = contract::tamber_params::fold_with(&design, &params, &vocab)
+            let again = contract::tamber_params::fold_with(&design, &params, &vocab, None)
                 .map(|(f, _)| f.tokens.len())
                 .ok();
             assert_eq!(again, first);

@@ -42,8 +42,7 @@ impl RegionInst {
                 } else {
                     match u.eval(row.subject, frames)? {
                         Value::Bool(true) => Some(0),
-                        Value::Bool(false) if row.arms.len > 1 => Some(1),
-                        Value::Bool(false) => None,
+                        Value::Bool(false) => Some(1),
                         _ => {
                             return Err(InstanceError::SubjectKind {
                                 region: self.region,
@@ -74,10 +73,7 @@ impl RegionInst {
                                 ..Default::default()
                             },
                         ),
-                        Value::Option(None) => (
-                            if row.arms.len > 1 { Some(1) } else { None },
-                            ArmFrame::default(),
-                        ),
+                        Value::Option(None) => (Some(1), ArmFrame::default()),
                         _ => {
                             return Err(InstanceError::SubjectKind {
                                 region: self.region,
@@ -115,7 +111,7 @@ impl RegionInst {
                     });
                 };
                 // A virtualized list's rows are the collection's, never here:
-                // every row of this `for` is built.
+                // every row of this `for` is built (LLP 1144 D4).
                 if items.len() >= crate::perf::LONG_LIST
                     && !u.ids.work.sites.is_empty()
                     && u.ids.work.long_lists.insert(self.region.0)
@@ -308,7 +304,7 @@ impl RegionInst {
         body: &Reads,
     ) -> Result<bool, InstanceError> {
         // Items may distinguish signed zero even though keys do not. A moved
-        // row whose body reads its position has all fields
+        // row whose body reads its position (LLP 1062 D8) has all fields
         // dirty; one that reads none only its item's changed fields.
         let dirty = if r.frame.index != frame.index && body.reads_position() {
             !0
@@ -351,7 +347,7 @@ impl RegionInst {
         }
         // The shown arm's instance ends, and with it the slots it owned; a
         // newly shown arm's start from their initializers, evaluated in its
-        // frames, after settlement.
+        // frames, after settlement (LLP 1017 P4c).
         let old = std::mem::take(roots);
         destroy_all(u, old);
         *arm = want;

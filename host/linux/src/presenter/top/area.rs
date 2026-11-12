@@ -22,7 +22,7 @@ struct Options {
 impl History {
     fn place(&mut self, options: Options, anchor: Rect4, viewport: (f32, f32)) -> (f32, f32) {
         // ExactKit resets on size and style changes; moving the anchor or
-        // resizing the viewport keeps the last successful option (CSS Anchor Positioning).
+        // resizing the viewport keeps the last successful option (CSS §6.5).
         if self.inputs.as_ref() != Some(&options) {
             self.choice = 0;
         }
@@ -44,7 +44,7 @@ pub(in crate::presenter) fn at_point(
 }
 
 /// Where a popover's authored `left` and `top` put its border box in a
-/// viewport `viewport` big: past its margin, as CSS places a
+/// viewport `viewport` big (LLP 1021 D2): past its margin, as CSS places a
 /// fixed box by its insets; an axis with none at its margin. `None` when it
 /// writes neither, and its invoker places it; `None` too under an authored
 /// `position-area`, which CSS lets win. A host presents it as it presents a
@@ -58,7 +58,7 @@ pub(in crate::presenter) fn inset_point(
         return None;
     }
     let written = |d: Dimension| (d.resolve(env) != Dimension::Auto).then_some(d);
-    let (left, top) = (written(style.left), written(style.top));
+    let (left, top) = (written(style.left.clone()), written(style.top.clone()));
     if left.is_none() && top.is_none() {
         return None;
     }
@@ -66,8 +66,8 @@ pub(in crate::presenter) fn inset_point(
         inset.map_or(0., |d| d.at_basis(env, basis)) + margin.at_basis(env, viewport.0)
     };
     Some((
-        at(left, style.margin_left, viewport.0),
-        at(top, style.margin_top, viewport.1),
+        at(left, style.margin_left.clone(), viewport.0),
+        at(top, style.margin_top.clone(), viewport.1),
     ))
 }
 
@@ -97,10 +97,10 @@ pub(in crate::presenter) fn origin(
     };
     // As on Apple, unresolved percentages and auto margins contribute zero.
     let margins = [
-        style.margin_top,
-        style.margin_right,
-        style.margin_bottom,
-        style.margin_left,
+        style.margin_top.clone(),
+        style.margin_right.clone(),
+        style.margin_bottom.clone(),
+        style.margin_left.clone(),
     ]
     .map(|d| match d.resolve(env) {
         Dimension::Points(n) => n,

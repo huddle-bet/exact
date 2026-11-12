@@ -1,19 +1,21 @@
-//! The design server's readings of git history, for the
+//! The design server's readings of git history (LLP 1122 D9, T1), for the
 //! wire's `history` and `revert` (`scripts/tamber-server.mjs`), which reads
 //! git and sends each commit's versions of a file here as text:
 //!
-//! - `compare` `{pairs: [{file, before, after}]}`: each pair as token-level
+//! - `compare` `{pairs: [{file, before, after}]}`: each pair as declaration
 //!   edits (`exact_tamber::history`); a version that is null did not exist,
 //!   and one that does not parse gives `edits: null` and why.
-//! - `revert-plan` `{pairs}`: the inverse of the commit those pairs are,
+//! - `revert-plan` `{pairs, only?}`: the inverse of the commit those pairs are,
 //!   planned on the files as they are now: the operations (each naming its
 //!   file), the edits the files already have as before, the edits it cannot
-//!   revert, and the files that moved since the commit.
+//!   revert, and the files that moved since the commit. `only` carries the
+//!   wire's selected edit keys, to check a param's default is kept when needed.
 //!
-//! An app's own `.contract` file reads as the rows of its styles' state parts,
-//! the design's part of it: each edit `{what: "state", name: style, state, row,
-//! before, after}`, and `code` where the commit changed lines outside them too,
-//! which a revert leaves alone (they are the app's code, not its design).
+//! An app's own `.contract` file (LLP 1121 stage 8 D) reads as the rows of
+//! its styles' state parts, the design's part of it: each edit
+//! `{what: "state", name: style, state, row, before, after}`, and `code`
+//! where the commit changed lines outside them too, which a revert leaves
+//! alone (they are the app's code, not its design).
 
 use crate::tamber_import::op_json;
 use exact_tamber::history::{self, Edit};
@@ -237,8 +239,8 @@ fn read(text: &Option<String>, which: &str) -> Result<Read, String> {
         let mut last = style.span.line as usize;
         let mut order = Vec::new();
         for a in &style.attrs {
-            // A state part's row by its state; a style's own row (`set-row`
-            // on a style) by no state: a paint row alone on
+            // A state part's row by its state; a style's own row (stage 9
+            // D2's `set-row` on a style) by no state: a paint row alone on
             // its line, its value on that line, as `set-row` writes it. A
             // layout row, a part's, or one sharing its line is code.
             let (state, row) =
@@ -330,7 +332,7 @@ impl StateEdit {
     fn json(&self) -> Value {
         let text = |l: &Option<Lit>| l.as_ref().map_or(Value::Null, |l| json!(l.text()));
         match self.key.1.is_empty() {
-            // A style's own row.
+            // A style's own row (stage 9 D2).
             true => {
                 json!({"what": "row", "name": self.key.0, "row": self.key.2, "when": [], "before": text(&self.before), "after": text(&self.after)})
             }
@@ -662,7 +664,33 @@ pub fn revert_plan(request: &Value, now: &[(String, String, String)]) -> Result<
             }
         };
         let r = history::revert(&old, &new, &today);
+        let params: std::collections::HashSet<_> =
+            today.params.iter().map(|p| p.name.value.as_str()).collect();
         for op in &r.ops {
+            if let exact_tamber::Op::SetParam {
+                name, when, value, ..
+            } = op
+            {
+                if !when.is_empty()
+                    && !params.contains(name.as_str())
+                    && request["only"].as_array().is_some_and(|only| {
+                        !only.contains(&json!(format!("{file}\0param\0{name}\0[]")))
+                    })
+                {
+                    let edit = Edit {
+                        what: history::What::Param,
+                        name: name.clone(),
+                        when: when.clone(),
+                        before: Some(value.clone()),
+                        after: None,
+                    };
+                    conflicts.push(json!({
+                        "file": file, "edit": edit_json(&edit), "now": null,
+                        "why": "restoring this when line also requires selecting the param's default"
+                    }));
+                    continue;
+                }
+            }
             let mut v = op_json(op);
             v["file"] = json!(file);
             ops.push(v);

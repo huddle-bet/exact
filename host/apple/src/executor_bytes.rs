@@ -1,4 +1,4 @@
-//! A byte stream, natively (the amendment of 2026-10-23): a
+//! A byte stream, natively (LLP 1016.000, the amendment of 2026-10-23): a
 //! TypeScript stream's 2xx body that is not `text/event-stream`. Its reader
 //! appends each read to the one message the runner has not taken, so the
 //! messages follow the runner's pace, not the transport's chunking, and no
@@ -107,6 +107,8 @@ fn append(shared: &Shared, ticket: u64, bytes: &[u8], bound: usize) -> Read {
         None => {
             exact_runner::stream_timing::received(ticket);
             state.completed[lane].push_back(Completed {
+                cached: false,
+                finished_at: std::time::Instant::now(),
                 elapsed_ms,
                 ticket,
                 outcome: Outcome::Message(Message {

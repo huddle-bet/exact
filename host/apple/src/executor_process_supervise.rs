@@ -1,4 +1,4 @@
-//! A spawned child's supervision: one incarnation
+//! A spawned child's supervision (LLP 1133.007 D2, D4): one incarnation
 //! after another while the resource holds it. Each incarnation's events go
 //! to the stream in order — `spawn`, output chunks, `exit`, then `close`
 //! once both pipes reach end of file or the drain timeout passes — with
@@ -16,6 +16,10 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How often a closed incarnation whose group lives looks at it again.
+const GROUP_POLL: Duration = Duration::from_millis(10);
 
 /// What a supervisor sees of its child: output, its exit, a pipe at end of
 /// file (`None` for both at once), or its stdin queue drained below the
@@ -111,13 +115,22 @@ struct Utf8(Vec<u8>);
 impl Utf8 {
     fn decode(&mut self, bytes: &[u8]) -> String {
         self.0.extend_from_slice(bytes);
-        let valid = match std::str::from_utf8(&self.0) {
-            Ok(_) => self.0.len(),
-            Err(e) if e.error_len().is_none() => e.valid_up_to(),
-            Err(_) => self.0.len(),
-        };
-        let text = String::from_utf8_lossy(&self.0[..valid]).into_owned();
-        self.0.drain(..valid);
+        let mut complete = 0;
+        while complete < self.0.len() {
+            match std::str::from_utf8(&self.0[complete..]) {
+                Ok(_) => {
+                    complete = self.0.len();
+                    break;
+                }
+                Err(e) => {
+                    complete += e.valid_up_to();
+                    let Some(len) = e.error_len() else { break };
+                    complete += len;
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&self.0[..complete]).into_owned();
+        self.0.drain(..complete);
         text
     }
 
@@ -156,10 +169,10 @@ pub(crate) struct Supervisor<'a> {
     waiter: u64,
     /// Its place on the clock, given up once the stream's end is queued.
     leave: Option<Leave>,
-    /// For readiness probes against a real child.
+    /// For readiness probes against a real child (D4).
     probe: Option<ibex2::host::Bindings>,
     released: bool,
-    /// `exactReady`'s round passed with `onTimeout: "fail"`.
+    /// `exactReady`'s round passed with `onTimeout: "fail"` (D4).
     timed_out: bool,
 }
 
@@ -250,7 +263,7 @@ impl<'a> Supervisor<'a> {
             }
             let restart = self.spec.restart.as_ref().filter(|r| {
                 let prevented = ended.code.is_some_and(|c| r.prevent.contains(&c));
-                // A signal the app sent with `kill` is no failure.
+                // A signal the app sent with `kill` is no failure (D4).
                 let theirs = (ended.signal.as_ref()).is_some_and(|s| !ended.sent.contains(s));
                 let failed = ended.code.is_some_and(|c| c != 0) || theirs;
                 !prevented && (r.always || failed)
@@ -302,9 +315,9 @@ impl<'a> Supervisor<'a> {
         let mut exit: Option<(Option<i64>, Option<String>, f64)> = None;
         let mut eof = [!self.spec.pipes[1], !self.spec.pipes[2]];
         let mut drained = true;
-        // A write that answered `false` owes a `drain`.
+        // A write that answered `false` owes a `drain` (D2).
         let mut owed = false;
-        // Readiness: the next probe, and when the round times out.
+        // Readiness: the next probe, and when the round times out (D4).
         let mut ready = false;
         let mut probe_at = self.spec.ready.as_ref().map(|_| started);
         let mut round_end = self.spec.ready.as_ref().map(|r| started + r.timeout);
@@ -314,9 +327,10 @@ impl<'a> Supervisor<'a> {
         let mut fail_ready = false;
         let mut pending: Vec<Seen> = Vec::new();
         let mut sent: Vec<String> = Vec::new();
-        // What the child's own stdin queue held at the last look. The
-        // handle's count (`ctl.queued`) also holds what was sent and not
-        // yet taken here, so it falls only by what the child consumed.
+        // What the child's own stdin queue held at the last look, and what
+        // was written to it since. The handle's count (`ctl.queued`) also
+        // holds what was sent and not yet taken here, so it falls only by
+        // what the child consumed.
         let mut held = 0u64;
         if gone {
             self.release(&mut child, &mut escalate, &mut pending);
@@ -379,7 +393,7 @@ impl<'a> Supervisor<'a> {
             }
             pending.extend(released);
             // What the child took of its stdin; once nothing is queued, a
-            // write that answered `false` hears `drain`, as Node's does.
+            // write that answered `false` hears `drain`, as Node's does (D2).
             let queued = child.queued();
             self.ctl.consumed(held.saturating_sub(queued));
             held = queued;
@@ -394,7 +408,7 @@ impl<'a> Supervisor<'a> {
                     );
                 }
             }
-            // Readiness: a script answers its own probe; a real child's is a GET.
+            // Readiness (D4): a script answers its own probe; a real child's is a GET.
             if !ready && !probing && !self.released && self.clock.passed(probe_at) {
                 match child.ready(now - started) {
                     Some(true) => {
@@ -427,7 +441,7 @@ impl<'a> Supervisor<'a> {
                     round_end = self.spec.ready.as_ref().map(|r| now + r.timeout);
                 }
             }
-            // The drain: output after exit has its timeout, then the pipes close.
+            // The drain (D2): output after exit has its timeout, then the pipes close.
             if let Some((_, _, at)) = &exit {
                 if !(eof[0] && eof[1]) && self.clock.passed(Some(at + self.spec.drain_timeout)) {
                     child.close_pipes();
@@ -470,7 +484,13 @@ impl<'a> Supervisor<'a> {
             .flatten()
             .reduce(f64::min);
             self.clock.wait_for(self.waiter, deadline);
-            let input = match self.rx.recv_timeout(self.clock.timeout(deadline)) {
+            let mut wait = self.clock.timeout(deadline);
+            if closed {
+                // Its group is alive and its escalation pending. The group's
+                // end sends no input, so look at it again in short steps.
+                wait = wait.min(GROUP_POLL);
+            }
+            let input = match self.rx.recv_timeout(wait) {
                 Ok(input) => input,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => Input::Release,
@@ -480,9 +500,10 @@ impl<'a> Supervisor<'a> {
                 Input::Release => self.release(&mut child, &mut escalate, &mut pending),
                 Input::Op(m, _) if m != n => {}
                 Input::Op(_, ProcessOp::Write { data, drain }) => {
-                    self.ctl.consumed(held.saturating_sub(child.queued()));
+                    // Counted, not read back: the child may take the bytes,
+                    // or drop them once its stdin is closed, before a look.
+                    held += data.len() as u64;
                     child.write(data);
-                    held = child.queued();
                     owed |= drain;
                 }
                 Input::Op(_, ProcessOp::End) => child.end(),
@@ -544,7 +565,7 @@ impl<'a> Supervisor<'a> {
         )
     }
 
-    /// Let the child go: its kill signal to the group now, `SIGKILL`
+    /// Let the child go (D2): its kill signal to the group now, `SIGKILL`
     /// after the grace (at once when it is 0). What the signal does (a
     /// script's exit and close) goes to `pending`, so the loop ends with it.
     fn release(
@@ -596,7 +617,7 @@ impl<'a> Supervisor<'a> {
     }
 }
 
-/// `execFile`: run to `close` and answer `{stdout, stderr, code,
+/// `execFile` (D3): run to `close` and answer `{stdout, stderr, code,
 /// signal}`; the timeout kills the group, and output past `maxBuffer` is
 /// an error, as Node's are.
 pub(crate) fn exec_file(
@@ -673,4 +694,42 @@ pub(crate) fn exec_reply(
         "timedOut": timed_out,
         "overflow": overflow,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Utf8;
+
+    #[test]
+    fn utf8_keeps_a_split_character_after_invalid_bytes() {
+        let mut decoder = Utf8::default();
+        assert_eq!(decoder.decode(b"\xffab\xe2\x82"), "\u{fffd}ab");
+        assert_eq!(decoder.decode(b"\xac!"), "€!");
+        assert_eq!(decoder.flush(), "");
+
+        for character in ["¢", "€", "😀"] {
+            let bytes = character.as_bytes();
+            for split in 1..bytes.len() {
+                let mut decoder = Utf8::default();
+                let mut first = b"\xffab\xe2\x82x".to_vec();
+                first.extend_from_slice(&bytes[..split]);
+                assert_eq!(decoder.decode(&first), "\u{fffd}ab\u{fffd}x");
+                assert_eq!(decoder.decode(&[]), "");
+                assert_eq!(decoder.decode(&bytes[split..]), character);
+                assert_eq!(decoder.flush(), "");
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_replaces_invalid_sequences_and_flushes_an_incomplete_tail_once() {
+        let mut decoder = Utf8::default();
+        assert_eq!(decoder.decode(b"\xff\xe2"), "\u{fffd}");
+        assert_eq!(decoder.decode(b"\x82"), "");
+        assert_eq!(decoder.decode(b"x\xf0\x90\x80"), "\u{fffd}x");
+        assert_eq!(decoder.decode(b"!ok\x80\xe2\x82"), "\u{fffd}!ok\u{fffd}");
+        assert_eq!(decoder.flush(), "\u{fffd}");
+        assert_eq!(decoder.flush(), "");
+        assert_eq!(decoder.decode("valid €".as_bytes()), "valid €");
+    }
 }

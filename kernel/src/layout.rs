@@ -62,13 +62,14 @@ pub struct LayoutReceipt {
     /// may include unchanged nodes.
     /// Hosts accumulate these across silent passes before emission.
     pub updated: Vec<NodeKey>,
-    /// Leaves whose resolved exclusions changed bitwise, in preorder.
+    /// Leaves whose resolved exclusions changed bitwise, in preorder (LLP 1043.000 D4).
     pub flow_changed: Vec<NodeKey>,
     /// Intersecting auto-height paragraphs that auto-height flow refused, in
-    /// preorder; each names its `FlowRefusal`.
+    /// preorder; each names its `FlowRefusal` (LLP 1043.000 §8).
     pub flow_skipped: Vec<NodeKey>,
     /// Boxes a multi-column flow kept whole across a column's end where
-    /// Chrome would fragment them; each names its `FragmentRefusal`.
+    /// Chrome would fragment them; each names its `FragmentRefusal` (LLP
+    /// 1093 D10).
     pub fragment_skipped: Vec<NodeKey>,
     /// Additional Taffy layouts performed by auto-height flow settlement.
     pub flow_passes: usize,
@@ -94,10 +95,10 @@ fn from_available(space: AvailableSpace) -> AxisOffer {
 }
 
 /// Keep the full block/flex offer working set; four slots evicted within one
-/// pass and repeated native measurement.
+/// pass and repeated native measurement (LLP 1044 F6).
 const LEAF_OFFERS: usize = 16;
 
-// Keep the proof with Taffy's measured leaf.
+// @ref LLP 1043.000 §3 D3 — keep the proof with Taffy's measured leaf.
 #[derive(Default, Clone, Debug)]
 struct MeasureContext {
     slot: u32,
@@ -106,7 +107,7 @@ struct MeasureContext {
     height_measured: bool,
     // At most LEAF_OFFERS per live leaf; text/style invalidation clears them.
     measurements: Vec<Measurement>,
-    // The shapes an admitted auto-height leaf is
+    // @ref LLP 1043.000 §8 — the shapes an admitted auto-height leaf is
     // measured around (border-box coordinates), written only by settle_flow;
     // changing them clears `measurements`, whose key does not include them.
     flow: Vec<exact_textflow::FlowShape>,
@@ -167,7 +168,7 @@ pub struct LayoutTree {
     pub(crate) unsettled: IdSet<u32>,
     // Equal engine styles are one allocation (`shared_style`).
     shared: Interner<taffy::Style>,
-    // The absolutely positioned boxes, and whether the
+    // @ref LLP 1074 T1 — the absolutely positioned boxes, and whether the
     // engine's record of which containing block holds each one that is not its
     // parent's is stale: a position or a child list changed since it was made.
     absolutes: IdSet<NodeId>,
@@ -183,9 +184,9 @@ pub struct LayoutTree {
     // (its old containing block still counts the box that left).
     hoist_paths: IdSet<NodeId>,
     hoist_paths_prior: IdSet<NodeId>,
-    // The fitted paragraphs measured since they last stopped fitting (`fit`).
+    // The live fitted paragraphs measured since they last stopped fitting (`fit`).
     fitting: IdSet<u32>,
-    // The tables laid out as grids.
+    // @ref LLP 1153 D7.3 — the tables laid out as grids.
     tables: table::Tables,
 }
 
@@ -218,7 +219,7 @@ impl Default for LayoutTree {
 }
 
 /// The engine's side of a commit: what the kernel's transaction and its
-/// restyles call. [`LayoutTree`] mirrors the arena; a kernel
+/// restyles call (LLP 1047 D4). [`LayoutTree`] mirrors the arena; a kernel
 /// whose platform lays out (the browser's) holds none until a layout is first
 /// asked for and commits through [`Unmirrored`]. The engine is boxed only on
 /// the layout path, so an artifact that never lays out links none of it.
@@ -283,7 +284,7 @@ impl LayoutMirror for LayoutTree {
             return 0;
         }
         let before = self.alert_prefixes.get(&parent).copied();
-        let ids = order::laid_out(arena, parent, &self.taffy, node, before, |c| arena.taffy(c));
+        let ids = order::laid_out(arena, parent, before, |c| arena.taffy(c));
         LayoutTree::set_children(self, node, &ids);
         // A list's rows are many boxes of few shapes, rebound and built as
         // it scrolls: each is laid out by replaying a row like it (Taffy
@@ -512,6 +513,7 @@ impl LayoutTree {
                 self.remove(anon);
             }
             self.flowing.remove(&slot);
+            self.fitting.remove(&slot);
             self.displacements.remove(&slot);
             if let Some(prefix) = self.alert_prefixes.remove(&slot) {
                 self.remove(prefix);
@@ -924,14 +926,14 @@ impl LayoutTree {
         measurer: &mut dyn TextMeasurer,
         // A trait object, not a generic: each closure type would compile the
         // engine's whole pass, Taffy's algorithms with it, again into every
-        // app (a trial tree did, +0.4 MB).
+        // app (LLP 1047.001; LLP 1075.003 §9.11's trial tree did, +0.4 MB).
         node_for: &dyn Fn(u32) -> Option<NodeId>,
         buttons: &IdMap<u32, NodeId>,
     ) -> Result<IdMap<NodeId, f32>, LayoutError> {
         if let Some(fault) = &self.fault {
             return Err(LayoutError::Engine(fault.clone()));
         }
-        // Changed offers can mix cached intrinsic heights
+        // @ref LLP 1043.000 §3 D3 — changed offers can mix cached intrinsic heights
         // with fresh layout. Invalidate contributing leaves to rebuild their proof.
         let changed = self.is_dirty(root) || self.last_offer(root) != Some(offer);
         if changed && !arena.exclusion_slots.is_empty() {
@@ -1050,7 +1052,7 @@ impl LayoutTree {
                 + style
                     .border
                     .resolve_or_zero(inputs.parent_size.width, crate::style::resolve_calc);
-            // Upstream supplies the full layout input.
+            // @ref LLP 1043.000 §3 D3 — upstream supplies the full layout input.
             // The proof is separate from the ordinary size-only callback offers.
             let height_known = match (inputs.run_mode, inputs.sizing_mode) {
                 (taffy::tree::RunMode::PerformLayout, taffy::tree::SizingMode::InherentSize) => {
@@ -1136,14 +1138,15 @@ impl LayoutTree {
                         arena.node_type(slot),
                         NodeType::Control | NodeType::NativeView
                     ) {
-                        // The platform's size for its
+                        // @ref LLP 1069.001 D3 — the platform's size for its
                         // control (CSS leaves it to the UA), each axis
                         // overridden by a known one; until the host
                         // reports, a mark's last report, else the kind's
                         // default. Native modules use the
-                        // same non-ratio seam, with no default content size.
-                        // A determinate `progress` is `10em`
-                        // by `1em` whatever its host's bar reports.
+                        // same non-ratio seam, with no default content size
+                        // (LLP 1024 D4). A determinate `progress` is `10em`
+                        // by `1em` whatever its host's bar reports (LLP
+                        // 1115.000 D10.2).
                         let kind = crate::ControlKind::of(arena.node_type(slot), arena.props(slot));
                         let (iw, ih) = if kind == Some(crate::ControlKind::ProgressBar) {
                             crate::control::progress_size(arena, slot)
@@ -1173,7 +1176,7 @@ impl LayoutTree {
                         // the host paints, not at the wider border box.
                         from_available(space.width)
                     };
-                    // A multi-column `text` breaks its
+                    // @ref LLP 1093 D1 — a multi-column `text` breaks its
                     // lines at the column width; its height is the columns'.
                     let width = match (style.rare.multicol, known.width) {
                         (Some(m), Some(u)) => AxisOffer::Definite(m.columns(u).1),
@@ -1235,7 +1238,7 @@ impl LayoutTree {
                             if runs.is_empty() {
                                 return Size::ZERO;
                             }
-                            // An admitted auto-height leaf is
+                            // @ref LLP 1043.000 §8 — an admitted auto-height leaf is
                             // measured around its settled shapes, in content space as
                             // the painters flow it. Intrinsic probes stay unobstructed:
                             // a context's width never depends on what flows inside.
@@ -1337,7 +1340,7 @@ impl LayoutTree {
         }
         // `&mut measure`, as the boundaries take it: one measure type, so the
         // engine's algorithms compile once (by value, every app carried two
-        // copies).
+        // copies; LLP 1047.001).
         let result = self
             .taffy
             .compute_layout_with_measure(root, available, &mut measure);
@@ -1395,7 +1398,7 @@ impl LayoutTree {
         frame
     }
 
-    /// Measure admitted auto-height leaves around the
+    /// @ref LLP 1043.000 §8 — measure admitted auto-height leaves around the
     /// shapes their settled frames resolve to. Each pass re-lays out only
     /// leaves whose shapes changed (Taffy's caches keep the rest), so a still
     /// layout costs one comparison sweep; changes can propagate through later

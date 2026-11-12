@@ -11,7 +11,7 @@ impl DataSource for Rows {
     }
 }
 // Each row's grip spans its row, as the pointer coordinates below assume:
-// the row writes its inline ends, so a cells list's inset (tested
+// the row writes its inline ends, so a cells list's inset (LLP 1138, tested
 // in contract/cli/tests/it/list_rows.rs) leaves it alone.
 const APP: &str = r#"component App
   state grips = true
@@ -456,7 +456,7 @@ fn actual_scroll_ahead_of_feedback_retires_before_invalid_callback_validation() 
     assert_eq!(p.host.runner().slot("count"), Some(&AppValue::Number(0.)));
 }
 
-// Dropping across lists: a board of three grouped lists in a
+// Dropping across lists (LLP 1094): a board of three grouped lists in a
 // horizontal scroll, `c` empty. Drops on `a` and `b` move at once; a drop on
 // `c` waits for the board's timer (an answer that comes later) unless the
 // board is stalled, when it never comes.
@@ -696,7 +696,7 @@ fn a_cross_list_drag_drops_on_the_target_and_the_ghost_lands_then_goes() {
         "the row hides"
     );
     let row_id = row.id;
-    // The ghost shows what the row inherits hidden from its
+    // b6 review B4: the ghost shows what the row inherits hidden from its
     // wrapper, not what its own nodes set hidden (the web's clone).
     let named = |p: &Presenter<Board>, name: &str| {
         let k = p.host.kernel();
@@ -735,30 +735,96 @@ fn a_cross_list_drag_drops_on_the_target_and_the_ghost_lands_then_goes() {
 }
 
 #[test]
-fn a_drag_at_the_board_edge_scrolls_the_board() {
-    let mut p = board();
-    let board = p
-        .host
-        .kernel()
-        .node_by_key(p.host.kernel().find_by_test_id("board")[0])
-        .unwrap()
-        .id;
+fn grouped_edge_scroll_keeps_its_speed_while_the_pointer_moves() {
+    let mut distances = Vec::new();
+    for lead in [None, Some(8.), Some(1.), Some(0.)] {
+        let mut p = board();
+        let board = id(&p, "board");
+        let r = p.rect_of(board).unwrap();
+        let (x, y) = (r.0 + r.2 - 8., r.1 + 30.);
+        carry(&mut p, "a2", (x - 62., y), 0.);
+        p.pointer_move(x, y, 30.).unwrap();
+        assert!(p.needs_animation_frame(), "an edge band pumps");
+        p.tick(30.);
+        let before = p.scroll_of(board).0;
+        for n in 1..=12 {
+            let at = 30. + n as f64 * 1000. / 60.;
+            if let Some(lead) = lead {
+                // Move along the edge so its depth, and thus speed, stays fixed.
+                p.pointer_move(x, y + (n % 2) as f32, at - lead).unwrap();
+            }
+            p.tick(at);
+        }
+        distances.push((lead, p.scroll_of(board).0 - before));
+        p.pointer_up(x, y, 240.).unwrap();
+    }
+    assert!(
+        distances.iter().all(|(_, d)| (d - 40.).abs() < 0.001),
+        "200 points per second for 0.2 seconds, regardless of move timing: {distances:?}"
+    );
+}
+
+#[test]
+fn grouped_edge_scroll_restarts_its_clock_after_leaving_the_band() {
+    for frame_outside in [false, true] {
+        let mut p = board();
+        let board = id(&p, "board");
+        let r = p.rect_of(board).unwrap();
+        let (x, y) = (r.0 + r.2 - 8., r.1 + 30.);
+        carry(&mut p, "a2", (x - 62., y), 0.);
+        p.tick(30.);
+        for entered in [100., 1000.] {
+            let before = p.scroll_of(board).0;
+            p.pointer_move(x, y, entered).unwrap();
+            p.tick(entered + 10.);
+            assert_eq!(
+                p.scroll_of(board).0,
+                before,
+                "the first frame in the band starts the clock"
+            );
+            p.tick(entered + 30.);
+            assert!((p.scroll_of(board).0 - before - 4.).abs() < 0.001);
+            p.pointer_move(x - 62., y, entered + 40.).unwrap();
+            assert!(p.group_edge().is_none());
+            if frame_outside {
+                p.tick(entered + 50.);
+            }
+            assert!((p.scroll_of(board).0 - before - 4.).abs() < 0.001);
+        }
+        p.pointer_cancel(1100.).unwrap();
+        let before = p.scroll_of(board).0;
+        p.tick(1200.);
+        assert_eq!(p.scroll_of(board).0, before);
+    }
+}
+
+#[test]
+fn grouped_edge_scroll_can_remove_the_dragged_row() {
+    let source = BOARD
+        .replace(
+            "  state log = \"\"",
+            "  state hidden = false\n  action hide(x: number, y: number)\n    hidden = true\n  state log = \"\"",
+        )
+        .replace("scroll testId=\"board\"", "scroll scroll=hide testId=\"board\"")
+        .replace(
+            "cards.filter(k => k.col == col)",
+            "cards.filter(k => k.col == col and not (hidden and k.id == \"a2\"))",
+        );
+    let mut p = board_source(&source);
+    let board = id(&p, "board");
     let r = p.rect_of(board).unwrap();
-    // Into b, then to the board's right edge band.
     carry(&mut p, "a2", (r.0 + r.2 - 70., r.1 + 30.), 0.);
     p.pointer_move(r.0 + r.2 - 8., r.1 + 30., 30.).unwrap();
-    assert!(p.needs_animation_frame(), "an edge band pumps");
-    let before = p.scroll_of(board).0;
-    for t in [50., 66., 82., 98., 114.] {
-        p.tick(t);
-    }
-    assert!(p.scroll_of(board).0 > before, "the board scrolls toward c");
-    p.pointer_up(r.0 + r.2 - 8., r.1 + 30., 120.).unwrap();
+    p.tick(30.);
+    p.tick(50.);
+    assert!(p.scroll_of(board).0 > 0.);
+    assert!(p.host.kernel().find_by_test_id("grip-a2").is_empty());
+    assert!(p.group.is_none());
 }
 
 #[test]
 fn a_contact_at_the_edge_scrolls_though_the_ghost_centre_has_passed_it() {
-    // A row held by its left end has its centre
+    // D7 as amended (2026-10-07): a row held by its left end has its centre
     // 54 points right of the contact; with the contact in the board's right
     // band, the centre is past the board, and the board still scrolls (bench
     // t4: a tall card held by its top never autoscrolled to Done).
@@ -841,7 +907,7 @@ fn a_held_drop_waits_ignores_escape_then_lands_when_the_answer_shows() {
 
 #[test]
 fn a_new_lift_waits_out_a_hold_but_ends_a_landing() {
-    // A hold refuses a second drag; the landing after it does not.
+    // LLP 1102 §3.18: D8's hold refuses a second drag; the landing after it does not.
     let mut p = board();
     let c = p
         .host
@@ -878,7 +944,7 @@ fn a_new_lift_waits_out_a_hold_but_ends_a_landing() {
             .runner()
             .journal()
             .any(|l| l.contains("reorder: a drag refused: the last drop is held")),
-        "and says so"
+        "and says so (LLP 1102 §3.17)"
     );
     p.pointer_up(x + 12., y, 60.).unwrap();
     // The board's timer answers at 200 ms: the move shows and the ghost lands.

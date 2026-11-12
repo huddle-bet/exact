@@ -187,7 +187,7 @@ fn a_fetched_plan_refused_at_boot_falls_back_to_baked() {
     let (presenter, error) = boot_presenter::<Named>(&mut config, size).unwrap();
     assert!(error.is_none(), "{error:?}");
     assert_eq!(presenter.node_count(), 1);
-    // The binary's facts reached the runner past the fallback.
+    // The binary's facts reached the runner past the fallback (LLP 1030 D7).
     assert_eq!(presenter.host().runner().delivery().store, '0');
 }
 
@@ -268,6 +268,39 @@ fn a_partial_initial_dev_plan_falls_back_without_counting_the_store() {
         saved.contains("\"failures\":0"),
         "the store boot was not counted: {saved}"
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two launches over one store: the second boots the update the first runs.
+#[test]
+fn a_second_instance_boots_the_update_the_first_runs() {
+    let baked = contract::compile("component App\n  view\n    text \"baked\"\n")
+        .unwrap()
+        .encode();
+    let selected = contract::compile("component App\n  view\n    text \"selected\"\n")
+        .unwrap()
+        .encode();
+    let dir = std::env::temp_dir().join(format!(
+        "exact-linux-second-instance-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let staged = stage(&dir, &baked, &selected, &[]);
+    let mut first = selected_config(&dir, &baked, staged);
+    let (mut first, error) = boot_presenter::<Named>(&mut first, (390.0, 844.0)).unwrap();
+    assert!(error.is_none(), "{error:?}");
+    assert!(exact_linux::agent::handle(&mut first, "{\"op\":\"tree\"}").contains("selected"));
+
+    let second = Client::open_at(&dir, &dir, UPDATE_COMPAT, &baked, Some(ORIGIN)).unwrap();
+    let mut second = selected_config(&dir, &baked, second);
+    let (mut second, error) = boot_presenter::<Named>(&mut second, (390.0, 844.0)).unwrap();
+    assert!(error.is_none(), "{error:?}");
+    assert!(exact_linux::agent::handle(&mut second, "{\"op\":\"tree\"}").contains("selected"));
+    let delivery = second.host().runner().delivery();
+    assert_eq!(delivery.stream, "prod/fixture00000000");
+    assert_eq!(delivery.seq, 1);
+    drop((first, second));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -622,7 +655,7 @@ fn a_refused_initial_layout_releases_no_network_requests() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
     // (origin, grants, the app's request's own path: the listener counts only requests to it, since a
-    // stranger on this machine can reach a reused ephemeral port.)
+    // stranger on this machine can reach a reused ephemeral port; QUEUE's stray request, 2026-09-09.)
     static ORIGIN: OnceLock<(String, String, String)> = OnceLock::new();
     struct Seed;
     impl DataSource for Seed {
@@ -729,7 +762,7 @@ fn a_refused_initial_layout_releases_no_network_requests() {
     ));
     let result = std::panic::catch_unwind(|| {
         let seed = contract::bake(
-            // Bake a placeholder keyed to this candidate's
+            // @ref LLP 1038 D5 — bake a placeholder keyed to this candidate's
             // delivery sequence, so a Later answer may retain it at boot.
             contract::compile(
                 &source

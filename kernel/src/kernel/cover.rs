@@ -1,4 +1,4 @@
-//! What a native container covers of a box.
+//! What a native container covers of a box (@ref LLP 1075.003 §3.5, §3.7).
 //!
 //! The host measures what its controller's bars take of a route — a
 //! navigation bar over its top edge, a tab bar over its bottom — and the
@@ -20,7 +20,7 @@
 //! A replaced header that cleared the status bar itself (the web's
 //! `padding-top: env(safe-area-inset-top)` under `viewport-fit=cover`)
 //! hands that inset to its route's top cover, so the route's content starts
-//! at the bar's bottom whichever of the two padded it.
+//! at the bar's bottom whichever of the two padded it (LLP 1075.003 §9.10).
 //!
 //! The margins a platform's own list gives a grouped list's cards and cells
 //! are a claim of the same kind (`grouped::GroupedMargins`), set here.
@@ -54,10 +54,7 @@ impl Kernel {
     /// (`apply`): a bar's clearance, or none where the scroller at the box's
     /// bottom edge takes it as its platform inset.
     pub fn cover_bottom(&self, key: crate::NodeKey) -> f32 {
-        match self.arena.cover(key.index) {
-            Some(HostCover::Edges(_)) => applied_padding(&self.arena, key.index)[2],
-            _ => 0.0,
-        }
+        applied_padding(&self.arena, key.index)[2]
     }
 
     /// Set or clear (`None`) what a host container covers of `view`.
@@ -150,7 +147,7 @@ impl Kernel {
 
 impl Kernel {
     /// Set or clear (`None`) the margin the platform's cell gives the rows of
-    /// the cells list `view` at its left and right. Nonfinite or
+    /// the cells list `view` at its left and right (LLP 1138). Nonfinite or
     /// negative lengths are refused.
     pub fn set_list_margins(
         &mut self,
@@ -215,12 +212,13 @@ impl Kernel {
     }
 }
 
-/// A cover's part of a box's engine style: a
+/// A cover's part of a box's engine style (@ref LLP 1075.003 §3.5): a
 /// container's bars add to the padding of the route they cover, a box a bar
 /// replaces takes no space, and a scroller the platform insets ends its
-/// content box that much sooner: its end padding takes
-/// both insets, so its children keep their start and their scroll extent's
-/// end is where the platform's own inset begins.
+/// content box that much sooner (LLP 1116.000 D1.2): both insets are a
+/// gutter below its padding box, as a horizontal scrollbar's is, so its
+/// children keep their start and its scroll extent ends where the
+/// platform's own inset begins.
 pub(crate) fn apply(arena: &NodeArena, slot: u32, s: &mut taffy::style::Style) {
     // A popover is the host's to lift, out of flow, open or closed (`style::top_layer`).
     crate::style::top_layer::apply(arena, slot, s);
@@ -239,22 +237,18 @@ pub(crate) fn apply(arena: &NodeArena, slot: u32, s: &mut taffy::style::Style) {
                 left: style.padding_left.spaced(env, across).floor_lp(env, left),
             };
         }
-        Some(HostCover::Inset(_)) => {
-            let [_, _, bottom, _] = added_padding(arena, slot);
-            let spaced = style.padding_bottom.spaced(env, crate::style::cells::ROW);
-            s.padding.bottom = spaced.floor_lp(env, bottom);
-        }
-        Some(HostCover::Gutter([right, bottom])) => {
-            s.scrollbar_width = right.max(bottom);
-            // Taffy reserves its scalar width on Scroll axes. Hidden keeps
-            // the same scroll-container layout without reserving that axis.
-            if right == 0.0 && s.overflow.y == taffy::style::Overflow::Scroll {
-                s.overflow.y = taffy::style::Overflow::Hidden;
+        Some(HostCover::Inset([top, bottom])) => {
+            // A vertical scroller's hidden `overflow-x` lays out as `Scroll`,
+            // the same box but for the bottom gutter, which Taffy reserves
+            // only on a `Scroll` axis. A definite size, flex basis or aspect
+            // ratio leaves the gutter out; a size taken from content counts
+            // it, as a scrollbar's.
+            if s.overflow.x == taffy::style::Overflow::Hidden {
+                s.overflow.x = taffy::style::Overflow::Scroll;
             }
-            if bottom == 0.0 && s.overflow.x == taffy::style::Overflow::Scroll {
-                s.overflow.x = taffy::style::Overflow::Hidden;
-            }
+            lay_gutter(s, [0.0, top + bottom]);
         }
+        Some(HostCover::Gutter(gutter)) => lay_gutter(s, gutter),
         None => {}
     }
     // An absolutely positioned child is placed against its parent's padding
@@ -413,13 +407,12 @@ fn positioned(arena: &NodeArena, slot: u32) -> bool {
 
 /// The points a cover adds to the box's padding as layout pads it (`apply`):
 /// `added_padding`, but nothing at the bottom where the scroller at the
-/// box's bottom edge takes the bar's clearance as its platform inset, so
-/// it reaches under the bar. An absolutely positioned
+/// box's bottom edge takes the bar's clearance as its platform inset (LLP
+/// 1116.000 D1.2), so it reaches under the bar. An absolutely positioned
 /// child is still placed past the whole cover (`added_padding`).
 pub(crate) fn applied_padding(arena: &NodeArena, slot: u32) -> [f32; 4] {
     let [top, right, bottom, left] = added_padding(arena, slot);
-    let edges = matches!(arena.cover(slot), Some(HostCover::Edges(_)));
-    let bottom = if edges && scroller_insets_bottom(arena, slot) {
+    let bottom = if bottom > 0.0 && scroller_insets_bottom(arena, slot) {
         0.0
     } else {
         bottom
@@ -434,17 +427,7 @@ pub(crate) fn added_padding(arena: &NodeArena, slot: u32) -> [f32; 4] {
         Some(HostCover::Edges([top, right, bottom, left])) => {
             [top + header_inset(arena, slot, top), right, bottom, left]
         }
-        Some(HostCover::Inset([top, bottom])) => [0.0, 0.0, top + bottom, 0.0],
         _ => [0.0; 4],
-    }
-}
-
-/// The scroll extent a scroller publishes: what the engine measured, less
-/// the insets the platform adds back (`Inset`).
-pub(crate) fn published_extent(arena: &NodeArena, slot: u32, extent: (f32, f32)) -> (f32, f32) {
-    match arena.cover(slot) {
-        Some(HostCover::Inset([top, bottom])) => (extent.0, (extent.1 - top - bottom).max(0.0)),
-        _ => extent,
     }
 }
 
@@ -453,12 +436,24 @@ pub(crate) fn inset(arena: &NodeArena, slot: u32) -> bool {
     matches!(arena.cover(slot), Some(HostCover::Inset(_)))
 }
 
-/// `s` as authored at the end the platform's inset took (`apply`).
+/// `s` as authored, without the platform's inset (`apply`).
 pub(crate) fn without_inset(arena: &NodeArena, slot: u32, s: &mut taffy::style::Style) {
     if inset(arena, slot) {
-        let (style, env) = (arena.effective_style(slot), arena.env());
-        let spaced = style.padding_bottom.spaced(env, crate::style::cells::ROW);
-        s.padding.bottom = spaced.floor_lp(env, 0.0);
+        s.scrollbar_width = 0.0;
+    }
+}
+
+/// Reserve native scrollbar gutters beside and below the padding box,
+/// `right` and `bottom` wide (CSS 2.1 §11.1.1). Taffy reserves one width on
+/// each `Scroll` axis, and `Hidden` keeps the same scroll container without
+/// reserving that axis's gutter.
+fn lay_gutter(s: &mut taffy::style::Style, [right, bottom]: [f32; 2]) {
+    s.scrollbar_width = right.max(bottom);
+    if right == 0.0 && s.overflow.y == taffy::style::Overflow::Scroll {
+        s.overflow.y = taffy::style::Overflow::Hidden;
+    }
+    if bottom == 0.0 && s.overflow.x == taffy::style::Overflow::Scroll {
+        s.overflow.x = taffy::style::Overflow::Hidden;
     }
 }
 
@@ -498,8 +493,8 @@ pub(crate) fn children_changed(
 
 /// The top inset a box's replaced first child cleared for itself: that
 /// child is covered whole and pads its top by `env(safe-area-inset-top)`
-/// or the corner-adapted safe area's, which never lies above it, or a
-/// `calc()` or comparison that reads one.
+/// or the corner-adapted safe area's, which never lies above it (LLP 1123
+/// D10), or a `calc()` or comparison that reads one (LLP 1001 §2).
 /// It counts only while a bar covers the box's top (`top > 0`); a scroller
 /// that goes under the bar is inset by the platform instead.
 pub(crate) fn header_inset(arena: &NodeArena, slot: u32, top: f32) -> f32 {
@@ -509,7 +504,7 @@ pub(crate) fn header_inset(arena: &NodeArena, slot: u32, top: f32) -> f32 {
     match (
         top > 0.0,
         arena.cover(first),
-        arena.style(first).padding_top,
+        arena.style(first).padding_top.clone(),
     ) {
         (true, Some(HostCover::Whole), Dimension::Env(Edge::Top, _))
         | (

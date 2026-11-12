@@ -433,13 +433,14 @@ fn secret_scope_restores_after_error_unwind_and_cannot_broaden_parent() {
     assert_eq!(store.granted(), &["a", "b"]);
 }
 
-// --- the ordered set -----------------------------------------------------------
+// --- LLP 1027.002 D3: the ordered set ------------------------------------------
 
 use crate::{envelope, Placed};
 use exact_runner::{Dispatch, Placement, Reply, Work};
 use std::sync::{Arc, Mutex};
 
 mod keep_sent;
+mod timers;
 
 /// A worker child's proxy, without a thread: it records at `answer`, and at
 /// `dispatch` runs the call against a scoped snapshot and answers at once
@@ -1101,7 +1102,7 @@ fn two_targets_asking_an_ordered_member_with_equal_arguments_keep_their_own_stag
     assert_eq!(r.data().staged_keys(), 0);
 }
 
-// A request replaced by newer arguments is forgotten: the
+// A request replaced by newer arguments is forgotten (LLP 1016 D5): the
 // composer keeps stages only for what is still in flight.
 
 fn retyped<D: DataSource>(data: D) -> Runner<D> {

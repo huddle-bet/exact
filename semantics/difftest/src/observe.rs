@@ -144,7 +144,7 @@ fn state(r: &mut Runner<Oracle>, plan: &Plan, out: &mut Vec<String>) {
             out.push(format!("slot {name} {}", value(v)));
         }
     }
-    // What the store keeps for each persisted state.
+    // What the store keeps for each persisted state (LLP 1116 D5).
     for row in plan.slots.iter().filter(|s| s.persist) {
         let name = plan.str(row.name);
         let kept = r.persisted(name).map_or("-".to_string(), |v| value(&v));
@@ -162,9 +162,9 @@ fn state(r: &mut Runner<Oracle>, plan: &Plan, out: &mut Vec<String>) {
             out.push(format!("resource {name} {}", value(v)));
         }
     }
-    // Each queue's waiting sends, in declaration order.
+    // Each queue's waiting sends (LLP 1092 D12), in declaration order.
     let queued = r.queued();
-    for m in plan.mutations.iter().filter(|m| m.queue) {
+    for m in (plan.mutations.iter()).filter(|m| m.mode == exact_plan::MutationMode::Queue) {
         let name = plan.str(m.name);
         let n = queued
             .iter()
@@ -172,7 +172,7 @@ fn state(r: &mut Runner<Oracle>, plan: &Plan, out: &mut Vec<String>) {
             .map_or(0, |(_, n)| *n);
         out.push(format!("queued {name} {n}"));
     }
-    // The runner's own scroll to a fragment is a host's effect
+    // The runner's own scroll to a fragment (LLP 1153 D5) is a host's effect
     // of a router change once its content settles, which the semantics leaves
     // out as it leaves out the change a host is sent: no app wrote it.
     for c in (r.take_commands().into_iter()).filter(|c| c.name != "scrollToFragment") {
@@ -238,13 +238,11 @@ impl Driver {
                 trapped(&r, 0, &mut out);
                 for res in &plan.resources {
                     let source = plan.str(res.source);
-                    if !matches!(source, "exactTransport" | "exactMIDI")
-                        && !r
-                            .data()
-                            .transcript
-                            .borrow()
-                            .iter()
-                            .any(|c| c.source == source)
+                    // Only the runner's own sources: one of the app's may
+                    // be asked nothing at boot (a closed `when`, LLP
+                    // 1161.002) and asked of the oracle later.
+                    if exact_plan::runner_owned_source(source)
+                        && !matches!(source, "exactTransport" | "exactMIDI")
                     {
                         let name = plan.str(res.name);
                         if let Some(v) = r.resource(name).cloned() {
@@ -376,8 +374,8 @@ impl Driver {
 }
 
 /// The bindings that trapped since journal line `from` (counted from boot),
-/// as `#` notes: each row was unset and the runner went on, which
-/// `compare` reads where the runner passed an evaluation bound.
+/// as `#` notes: each row was unset and the runner went on (LLP 1017.003
+/// D3), which `compare` reads where the runner passed an evaluation bound.
 fn trapped(r: &Runner<Oracle>, from: usize, out: &mut Vec<String>) {
     let skip = from.saturating_sub(r.journal_start());
     for line in r
@@ -431,7 +429,7 @@ fn deliver(
     (advanced.error.map_or(Ok(()), Err), advanced.receipts.len())
 }
 
-/// Commit kinds for which the semantics has no branch.
+/// Commit kinds for which the semantics has no branch (LLP 1151 D3).
 pub const OMITTED_KINDS: &[&str] = &[
     "a transport's or MIDI port's answer",
     "a re-ask",

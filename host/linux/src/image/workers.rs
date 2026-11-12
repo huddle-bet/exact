@@ -47,6 +47,7 @@ impl SourceOwner {
         }
         match self.assets.upgrade()?.image_input(&self.name)? {
             ImageInput::Path(path) => Some(path),
+            ImageInput::File(_) => crate::picker::file(&self.name),
             ImageInput::Bytes(_) => None,
         }
     }
@@ -109,7 +110,7 @@ pub(super) struct Backend {
     wake_write: Mutex<UnixStream>,
     /// The device scale each SVG picture was asked at, by source and
     /// pixels: with the key's pixels it gives the CSS size the scene
-    /// resolves at, which the key does not carry.
+    /// resolves at (LLP 1011.001 D3), which the key does not carry.
     scales: Mutex<BTreeMap<(u64, exact_raster::PixelSize), f32>>,
     /// SVG pictures with text, resolved on a worker and waiting for the
     /// paint thread ([`Backend::finish_pictures`]).
@@ -467,8 +468,8 @@ impl Backend {
                             source.clone(),
                         )))
                     }
-                    svg_picture::Decoded::Later(scene) => {
-                        later = Some((scene, scale, plan, source.clone()));
+                    svg_picture::Decoded::Later(scene, fonts) => {
+                        later = Some((scene, fonts, scale, plan, source.clone()));
                         Err(Refusal::Paused)
                     }
                 };
@@ -506,11 +507,12 @@ impl Backend {
             }
             Err(Refusal::Paused) if later.is_some() => {
                 // A picture with text waits for the paint thread, its permit
-                // with it.
-                let (scene, scale, plan, source) = later.unwrap();
+                // with it (LLP 1011.001 D3).
+                let (scene, fonts, scale, plan, source) = later.unwrap();
                 self.pictures.lock().unwrap().push(svg_picture::Pending {
                     permit,
                     scene,
+                    fonts,
                     css: svg_picture::css_size(plan.pixels, scale),
                     scale,
                     natural: plan.natural(),
@@ -561,17 +563,22 @@ fn open(source: &SourceOwner) -> Result<(Box<dyn Input>, u64), Refusal> {
             Ok((Box::new(Cursor::new(bytes)), len))
         }
         ImageInput::Path(path) => {
-            let file = crate::file::open_regular(&path).map_err(|_| Refusal::DecodeFailed)?;
-            let metadata = file.metadata().map_err(|_| Refusal::DecodeFailed)?;
-            if !metadata.is_file() {
-                return Err(Refusal::DecodeFailed);
-            }
-            if metadata.len() > exact_raster::MAX_ENCODED_BYTES {
-                return Err(Refusal::EncodedLimit);
-            }
-            Ok((Box::new(file), metadata.len()))
+            bounded(crate::file::open_regular(&path).map_err(|_| Refusal::DecodeFailed)?)
         }
+        ImageInput::File(file) => bounded(file),
     }
+}
+
+/// A source's regular file, refused past the encoded bound.
+fn bounded(file: std::fs::File) -> Result<(Box<dyn Input>, u64), Refusal> {
+    let metadata = file.metadata().map_err(|_| Refusal::DecodeFailed)?;
+    if !metadata.is_file() {
+        return Err(Refusal::DecodeFailed);
+    }
+    if metadata.len() > exact_raster::MAX_ENCODED_BYTES {
+        return Err(Refusal::EncodedLimit);
+    }
+    Ok((Box::new(file), metadata.len()))
 }
 
 struct Workers {

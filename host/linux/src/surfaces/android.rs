@@ -1,8 +1,10 @@
-//! GPU canvases that present, on Android's Canvas host: the module loads with a
-//! device, a canvas is made as on Linux (headless, so its binding and assets
-//! run unchanged) and is given the window its reader's view makes for it
-//! (`gpu_attach`); the host renders and flushes every attached canvas each
-//! frame. Shader text is the app's `shaders/*.wgsl` under the asset root.
+//! GPU canvases that present, on Android (LLP 1009 on the Canvas host,
+//! LLP 1076): the module loads with a device, a canvas is made as on Linux
+//! (headless, so its binding and assets run unchanged) and is given the
+//! window its reader's view makes for it (`gpu_attach`); each frame the host
+//! renders and flushes every attached canvas that has something to draw
+//! ([`super::retry::Rest`]). Shader text (LLP 1030 D8) is the
+//! app's `shaders/*.wgsl` under the asset root.
 #![allow(unsafe_code)]
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -106,7 +108,7 @@ impl<D: DataSource> Presenter<D> {
 }
 
 /// Start making the app's primary GPU module's device, on threads of
-/// their own, while the host boots: the canvas's first frame on
+/// their own, while the host boots (LLP 1076): the canvas's first frame on
 /// the host's thread loads the module (`gpu_load`, which takes the device)
 /// without making one. Nothing when the app has no GPU module.
 pub(crate) fn prepare(compat: &'static str) {
@@ -179,6 +181,7 @@ pub(crate) struct Window {
     size: (u32, u32),
     attached: bool,
     retry: super::retry::Retry,
+    rest: super::retry::Rest,
 }
 
 /// A canvas's newest finished frame, for a reader on another thread: the
@@ -242,6 +245,15 @@ pub fn buffer_frame(view: u32, take: bool) -> Result<([u32; 3], usize), bool> {
 }
 
 impl Surfaces {
+    /// Every canvas went with the replaced host. The windows stay the
+    /// reader's, by view, until it detaches them: a new canvas at a window's
+    /// view is attached to it.
+    pub(super) fn windows_replaced(&mut self) {
+        for w in self.windows.values_mut() {
+            w.attached = false;
+        }
+    }
+
     /// Attach every window whose canvas exists and has not got it.
     pub(super) fn attach_windows(&mut self) {
         for (view, w) in self.windows.iter_mut() {
@@ -385,6 +397,7 @@ impl<D: DataSource> Presenter<D> {
                 size,
                 attached: false,
                 retry: Default::default(),
+                rest: Default::default(),
             },
         );
         self.surfaces.attach_windows();
@@ -467,6 +480,22 @@ impl<D: DataSource> Presenter<D> {
                 continue;
             };
             let abi = &self.surfaces.abis[&c.artifact];
+            let dirty = unsafe { abi.symbol::<Read>(b"gpu_dirty")(c.id) } != 0;
+            let lost =
+                unsafe { abi.symbol::<unsafe extern "C" fn() -> bool>(b"gpu_device_is_lost")() };
+            if !self.surfaces.windows[&view]
+                .rest
+                .due(c.id, (w, h, scale), dirty, lost)
+            {
+                continue;
+            }
+            // Under its frame-rate cap (`Surface::max_fps`), a canvas skips
+            // the frames before its deadline and asks for the next.
+            let due = unsafe { abi.symbol::<unsafe extern "C" fn(u32, f64) -> u32>(b"gpu_due") };
+            if !retry && unsafe { due(c.id, now) } == 0 {
+                wants = true;
+                continue;
+            }
             let render = unsafe {
                 abi.symbol::<unsafe extern "C" fn(u32, f32, f32, f32, f64) -> u32>(b"gpu_render")
             };
@@ -477,12 +506,9 @@ impl<D: DataSource> Presenter<D> {
                 _ => {}
             }
             let starved = unsafe { abi.symbol::<Read>(b"gpu_starved")(c.id) } != 0;
-            self.surfaces
-                .windows
-                .get_mut(&view)
-                .unwrap()
-                .retry
-                .recorded((w, h, scale, now), starved);
+            let window = self.surfaces.windows.get_mut(&view).unwrap();
+            window.retry.recorded((w, h, scale, now), starved);
+            window.rest.rendered(c.id, (w, h, scale), result);
             if result != 2 && !starved {
                 recorded.insert(view);
             }

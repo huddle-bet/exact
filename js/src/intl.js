@@ -1,6 +1,6 @@
 // Intl.NumberFormat's `notation: "compact"` where the engine ignores it:
-// Hermes's Apple Intl prints `9,274,743` where a browser prints `9.3M`.
-// The short forms are ICU's, as Chrome 154 formats
+// Hermes's Apple Intl printed `9,274,743` where a browser prints `9.3M`
+// (x2apps stocks #3). The short forms are ICU's, as Chrome 154 formats
 // `10^e` (formatToParts) for e = 3…14: per locale, each magnitude's power
 // of ten and suffix (`~` a no-break space), "" where it is not
 // abbreviated. ICU's steps follow (CompactHandler): the unrounded
@@ -12,7 +12,7 @@
 //
 // Its rounding too, where the engine rounds a half to even: Hermes's Apple
 // Intl leaves NSNumberFormatter's `.halfEven` and ignores `roundingMode`, so
-// USD 0.825 prints `$0.82` where a browser prints `$0.83`. A browser
+// USD 0.825 printed `$0.82` where a browser prints `$0.83` (X72). A browser
 // rounds the number's shortest digits by the formatter's `roundingMode`,
 // half-expand unless it names another (ECMA-402 FormatNumericToString). So
 // this rounds them first, to the digits the engine prints, and hands the
@@ -43,8 +43,8 @@
   // Apple's engine makes an NSDateFormatter for every DateTimeFormat and
   // every Date `toLocale…String` call, which a module labelling a few
   // hundred rows a turn pays for each (500 dates twice: 130 ms, 7 ms kept).
-  // A formatter made with locales and options that read the same whenever
-  // they are read (`formatKey`) is made once; each `new` is still an object
+  // A formatter with an explicit timeZone and locales and options that read
+  // the same (`formatKey`) is made once; each `new` is still an object
   // of its own, which the prototype's methods read through to the one made
   // (`shared`; the prelude's guarded `format` and `formatToParts` too).
   function dates(guard) {
@@ -55,7 +55,9 @@
     guard.engineOf(engineOf);
     var madeFor = function (prefix, locales, options) {
       var key = formatKey(locales, options);
-      if (key === null) return null;
+      // An omitted zone is the system's at construction (ECMA-402
+      // CreateDateTimeFormat); argument equality cannot establish that it stayed.
+      if (key === null || options === undefined || options.timeZone === undefined) return null;
       var format = made.get(prefix + key);
       if (!format) {
         if (made.size >= 64) made.clear();

@@ -6,7 +6,9 @@ import { need } from '../../scripts/coverage.mjs';
 
 const { unavailable } = chromium();
 const test = need('chrome', unavailable, { test: bunTest });
-let server, suite, cdp, evaluate, call;
+let server, cdp, evaluate, call;
+// Register the shared browser's shutdown hook before beforeAll runs.
+const suite = unavailable ? null : await cdpBrowser({ args: [DESKTOP_INPUT] });
 beforeAll(async () => {
   if (unavailable) return;
   server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(req) {
@@ -18,7 +20,6 @@ beforeAll(async () => {
       headers: { 'content-type': path.endsWith('.js') ? 'text/javascript' : 'text/html' },
     });
   }});
-  suite = await cdpBrowser({ args: [DESKTOP_INPUT] });
   ({ cdp } = suite);
   const { sessionId } = await suite.page();
   call = (method, params) => cdp.send(method, params, sessionId);
@@ -207,6 +208,35 @@ test('agent alignments are malformed with or without a view; authored refusals s
   expect(result.authored).toEqual({list:'alignment-feed', status:'refused: no alignment banana'});
   expect(result.missing).toEqual({list:'#-1', status:'refused: view -1 is not a mounted virtualized list'});
 }, 60_000);
+
+test('refused keys keep their original text in state', async () => {
+  const keys = ['C:\\notes\\c.txt', 'first\nsecond', 'say "hi"', '\t\r\0\b\f\u001fé🦀', 'c.txt'];
+  const result = await evaluate(`(() => {
+    const port = document.createElement('div'); port.id = 'refused-files';
+    port.style.cssText = 'height:100px;width:200px;overflow:auto';
+    document.getElementById('exact-root').append(port);
+    const files = rt.sig(['a.txt', 'b.txt']);
+    const own = rt.scope(() => list.vl(port, files, item => item(), (wrapper, item) => {
+      const row = document.createElement('div'); row.textContent = item();
+      row.style.height = '20px'; wrapper.append(row);
+    }, {est:20, pw:[], ph:[100]}));
+    const out = [];
+    try {
+      for (const key of ${JSON.stringify(keys)}) for (const duplicate of [false, true]) {
+        rt.commit(() => rt.W(files, duplicate ? [key, key] : ['a.txt', 'b.txt']));
+        rt.Hosts.scrollIntoView('refused-files', key, null, null, null, null, null);
+        out.push(exact.lists.intoView().at(-1));
+      }
+      return out;
+    } finally {
+      rt.end(own); port.remove(); rt.settled();
+    }
+  })()`);
+  expect(result).toEqual(keys.flatMap(key => [
+    {list:'refused-files', status:`refused: no row keyed s:${key} in the list`},
+    {list:'refused-files', status:`refused: the list holds s:${key} more than once`},
+  ]));
+});
 
 test('element jumps use Chrome scroll padding and margins and settle once', async () => {
   const result = await evaluate(`(async () => {
@@ -597,7 +627,7 @@ test('measured virtual rows count construction and retirement without eager real
   expect(result.after.rowRetired).toBe(result.after.rowConstructed);
 }, 60_000);
 
-// `reach-margin` sets how far ahead of the last row `reachend` fires, as the runner's reach.rs.
+// @ref LLP 1145 D4 — `reach-margin` sets how far ahead of the last row `reachend` fires, as the runner's reach.rs.
 test('reach-margin moves reachend earlier or later; the default is one port', async () => {
   const result = await evaluate(`(async () => {
     const lists = [undefined, '300%', '0PX 960px', '0px'].map(reach => {
@@ -626,7 +656,43 @@ test('reach-margin moves reachend earlier or later; the default is one port', as
   expect(result).toEqual([5768, 5128, 5128, 6080]);
 }, 60_000);
 
-// The edge band leads a fling as the window does (reach.rs `Margin::band`). The
+test('replacement lists fire both edges at their reach-margin thresholds', async () => {
+  const result = await evaluate(`(async () => {
+    const results = [];
+    for (const reach of [undefined, '0px', '300%', '0PX 960px', undefined]) {
+      const el = document.createElement('div');
+      el.id = 'feed'; el.style.cssText = 'height:320px;width:400px;overflow:auto';
+      document.getElementById('exact-root').append(el);
+      const starts = [], ends = [];
+      const own = rt.scope(() => list.vl(el, () => Array.from({length:200}, (_, i) => i), i => i(), (w, i) => {
+        const row = document.createElement('div'); row.textContent = String(i()); row.style.height = '32px'; w.append(row);
+      }, {est:32, pw:[], ph:[320], start: () => { starts.push(el.scrollTop); }, end: () => { ends.push(el.scrollTop); }, reach}));
+      // Only the first mount is also published when the controller loads.
+      rt.settled(); await exact.lists.pending(); await exact.lists.settle();
+      const scroll = async top => {
+        await new Promise(resolve => { el.addEventListener('scroll', resolve, {once:true}); el.scrollTop = top; });
+        await exact.lists.settle();
+      };
+      // Each boundary only touches an edge row; the next pixel overlaps it.
+      for (const top of [1000, 5088, 5089, 5728, 5729, 6048, 6049, 6080]) await scroll(top);
+      for (const top of [1000, 992, 991, 352, 351, 32, 31, 0]) await scroll(top);
+      await scroll(6080);
+      results.push({starts, ends});
+      rt.end(own); el.remove(); rt.settled();
+      if (exact.lists.internals.Lists.size) throw Error('a retired list is still registered');
+    }
+    return results;
+  })()`);
+  expect(result).toEqual([
+    {starts:[0, 351], ends:[5729, 6080]},
+    {starts:[0, 31], ends:[6049, 6080]},
+    {starts:[0, 991], ends:[5089, 6080]},
+    {starts:[0, 31], ends:[5089, 6080]},
+    {starts:[0, 351], ends:[5729, 6080]},
+  ]);
+}, 60_000);
+
+// @ref LLP 1027.004 D3 — the edge band leads a fling as the window does (reach.rs `Margin::band`). The
 // agent's reports carry no velocity, so these are made here: one at rest, then one moving at -4,000 px/s.
 test('a fling toward the start fires reachstart as far ahead as the window leads', async () => {
   const result = await evaluate(`(async () => {
@@ -794,7 +860,7 @@ test('a satisfied request moves nothing, and an unknown port holds requests and 
     unconverged: 'unconverged', after: null });
 }, 60_000);
 
-// A smooth request's corrections are smooth, the one that admits it and the one where its wait
+// LLP 1070.000 §6.2: a smooth request's corrections are smooth, the one that admits it and the one where its wait
 // ends; the glue runs them as the browser's smooth scroll. An "auto" request's are not.
 test('a smooth request\'s corrections are smooth, from its admission and where its wait ends', async () => {
   const result = await evaluate(`(async () => {
@@ -833,7 +899,7 @@ test('a request made during the host\'s animation is not judged at its destinati
   expect(result).toEqual({ waits: true, asks: true, admitted: 320 });
 }, 60_000);
 
-// Waiting uses none of a request's six corrections; the move that lands it where its wait ends is
+// LLP 1070.000 §2.4: waiting uses none of a request's six corrections; the move that lands it where its wait ends is
 // uncounted, as the one that admits a request made at rest is.
 test('a request that waited has its six corrections after it lands', async () => {
   const result = await evaluate(`(async () => {
@@ -852,7 +918,7 @@ test('a request that waited has its six corrections after it lands', async () =>
   expect(result).toEqual({ sixth: 'pending', seventh: 'unconverged' });
 }, 60_000);
 
-// The port satisfies a request only with no mounted row unmeasured between its start and the target,
+// LLP 1070.000 §2.6: the port satisfies a request only with no mounted row unmeasured between its start and the target,
 // whose real size could still move the target.
 test('a mounted row left unmeasured before the target keeps a request from being already satisfied', async () => {
   const result = await evaluate(`(async () => {
@@ -969,7 +1035,7 @@ test('a card refused after its feed waited is kept with the command\'s refusals'
   expect(result).toEqual({ waited: true, refused: true, kept: true });
 }, 60_000);
 
-// `keep-mounted` keeps its rows mounted wherever the window is, as the runner's keep.rs.
+// @ref LLP 1010 §6.11 — `keep-mounted` keeps its rows mounted wherever the window is, as the runner's keep.rs.
 test('keep-mounted keeps the first, last and playing rows mounted as the window moves', async () => {
   const result = await evaluate(`(async () => {
     const el = document.createElement('div');
@@ -1011,7 +1077,7 @@ test('keep-mounted keeps the first, last and playing rows mounted as the window 
   expect(grown).toEqual([true, true, 1]);
 }, 60_000);
 
-// A kept row before a jump's target does not hold the jump open (into_view.rs `settle_target`).
+// @ref LLP 1010 §6.11 — a kept row before a jump's target does not hold the jump open (into_view.rs `settle_target`).
 test('a jump past a kept row settles', async () => {
   const result = await evaluate(`(async () => {
     const out = [];
@@ -1218,10 +1284,10 @@ test('an anchor restores to its clamped offset plus its overshoot, anywhere', as
   expect(traversal.misses).toEqual([]);
 }, 60_000);
 
-// Chrome carries a touch fling on through `scrollTo`, so a
+// LLP 1070.000 §2.6: Chrome carries a touch fling on through `scrollTo`, so a
 // jump to the end made while the reader's fling runs waits for the fling to
 // end, then lands. Under the agent's clock, which this page runs, the glue
-// lands a smooth request at once too, so one run covers both.
+// lands a smooth request at once too (§11), so one run covers both.
 test('a jump that meets a touch fling waits for it and lands at the end', async () => {
   const at = await evaluate(`(async () => {
     const port = document.createElement('div'); port.id = 'fling-feed';

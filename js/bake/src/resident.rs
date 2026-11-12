@@ -40,7 +40,7 @@ impl Producer {
     }
     /// Capture and validate a fresh generation. A refusal never returns stale
     /// output. `seed` supplies the Rust-owned first-frame values this
-    /// producer cannot compute.
+    /// producer cannot compute (LLP 1027.002 §5 step 0).
     pub fn bake(&mut self, app: &Path, seed: Option<&Seed>) -> Result<Baked, String> {
         bake_in(
             app,
@@ -147,8 +147,9 @@ async function compile() {
   // Generated output is not a captured input. Remove it before resolution,
   // so an app's ./app.js import follows the same TS substitution as one-shot.
   rmSync(resolve(stage,'app.js'),{force:true});
-  const { configure, check, dataBundle } = await import(resolve(stage,'__exact_config.mjs'));
+  const { configure, check, dataBundle, prepareCanvas } = await import(resolve(stage,'__exact_config.mjs'));
   configure(stage, true, parseSync);
+  await prepareCanvas(stage, libraries);
   const checking=check(stage,tsc,libraries).then(()=>null,error=>error);
   let failed;
   try {
@@ -179,7 +180,10 @@ pub(super) const BINDING: &str = include_str!("__exact_binding.mjs");
 /// The settings' reader (`import.meta.env`), which `CONFIG` imports from beside it.
 pub(super) const ENV: &str = include_str!("__exact_env.mjs");
 
-/// The target a module binding answers `supports` for, as
+/// The check of what package code may use, which `CONFIG` imports from beside it.
+pub(super) const PORTABLE: &str = include_str!("__exact_portable.mjs");
+
+/// The target a module binding answers `supports` for (LLP 1133.006 D7), as
 /// an implementation's `targets` names it: Cargo's `CARGO_CFG_TARGET_OS` in
 /// an app's build script, else the OS of `TARGET`'s triple, which is all a
 /// bake run outside Cargo (`exact-js-bake --cargo`) is told. None where
@@ -209,7 +213,8 @@ fn target_os(triple: &str) -> Option<&'static str> {
 pub(super) fn write_config(stage: &Path) -> Result<(), String> {
     super::write_changed(&stage.join("__exact_config.mjs"), CONFIG.as_bytes())?;
     super::write_changed(&stage.join("__exact_binding.mjs"), BINDING.as_bytes())?;
-    super::write_changed(&stage.join("__exact_env.mjs"), ENV.as_bytes())
+    super::write_changed(&stage.join("__exact_env.mjs"), ENV.as_bytes())?;
+    super::write_changed(&stage.join("__exact_portable.mjs"), PORTABLE.as_bytes())
 }
 
 #[cfg(test)]
@@ -228,6 +233,7 @@ mod tests {
         write("__exact_config.mjs", CONFIG);
         write("__exact_binding.mjs", BINDING);
         write("__exact_env.mjs", ENV);
+        write("__exact_portable.mjs", PORTABLE);
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut compiler = Compiler::new(&root, &stage.0).unwrap();
         let tools = Tools::default();

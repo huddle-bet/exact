@@ -1,4 +1,4 @@
-//! CSS colour values: CSS Color 4 and CSS Color HDR's
+//! CSS colour values (LLP 1100 D1, D2): CSS Color 4 and CSS Color HDR's
 //! forms, their arithmetic and serialisation. Legacy forms parse to
 //! [`Rgba8`]; the rest keep their space ([`Wide`]). No ICC conversion.
 //!
@@ -8,7 +8,7 @@
 
 mod mix;
 mod named;
-pub use mix::{mix, HueMethod, Interpolation, MixSpace};
+pub use mix::{hue_arc, mix, HueMethod, Interpolation, MixSpace};
 
 /// A legacy colour: sRGB channels 0–255 and alpha 0–1, non-premultiplied.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,7 +150,8 @@ pub fn parse(input: &str) -> Option<Parsed> {
         return hex_color(hex).map(Parsed::Legacy);
     }
     if let Some(open) = s.find('(') {
-        let name = s[..open].trim();
+        // `rgb (…)` is an identifier and a block, not a function (CSS Syntax 3 §4.3.4).
+        let name = &s[..open];
         let body = s[open + 1..].strip_suffix(')')?;
         if let Some(wide) = wide(name, body) {
             return Some(Parsed::Wide(wide));
@@ -158,6 +159,131 @@ pub fn parse(input: &str) -> Option<Parsed> {
         return legacy(name, body).map(Parsed::Legacy);
     }
     named::named(&s).map(|[r, g, b]| Parsed::Legacy(Rgba8 { r, g, b, a: 1.0 }))
+}
+
+/// The CSS rule a colour function [`parse`] refuses breaks, for a
+/// diagnostic: named only when mending that rule alone makes it a colour,
+/// so `None` when it reads or has another fault.
+pub fn refusal(input: &str) -> Option<&'static str> {
+    const FUNCTIONS: [&str; 10] = [
+        "rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color",
+    ];
+    if parse(input).is_some() {
+        return None;
+    }
+    let s = input.trim().to_ascii_lowercase();
+    let open = s.find('(')?;
+    let name = &s[..open];
+    let body = s[open + 1..].strip_suffix(')')?;
+    let reads = |name: &str, body: &str| parse(&format!("{name}({body})")).is_some();
+    if !FUNCTIONS.contains(&name) {
+        let name = name.trim_end();
+        return (FUNCTIONS.contains(&name) && reads(name, body)).then_some(
+            "a function's `(` follows its name with no space between: `rgb(…)`, not `rgb (…)` \
+             (CSS Syntax 3 §4.3.4)",
+        );
+    }
+    if name == "color" && body.trim_start().starts_with("--") {
+        return None;
+    }
+    // Each word written as a number that CSS Syntax 3's grammar refuses
+    // (`5.`, `1e`, `1.2.3`, `120.deg`) put as `0`, keeping its unit; `10px`,
+    // `1-2` (two numbers) and `1e2e3` (a unit `e3`) are not such words.
+    let mut mended = String::new();
+    let mut malformed = false;
+    for piece in body.split_inclusive([',', '/', ' ', '\t', '\n']) {
+        let word = piece.trim_end_matches([',', '/', ' ', '\t', '\n']);
+        let unit = ["%", "deg", "grad", "rad", "turn"]
+            .into_iter()
+            .find(|u| word.ends_with(u))
+            .unwrap_or("");
+        let b = &word.as_bytes()[..word.len() - unit.len()];
+        let numeric = b.first().is_some_and(|c| c.is_ascii_digit() || *c == b'.')
+            || (matches!(b.first(), Some(b'+' | b'-'))
+                && b.get(1).is_some_and(|c| c.is_ascii_digit() || *c == b'.'));
+        let chars = b
+            .iter()
+            .all(|c| c.is_ascii_digit() || matches!(c, b'+' | b'-' | b'.' | b'e' | b'E'));
+        let signs = (1..b.len())
+            .filter(|&i| matches!(b[i], b'+' | b'-'))
+            .all(|i| matches!(b[i - 1], b'e' | b'E'));
+        let exponents = b.iter().filter(|c| matches!(c, b'e' | b'E')).count();
+        if numeric && chars && signs && exponents <= 1 && !scans(b) {
+            malformed = true;
+            mended.push('0');
+            mended.push_str(unit);
+        } else {
+            mended.push_str(word);
+        }
+        mended.push_str(&piece[word.len()..]);
+    }
+    if malformed {
+        return reads(name, &mended).then_some(
+            "a number's `.` is followed by a digit, and its exponent's `e` by digits: `5` or \
+             `5.0`, not `5.` (CSS Syntax 3 §4.3.13)",
+        );
+    }
+    // Comma-separated components, written space-separated.
+    let spaced = |parts: &[&str]| match parts {
+        [c @ .., alpha] if parts.len() == 4 => format!("{} / {alpha}", c.join(" ")),
+        _ => parts.join(" "),
+    };
+    if !body.contains(',') {
+        let words: Vec<&str> = body.split_whitespace().collect();
+        let count = if name == "color" { 5 } else { 4 };
+        let slashed = match words.split_last() {
+            Some((alpha, c)) if words.len() == count => format!("{} / {alpha}", c.join(" ")),
+            _ => return None,
+        };
+        return (!body.contains('/') && reads(name, &slashed)).then_some(
+            "the space-separated syntax puts a `/` before the alpha: `rgb(255 0 0 / 0.5)` \
+             (CSS Color 4 §4.1.1)",
+        );
+    }
+    let parts: Vec<&str> = body.split(',').map(str::trim).collect();
+    if !matches!(name, "rgb" | "rgba" | "hsl" | "hsla") {
+        return reads(name, &spaced(&parts)).then_some(
+            "only `rgb()` and `hsl()` take the comma-separated syntax: separate the \
+             components with spaces (CSS Color 4 §4.1.2)",
+        );
+    }
+    if parts.contains(&"none") {
+        return reads(name, &spaced(&parts)).then_some(
+            "the comma-separated syntax takes no `none`; the space-separated one does: \
+             `rgb(none 0 0)` (CSS Color 4 §4.1.2)",
+        );
+    }
+    if parts.len() < 3 {
+        return None;
+    }
+    let pct = parts[..3].iter().filter(|p| p.ends_with('%')).count();
+    if name.starts_with("rgb") && pct != 0 && pct != 3 {
+        let numbers: Vec<String> = parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| match p.strip_suffix('%').and_then(number) {
+                Some(v) if i < 3 => number_text(v * 255.0 / 100.0),
+                _ => p.to_string(),
+            })
+            .collect();
+        return reads(name, &numbers.join(", ")).then_some(
+            "the comma-separated syntax takes three numbers or three percentages, not both: \
+             `rgb(255, 0, 0)` or `rgb(100%, 0%, 0%)` (CSS Color 4 §5.1)",
+        );
+    }
+    if name.starts_with("hsl") && !parts[1..3].iter().all(|p| p.ends_with('%')) {
+        let mut mended: Vec<String> = parts.iter().map(|p| p.to_string()).collect();
+        for p in &mut mended[1..3] {
+            if !p.ends_with('%') {
+                p.push('%');
+            }
+        }
+        return reads(name, &mended.join(", ")).then_some(
+            "`hsl()`'s comma-separated syntax takes its saturation and lightness as percentages: \
+             `hsl(120, 100%, 50%)` (CSS Color 4 §7)",
+        );
+    }
+    None
 }
 
 fn hex_color(hex: &str) -> Option<Rgba8> {
@@ -215,15 +341,43 @@ fn component(t: &str) -> Option<Arg> {
     number(t).map(Arg::Num)
 }
 
+/// A number as CSS Syntax 3 reads one (§4.3.13), and finite.
 fn number(t: &str) -> Option<f64> {
-    let ok = !t.is_empty()
-        && t.bytes()
-            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e'));
-    if !ok {
+    if !scans(t.as_bytes()) {
         return None;
     }
     let v = exact_num::parse_f64(t).ok()?;
     v.is_finite().then_some(v)
+}
+
+/// Whether `b` is one number token in CSS Syntax 3's grammar (§4.3.13): a
+/// sign, digits, a `.` only before a digit, and an exponent of an `e` and
+/// digits. Its value may still be too large for a double.
+fn scans(b: &[u8]) -> bool {
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while b.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    let whole = digits(&mut i);
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    } else if !whole {
+        return false;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1 + usize::from(matches!(b.get(i + 1), Some(b'+' | b'-')));
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == b.len()
 }
 
 /// `a, b, c[, d]` or `a b c [/ d]`.
@@ -233,7 +387,8 @@ fn args(body: &str) -> Option<(Vec<&str>, Option<&str>)> {
         let parts: Vec<&str> = body.split(',').map(str::trim).collect();
         if parts
             .iter()
-            .any(|p| p.is_empty() || p.contains(' ') || p.contains('/'))
+            // The comma-separated syntax takes no `none` (CSS Color 4 §4.1.2).
+            .any(|p| p.is_empty() || p.contains(' ') || p.contains('/') || *p == "none")
         {
             return None;
         }
@@ -741,7 +896,7 @@ pub(crate) fn xyz65_to_d50(v: [f64; 3]) -> [f64; 3] {
     mul(&D65_TO_D50, v)
 }
 
-/// XYZ to an RGB space's linear components.
+/// XYZ (D65) to an RGB space's linear components.
 pub(crate) fn from_xyz65(space: Space, xyz: [f64; 3]) -> [f64; 3] {
     match space {
         Space::DisplayP3 | Space::DisplayP3Linear => mul(&inv3(&P3_TO_XYZ), xyz),
@@ -820,8 +975,8 @@ fn inv3(m: &M3) -> M3 {
     ]
 }
 
-/// Standard spaces the platforms ship but CSS doesn't predefine: the dashed
-/// name, Apple's `CGColorSpace` name, the component count.
+/// Standard spaces the platforms ship but CSS doesn't predefine (LLP 1100
+/// D1): the dashed name, Apple's `CGColorSpace` name, the component count.
 pub const PROFILES: [(&str, &str, usize); 12] = [
     ("--dci-p3", "kCGColorSpaceDCIP3", 3),
     ("--rec709", "kCGColorSpaceITUR_709", 3),

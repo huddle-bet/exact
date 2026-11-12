@@ -1,10 +1,10 @@
 //! Browser measurement into the shared walker; retained by paragraph id.
-//! Shape math and breaks stay in wasm.
+//! @ref LLP 1043.000 §3 D1, D6, D7 — shape math and breaks stay in wasm.
 //!
 //! `textflow_request(op, id, len)` uses the optional artifact's own input
 //! and JSON output buffers. All numeric input is little endian:
 //! 0 segments: overflow-wrap u32 (0 normal, 1 break-word, 2 anywhere),
-//! white-space u32 (0 normal, 1 pre-wrap, 2 nowrap, 3 pre-line), word count u32, that many
+//! white-space u32 (0 normal, 1 pre-wrap, 2 nowrap, 3 pre-line, 4 pre), word count u32, that many
 //! ascending UTF-16 word boundaries u32 (`Intl.Segmenter`'s between two Thai,
 //! Lao, Khmer or Myanmar letters; others are dropped), UTF-8;
 //! 1 prepare: hyphen f32, then one f32 per returned measurement range;
@@ -348,7 +348,7 @@ impl TextFlow {
                 }
             }
         }
-        // Overload may reserve extra whitespace,
+        // @ref LLP 1043.000 §3 D7 — overload may reserve extra whitespace,
         // never overlap an omitted exclusion. At most 64 shapes reach the walker.
         if let Some((x, y, right, bottom)) = overflow {
             shapes.push(FlowShape::RoundRect {

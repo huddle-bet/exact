@@ -1,9 +1,9 @@
-//! Component params: a param is a token its component owns.
+//! Component params (LLP 1121 D15): a param is a token its component owns.
 //! Its full name is the component's identity and the param
 //! (`post.contract#PostButton.radius`); below the IR (the reference table,
 //! the fold, the live table, `uses`, the JS target's properties) it is a
 //! dotted token name derived from that identity,
-//! `param.f<file hash>.<Component>.<param>`.
+//! `param.f<file hash>.<Component>.<param>` (theme2's ruling, 2026-10-17).
 //! The driver rewrites `param.<name>` where a component's rows take their
 //! value, its uses' arguments and its params' defaults to that name before
 //! anything reads them, so a param is read, folded, retained and bound as
@@ -56,13 +56,14 @@ pub struct ParamToken {
     /// The package whose file declares it; none for the app's.
     pub package: Option<String>,
     /// That package's directory, whose `assets/` a literal `icon(svg …)`
-    /// default reads; none for the app's.
+    /// default reads (LLP 1121 stage 13); none for the app's.
     pub root: Option<String>,
 }
 
 /// Every param of `file`'s components, as tokens, in declaration order:
 /// its Contract components', then its design's and its packages' designs'
-/// ([`design_tokens`]; a package's named `<package>/<file>#Name`).
+/// ([`design_tokens`]; a package's named `<package>/<file>#Name`, stage 12
+/// B1).
 pub fn tokens(file: &File) -> Vec<ParamToken> {
     let designed: Vec<ParamToken> = file
         .design
@@ -87,7 +88,7 @@ pub fn tokens(file: &File) -> Vec<ParamToken> {
         .collect()
 }
 
-/// The params of the design's components that aren't Contract, as
+/// The params of the design's components that aren't Contract (D15), as
 /// tokens: each named by the design file and its component, its
 /// `in low..high` a `range` and its metadata a Contract param's attributes;
 /// with what is refused in them (an attribute no param admits, a `param.`
@@ -197,8 +198,13 @@ pub fn collisions(params: &[ParamToken]) -> Vec<LowerError> {
 pub const LINE: u32 = 1 << 29;
 
 /// `params`, and the identity of every component of the app
-/// (`components`), as the design's folds take them.
-pub fn folds(params: &[ParamToken], components: &[String]) -> exact_tamber::params::Params {
+/// (`components`), as the design's folds take them. `file` names the
+/// design being edited, whose current defaults replace the loaded ones.
+pub fn folds(
+    params: &[ParamToken],
+    components: &[String],
+    file: Option<&str>,
+) -> exact_tamber::params::Params {
     exact_tamber::params::Params {
         list: params
             .iter()
@@ -207,6 +213,10 @@ pub fn folds(params: &[ParamToken], components: &[String]) -> exact_tamber::para
                 full: p.full.clone(),
                 kind: p.param.kind.clone(),
                 default: p.param.default.clone(),
+                from_design: p.package.is_none()
+                    && p.identity.rsplit_once('#').is_some_and(|(owner, _)| {
+                        Some(owner) == file && owner.ends_with(".tamber")
+                    }),
             })
             .collect(),
         components: components.to_vec(),
@@ -220,7 +230,7 @@ pub fn folds(params: &[ParamToken], components: &[String]) -> exact_tamber::para
 /// lines in their places, icon aliases resolved. `components`: every
 /// component's identity, for what a short name names.
 pub fn add_to(design: &mut exact_tamber::Design, params: &[ParamToken], components: &[String]) {
-    *design = exact_tamber::params::laid(design, &folds(params, components));
+    *design = exact_tamber::params::laid(design, &folds(params, components, None));
 }
 
 /// `message` with each param's token name written as its full name: what
@@ -235,10 +245,10 @@ pub fn shown(message: &str, params: &[ParamToken]) -> String {
 
 /// [`shown`]'s index of the params' token names, built once for many
 /// messages (a component list's, or a reply's diagnostics: rebuilt per
-/// message it was the params x the messages).
+/// message it was the params x the messages, Astra's round 3).
 #[derive(Debug, Clone, Default)]
 pub struct Shown {
-    full: std::collections::HashMap<String, String>,
+    names: std::collections::HashMap<String, String>,
     /// Each token name's length, longest first.
     lengths: Vec<usize>,
 }
@@ -246,22 +256,32 @@ pub struct Shown {
 impl Shown {
     /// The index of `params`' token names.
     pub fn new(params: &[ParamToken]) -> Shown {
-        let mut full = std::collections::HashMap::new();
-        for p in params.iter().rev() {
-            full.insert(p.token.clone(), p.full.clone());
-        }
-        let mut lengths: Vec<usize> = full.keys().map(String::len).collect();
-        lengths.sort_unstable_by(|a, b| b.cmp(a));
-        lengths.dedup();
-        Shown { full, lengths }
+        Self::with_names(params, |p| p.full.clone())
     }
 
-    /// `message` with each param's token name written as its full name.
+    /// Names a repair can write back into the row that read the params.
+    pub(crate) fn local(params: &[ParamToken]) -> Shown {
+        Self::with_names(params, |p| format!("{PREFIX}{}", p.param.name))
+    }
+
+    fn with_names(params: &[ParamToken], name: impl Fn(&ParamToken) -> String) -> Shown {
+        let mut names = std::collections::HashMap::new();
+        for p in params.iter().rev() {
+            names.insert(p.token.clone(), name(p));
+        }
+        let mut lengths: Vec<usize> = names.keys().map(String::len).collect();
+        lengths.sort_unstable_by(|a, b| b.cmp(a));
+        lengths.dedup();
+        Shown { names, lengths }
+    }
+
+    /// `message` with each param's token name replaced by its indexed name.
     pub fn text(&self, message: &str) -> String {
         // Only where a token can start (each begins with `PREFIX`), the
         // longest token there, so a name that prefixes another does not
         // split it: the tokens looked up by name, not a replace over the
-        // text per param (the checker's work in param counts).
+        // text per param (the checker's work in param counts, Astra's round
+        // 2).
         if !message.contains(PREFIX) {
             return message.to_string();
         }
@@ -273,7 +293,7 @@ impl Shown {
             let hit = self.lengths.iter().find_map(|&n| {
                 let end = start + n;
                 let word = message.get(start..end)?;
-                self.full.get(word).map(|f| (end, f.as_str()))
+                self.names.get(word).map(|f| (end, f.as_str()))
             });
             match hit {
                 Some((end, f)) => {
@@ -291,7 +311,7 @@ impl Shown {
     }
 }
 
-/// The kinds a param may be (the token kinds, and an icon).
+/// The kinds a param may be (D3's, and an icon).
 const KINDS: [&str; 10] = [
     "color",
     "length",
@@ -305,7 +325,7 @@ const KINDS: [&str; 10] = [
     "icon",
 ];
 
-/// The controls a param of `kind` takes.
+/// The controls a param of `kind` takes (D15's table).
 fn controls(kind: &str) -> &'static [&'static str] {
     match kind {
         "color" => &["color", "token", "select", "none"],
@@ -349,7 +369,7 @@ pub fn declared(params: &[ParamToken]) -> (Vec<LowerError>, Vec<usize>) {
                 errors.push(refuse(
                     "tamber-param-control",
                     format!(
-                        "param `{}`: a {} takes `control=` {}, not `{c}`",
+                        "param `{}`: a {} takes `control=` {}, not `{c}` (D15)",
                         t.full,
                         p.kind,
                         controls(&p.kind).join(", ")
@@ -465,8 +485,8 @@ pub fn folded_in(
                     _ => None,
                 };
                 // One a column doesn't fold: said here too, since the design
-                // server checks params without lowering the theme, and as
-                // what it is, not as a unit.
+                // server checks params without lowering the theme (round 3,
+                // Astra), and as what it is, not as a unit.
                 if let ("length", Value::Length(l)) = (p.kind.as_str(), v) {
                     if let Some(column) = crate::scale::unfolded(&l.css()) {
                         errors.push(refuse(
@@ -505,7 +525,7 @@ pub fn folded_in(
                 let n = match (p.kind.as_str(), v) {
                     ("length", Value::Length(Length::Px(n))) => *n,
                     ("length", other) => {
-                        errors.push(refuse("tamber-range-unit", format!("param `{}` is `{}`: a ranged length is px, so its range is checked at build; a `rem`, `em` or text style is not", t.full, other.css())));
+                        errors.push(refuse("tamber-range-unit", format!("param `{}` is `{}`: a ranged length is px, so its range is checked at build; a `rem`, `em` or text style is not (D15)", t.full, other.css())));
                         break;
                     }
                     (_, Value::Number(n)) | (_, Value::Duration(n)) => *n,
@@ -561,13 +581,16 @@ pub fn folded_in(
 /// and column: each is folded on its own in its param's place, so a `when`
 /// value no tuple picks is checked too, as written, a token's or a `calc()`
 /// as well as a literal. A value that does not fold is the fold's to say.
+/// `file` names the design being edited, as in [`folds`].
 pub fn written_ranges(
     design: &exact_tamber::Design,
     params: &[ParamToken],
     identities: &[String],
     vocab: &exact_tamber::Vocab,
+    file: Option<&str>,
 ) -> Vec<(u32, u32, LowerError)> {
     let resolver = Resolver::new(params, identities);
+    let folds = folds(params, identities, file);
     // Each ranged line: its index, its param, and its values.
     let ranged: Vec<(usize, &ParamToken, Vec<&exact_tamber::At<String>>)> = design
         .params
@@ -608,13 +631,13 @@ pub fn written_ranges(
             probe.params[*index].whens.clear();
         }
         // Each dial read once beside them, so a probe that clears the `when`
-        // lines reading one doesn't leave it moving no token
-        // (`tamber-dial-inert` would fail the batch, and each value fold
+        // lines reading one doesn't leave it moving no token (Astra's round
+        // 2: `tamber-dial-inert` failed the batch, and each value folded
         // alone again).
         if at.len() > 1 {
             for (k, d) in design.dials.iter().enumerate() {
                 // (under a stem no name of the design starts with: a reader
-                // never takes an authored token's place)
+                // never takes an authored token's place, Astra's round 3)
                 let at = |value: String| exact_tamber::At {
                     value,
                     line: u32::MAX - k as u32,
@@ -629,7 +652,7 @@ pub fn written_ranges(
                 });
             }
         }
-        add_to(&mut probe, params, identities);
+        probe = exact_tamber::params::laid(&probe, &folds);
         crate::theme::stand_in_profiles(&mut probe);
         exact_tamber::check_design(probe, vocab).ok()
     };
@@ -655,9 +678,9 @@ pub fn written_ranges(
     // each line's k-th value in one probe, since none reads another line
     // (the checker's work in param counts: a fold of the design per value
     // was values x the design).
-    // (a design token can read a param in turn: the tokens that do,
-    // directly or through another, found once from the params' names out;
-    // a dial reads none)
+    // (a design token can read a param in turn, Grok's round 2: the tokens
+    // that do, directly or through another, found once from the params'
+    // names out, Astra's and Grok's round 3; a dial reads none)
     fn words(text: &str) -> impl Iterator<Item = &str> {
         let word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '#');
         text.split(move |c: char| !word(c))
@@ -783,7 +806,7 @@ pub fn entry_errors(
 }
 
 /// Each line of the design's `params` block that names no param of the
-/// app, as a warning (`tamber-param-unknown`): its declaring file moved
+/// app, as a warning (`tamber-param-unknown`, D15): its declaring file moved
 /// or was renamed, or the param was removed, so the value no longer
 /// applies. A short name two components share is the build's refusal.
 pub fn unknown(
@@ -800,7 +823,7 @@ pub fn unknown(
             Err(e) if e.id == "tamber-param-unknown" => Some(LowerError {
                 id: "tamber-param-unknown",
                 message: format!(
-                    "`{}` in the design's `params` block names no param of this app, so its value applies to nothing: was its declaring file moved or renamed (a new identity)?",
+                    "`{}` in the design's `params` block names no param of this app, so its value applies to nothing: was its declaring file moved or renamed (a new identity, D15)?",
                     entry.name.value
                 ),
                 span: Span {
@@ -845,7 +868,7 @@ impl<'a> Resolver<'a> {
         for q in params {
             by_token.entry(q.token.as_str()).or_insert(q);
         }
-        let folds = folds(params, identities);
+        let folds = folds(params, identities, None);
         Resolver {
             index: exact_tamber::params::Index::new(&folds),
             folds,
@@ -988,7 +1011,7 @@ mod tests {
 
     /// `shown` by lookup at each token's start gives what a replace per param,
     /// longest first, gave: tokens that prefix others, repeats, a token twice
-    /// in the list, text around and between.
+    /// in the list, text around and between (Astra's round 2 on the counts).
     #[test]
     fn shown_by_lookup_is_the_replace_per_param() {
         let old = |message: &str, params: &[ParamToken]| {

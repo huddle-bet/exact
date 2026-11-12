@@ -36,7 +36,7 @@ export const FEATURED: Option[] = [
   ['qwen/qwen3.8-max-prime', 'Qwen3.8 Max Prime', 'Qwen'],
   ['mistralai/mistral-large-4-0', 'Mistral Large 4', 'Mistral'],
 ].map(([id, name, maker]) => ({ id: id!, name: name!, maker: maker!, reasoning: true }));
-// The device's own model: no key, no service, nothing leaves the device.
+// The device's own model (LLP 1133.016 §10): no key, no service, nothing leaves the device.
 export const DEVICE: Option = { id: 'device', name: 'On this device', maker: 'Apple Intelligence, Gemini Nano or the browser', reasoning: false };
 export const EFFORTS: Record<string, string> ={ none: 'No Thinking', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Max' };
 
@@ -49,17 +49,18 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function load(storage: Storage) {
   if (loaded) return;
+  // Only a missing file is a first launch. Any other failure (and the build's 'bake') leaves the
+  // module unloaded, so no command saves an empty list over the file.
+  const bytes = await storage.fs.readFile(FILE).catch((e: { code?: string }) => { if (e.code === 'ENOENT') return null; throw e; });
   try {
-    const data = JSON.parse(new TextDecoder().decode(await storage.fs.readFile(FILE)));
-    if (data.version === 1 && Array.isArray(data.conversations)) {
+    const data = bytes && JSON.parse(new TextDecoder().decode(bytes));
+    if (data?.version === 1 && Array.isArray(data.conversations)) {
       conversations = data.conversations;
       serial = Number(data.serial) || 0;
       // An answer that was streaming when the app quit is kept as far as it got.
       for (const c of conversations) { if (c.streaming) { c.streaming = false; c.job = ''; } c.session = ''; }
     }
-  } catch (e) {
-    if ((e as { code?: string }).code === 'bake') throw e;
-  }
+  } catch { /* A damaged file starts with no conversations. */ }
   loaded = true;
 }
 async function persist(storage: Storage) {
@@ -190,7 +191,7 @@ async function start(c: Conversation, at: number, storage: Storage) {
   await persist(storage);
 }
 
-// ---- the on-device model ----
+// ---- the on-device model (LLP 1133.016 §10) ----
 
 type Turn = { role: 'user' | 'assistant'; content: string };
 const code = (e: unknown) => (e as { code?: string }).code ?? '';
@@ -198,7 +199,7 @@ const unavailable = (e: unknown) => code(e) === 'NotSupportedError' ? 'The on-de
   : code(e) === 'QuotaExceededError' ? 'That message is too long for the on-device model.'
   : code(e) === 'NotAllowedError' ? 'The on-device model needs to be downloaded first. Choose it in New Conversation.'
   : `The on-device model had a problem (${code(e) || message(e)}). Try again.`;
-// The tool the model may call, where the platform runs tools: the person's earlier conversations.
+// The tool the model may call, where the platform runs tools: the person's earlier conversations (D9).
 const FIND = {
   name: 'findConversations',
   description: 'Finds the person’s earlier conversations about a topic, with their titles and an excerpt of each.',
@@ -231,7 +232,7 @@ async function startOnDevice(c: Conversation, history: Turn[], reply: Msg, stora
   }
   await persist(storage);
 }
-/** A reply on the device: its text so far, what it searched, and its end (read once a pulse). */
+/** A reply on the device: its text so far, what it searched, and its end (D7: read once a pulse). */
 async function pulseOnDevice(c: Conversation, reply: Msg, at: number, storage: Storage) {
   let r;
   try { r = await languageModelResponse({ response: c.job }); } catch (e) {
@@ -254,7 +255,7 @@ async function pulseOnDevice(c: Conversation, reply: Msg, at: number, storage: S
   // Awaited, so the pulse that lands the reply lands the title too: no later read is due once it ends.
   await name(c, storage);
 }
-/** A title by structured output, from a session of its own. */
+/** A title by structured output (D8), from a session of its own. */
 async function titleOnDevice(text: string) {
   const { id } = await createLanguageModel({});
   try {
@@ -268,7 +269,7 @@ async function titleOnDevice(text: string) {
   }
 }
 
-/** The on-device model's tools: it reads conversations and changes none. */
+/** The on-device model's tools (LLP 1133.016 D9): it reads conversations and changes none. */
 export const tools = {
   findConversations: async ({ query }: { query: string }, _store: Store, storage: Storage) => {
     await load(storage);

@@ -1,11 +1,13 @@
-// App extensions of more than one kind:
+// @ref LLP 1133.024 D4, D22 item 5 — app extensions of more than one kind:
 // what an appex compile links with, and the share extension, which links
 // no Exact runtime and writes only its inbox in the App Group.
 import { resolve } from 'node:path';
 import { mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { plistFile } from './assets.mjs';
+import { stripProductionExecutable } from './link.mjs';
 import { appleActivationRule, appleShareMembers } from '../../scripts/share-target.mjs';
-const root = resolve(new URL('../..', import.meta.url).pathname);
+import { fileURLToPath } from 'node:url';
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 
 /** An extension executable's link: application-extension API only, entered at `NSExtensionMain`. A bundle with an
  * `@main` (WidgetKit's) keeps its `main` with `keepMain`. */
@@ -20,10 +22,10 @@ export const shareInfo = (app, group = null) => app.manifest.share_target
   ? { ExactShareTarget: JSON.stringify(app.manifest.share_target), ExactAppIdentifier: app.id, ...(group ? { ExactShareGroup: group } : {}) }
   : {};
 
-/** The share extension in `bundle`'s `PlugIns/ExactShare.appex`: the host's one Swift extension, parameterized
+/** The share extension (D4) in `bundle`'s `PlugIns/ExactShare.appex`: the host's one Swift extension, parameterized
  * by its Info.plist (the group, the app's id, the mapped members, each files member's UTIs, the activation rule and
  * the post button's word). `entitlements` is the extension's plist text; `sign(extension, path)` signs it. */
-export function packageShareExtension({ app, bundle, directory, sdk, triple, device = false, platform = 'ios', group, entitlements, sign, runApple, profile = null }) {
+export function packageShareExtension({ app, bundle, directory, sdk, triple, device = false, platform = 'ios', group, entitlements, sign, runApple, production, symbols = directory, profile = null }) {
   const mac = platform === 'macos', contents = mac ? resolve(bundle, 'Contents') : bundle;
   const target = app.manifest.share_target;
   const extension = resolve(contents, 'PlugIns/ExactShare.appex');
@@ -32,7 +34,7 @@ export function packageShareExtension({ app, bundle, directory, sdk, triple, dev
   const binary = mac ? resolve(extensionContents, 'MacOS/ExactShare') : resolve(extension, 'ExactShare');
   mkdirSync(mac ? resolve(extensionContents, 'MacOS') : extension, { recursive: true });
   if (profile) copyFileSync(profile.path, resolve(extensionContents, mac ? 'embedded.provisionprofile' : 'embedded.mobileprovision'));
-  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(contents, 'Info.plist')]).stdout);
+  const appInfo = JSON.parse(runApple('plutil', ['-convert', 'json', '-o', '-', resolve(contents, 'Info.plist')], { read: true }).stdout);
   const versions = Object.fromEntries(['CFBundleVersion', 'CFBundleShortVersionString', mac ? 'LSMinimumSystemVersion' : 'MinimumOSVersion'].map(key => [key, appInfo[key]]).filter(([, v]) => v !== undefined));
   const params = target.params ?? {};
   writeFileSync(resolve(extensionContents, 'Info.plist'), plistFile({
@@ -47,10 +49,11 @@ export function packageShareExtension({ app, bundle, directory, sdk, triple, dev
   mkdirSync(directory, { recursive: true });
   const entitlementPath = resolve(directory, 'share-entitlements.plist');
   writeFileSync(entitlementPath, entitlements);
-  runApple('xcrun', ['--sdk', mac ? 'macosx' : device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...appexArgs,
+  runApple('xcrun', ['--sdk', mac ? 'macosx' : device ? 'iphoneos' : 'iphonesimulator', 'swiftc', '-parse-as-library', '-O', ...(production ? ['-g'] : []), ...appexArgs,
     '-module-name', 'ExactShare', '-target', triple, '-sdk', sdk, '-module-cache-path', resolve(directory, 'cache'),
     ...(!device && !mac ? ['-Xlinker', '-sectcreate', '-Xlinker', '__TEXT', '-Xlinker', '__entitlements', '-Xlinker', entitlementPath] : []),
     resolve(root, 'host/apple/share/ShareInbox.swift'), resolve(root, 'host/apple/share/ShareViewController.swift'), '-o', binary]);
+  stripProductionExecutable(binary, { production, dsym: resolve(symbols, 'ExactShare.appex.dSYM'), sourceDsym: `${binary}.dSYM` });
   sign(extension, entitlementPath);
   return extension;
 }

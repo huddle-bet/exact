@@ -12,7 +12,7 @@ state in exactly this form; the two texts are compared line by line.
   `# <reason>`             after a refused or poisoned outcome or `ran`;
                            commentary, never compared
   `slot <name> <value>`    each root slot, declaration order, mutations last
-  `store <name> <value>`   each persisted state, declaration
+  `store <name> <value>`   each persisted state (LLP 1116 D5), declaration
                            order: what the device's store keeps for it,
                            which after every commit that stands is the
                            slot's value
@@ -86,7 +86,7 @@ def outcome : Outcome → String
   | .refused e => "outcome refused\n# " ++ why e
   | .poisoned e => "outcome poisoned\n# " ++ why e
 
-/-- One attempted commit within an observed step. -/
+/-- One attempted commit within an observed step (LLP 1148 D3). -/
 structure Ran where
   kind : String
   action : String
@@ -106,7 +106,7 @@ def dispatchTrace (p : Program) (o : Oracle) (c : Config) (target : String) (eve
         ((c, .refused (.unsupported s!"a payload for a `{n.control.getD ""}` control")), []) else
       let env : Env := { prog := p, slots := c.slots, derives := c.settled.derives,
                          resources := c.settled.resources, rows := rowSlots c.store n.rows,
-                         now := c.now }
+                         now := c.now, idle := c.settled.idle }
       match evalList fuel env false n.locals args with
       | .error e => ((c, .refused e), [⟨"handler", a, .refused (.refused ("arguments refused: " ++ why e))⟩])
       | .ok vs =>

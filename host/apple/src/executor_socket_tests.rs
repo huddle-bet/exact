@@ -1,4 +1,4 @@
-//! A two-way socket on a scripted transport: every frame,
+//! A two-way socket on a scripted transport (LLP 1016.000 D7): every frame,
 //! close, overflow and abort is the test's to make, and every frame sent
 //! is recorded.
 use super::super::super::Core;
@@ -139,6 +139,7 @@ fn socket(ticket: u64) -> RequestOut {
         unreachable!()
     };
     RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket,
         target: "feed".into(),
         request,
@@ -464,4 +465,44 @@ fn open_takes_no_place_among_the_256_frames() {
         next(&core, &woke),
         Outcome::Closed { code: 1000, .. }
     ));
+}
+
+fn opened(core: &Core, woke: &Receiver<()>) {
+    let first = next(core, woke);
+    assert!(
+        matches!(first, Outcome::Message(Message { ref event, .. }) if event == "open"),
+        "{first:?}"
+    );
+}
+
+/// LLP 1016.000 D11: a socket that carries nothing for its idle timeout ends
+/// as a Timeout, after what it had accepted, and a message starts the count
+/// again. A first socket is opened before it, so the process's first opening,
+/// which is slow, is not the one timed.
+#[test]
+fn a_quiet_socket_ends_as_a_timeout_and_a_message_starts_the_count_again() {
+    let (core, peer, woke) = setup();
+    core.run_owned(socket(9), None).unwrap();
+    opened(&core, &woke);
+    let mut out = socket(1);
+    out.request.idle_timeout_ms = Some(1000);
+    let asked = Instant::now();
+    core.run_owned(out, None).unwrap();
+    opened(&core, &woke);
+    let wire = feed(&peer, 1);
+    std::thread::sleep(Duration::from_millis(400));
+    wire.send(frame("one")).unwrap();
+    assert_eq!(text(&next(&core, &woke)), "one");
+    let end = next(&core, &woke);
+    assert!(
+        matches!(&end, Outcome::Failed { kind: FailureKind::Timeout, message } if message == "nothing arrived for 1000 ms"),
+        "{end:?}"
+    );
+    let took = asked.elapsed();
+    assert!(
+        took >= Duration::from_millis(1380),
+        "the message started the count again: {took:?}"
+    );
+    // The socket asked with no idle timeout is still read.
+    assert_eq!(core.shared.state.lock().unwrap().running.len(), 1);
 }

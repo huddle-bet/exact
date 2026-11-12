@@ -1,6 +1,8 @@
 //! The CPU backend: tiny-skia. The fallback where no GPU adapter exists
 //! (a fleet box), and the deterministic oracle for pixel fixtures — the
 //! same bytes on every machine.
+//!
+//! @ref LLP 1015 §2
 
 mod backdrop;
 mod border;
@@ -40,12 +42,13 @@ use tiny_skia::{
 // One optional CPU coverage mask, never a source, picture or node owner.
 const CLIP_CACHE_BYTES: usize = 1024 * 1024;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 struct ClipKey {
     width: u32,
     height: u32,
     scale: u32,
     shape: [u32; 12],
+    corners: Option<exact_kernel::corner::CornerShape>,
     transform: [u32; 6],
 }
 
@@ -189,6 +192,7 @@ impl Raster {
 
     fn clip_key(&self, shape: &Shape, ts: Transform) -> Option<ClipKey> {
         let bytes = (self.width as usize).checked_mul(self.height as usize)?;
+        let corners = shape.corners;
         let shape = [
             shape.rect.0,
             shape.rect.1,
@@ -219,6 +223,7 @@ impl Raster {
             height: self.height,
             scale: self.scale.to_bits(),
             shape: shape.map(f32::to_bits),
+            corners,
             transform: transform.map(f32::to_bits),
         })
     }
@@ -258,8 +263,8 @@ impl Raster {
             self.height as f32,
         ));
         let Some(path) = rounded_rect(shape) else {
-            // mask_with skips invalid shapes when it already has a parent.
-            return if self.clips.is_empty() {
+            // mask_with skips invalid nonempty shapes under a parent clip.
+            return if self.clips.is_empty() || shape.rect.2 <= 0.0 || shape.rect.3 <= 0.0 {
                 (0.0, 0.0, 0.0, 0.0)
             } else {
                 parent
@@ -450,7 +455,7 @@ impl Backend for Raster {
                     self.width as f32 / self.scale,
                     self.height as f32 / self.scale,
                 )),
-                [255; 4],
+                self.page.unwrap_or([255; 4]),
                 Transform::identity(),
             );
         }
@@ -581,7 +586,7 @@ impl Backend for Raster {
         }
     }
 
-    // An SVG shape: fill under stroke, clipped as boxes are.
+    // @ref LLP 1055 D4 — an SVG shape: fill under stroke, clipped as boxes are.
     fn svg_path(&mut self, s: &crate::paint::SvgPaint<'_>, ts: Transform) {
         let mut b = PathBuilder::new();
         for seg in &s.path.0 {
@@ -605,12 +610,12 @@ impl Backend for Raster {
         let Some(t) = target else {
             return;
         };
-        // A gradient is a tiny-skia shader in the
+        // @ref LLP 1055.000 D7 — a gradient is a tiny-skia shader in the
         // path's space (two circles, as SVG's focal radial).
         fn paint<'a>(ink: &'a crate::paint::Ink<'_>) -> Option<tiny_skia::Paint<'a>> {
             match ink {
                 crate::paint::Ink::Solid(c) => Some(solid(*c)),
-                // A pattern's tile, repeated.
+                // @ref LLP 1055.000 D7 — a pattern's tile, repeated.
                 crate::paint::Ink::Pattern {
                     tile,
                     transform: m,
@@ -758,7 +763,7 @@ impl Backend for Raster {
             ),
             // A whole turn from +x, clockwise, turned so it starts where
             // CSS's `from` does (0 is up): turned rather than started
-            // there, so the turn never wraps mid-sweep.
+            // there, so the turn never wraps mid-sweep (LLP 1077 D5).
             Geometry::Conic { center, from } => tiny_skia::SweepGradient::new(
                 Point::from_xy(center.0, center.1),
                 0.0,
@@ -901,7 +906,11 @@ impl Backend for Raster {
         self.recycle_clip_mask(mask);
     }
 
-    // An island in its element's user space.
+    // @ref LLP 1055.000 D14 — an island in its element's user space.
+    fn supports_island_image(&self) -> bool {
+        true
+    }
+
     fn island_image(&mut self, image: Arc<Pixmap>, dst: Rect4, ts: Transform, mode: u8) {
         if mode != 0 {
             self.window_underlay = None;
@@ -914,7 +923,7 @@ impl Backend for Raster {
         let dev = self
             .device(ts)
             .pre_concat(Transform::from_translate(dst.0, dst.1).pre_scale(dst.2 / nw, dst.3 / nh));
-        // `mix-blend-mode`, in CSS's order.
+        // @ref LLP 1055.000 D19 — `mix-blend-mode`, in CSS's order.
         use tiny_skia::BlendMode as B;
         let blend_mode = [
             B::SourceOver,
@@ -943,6 +952,10 @@ impl Backend for Raster {
             t.draw_pixmap(0, 0, image.as_ref().as_ref(), &paint, dev, mask.as_deref());
         }
     }
+
+    /// Glyphs draw sharp here: only a painter that blurs them as it draws
+    /// them takes the sigma (LLP 1077 D15).
+    fn text_blur(&mut self, _sigma: f32) {}
 
     fn surface_image(&mut self, image: Arc<Pixmap>, dst: Rect4) {
         self.canvas(&image, dst, &[], Transform::identity());
@@ -1107,7 +1120,7 @@ impl Backend for Raster {
         true
     }
 
-    // An SVG clip: the union of its shapes as one
+    // @ref LLP 1055.000 D10 — an SVG clip: the union of its shapes as one
     // coverage mask, multiplied by its own clip's and the one in force.
     fn push_svg_clip(&mut self, clip: &exact_kernel::svg::scene::Clip, ts: Transform) -> usize {
         fn union(
@@ -1340,6 +1353,9 @@ fn css_clip_intersection_matches_full_mask_for_curves_transforms_and_tiling() {
 #[test]
 fn nested_shape_masks_match_original_intersections() {
     fn original(raster: &Raster, shapes: &[Shape], ts: Transform) -> Option<Mask> {
+        if shapes.iter().any(|s| s.rect.2 <= 0.0 || s.rect.3 <= 0.0) {
+            return Mask::new(raster.width, raster.height);
+        }
         let dev = raster.device(ts);
         let (mut mask, remaining) = if let Some(parent) = raster.active_clip() {
             ((**parent).clone(), shapes)

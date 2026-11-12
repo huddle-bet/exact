@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { presenceLines, macPresence, macPresenceProfile } from './presence.mjs';
 
-// What a macOS build says of its presence lines, and the release build it refuses.
+// LLP 1133.010 D7: what a macOS build says of its presence lines, and the release build it refuses.
 const app = { id: 'com.example.lock' };
 const ceiling = ['net.fetch https://x', 'secret.keep token user-presence optional', 'secret.keep key biometry-any apple.orWatch', 'secret.keep plain'].join('\n');
 const none = () => null;
@@ -61,7 +61,23 @@ test('a development build asks for a passkey domain in developer mode, a release
   expect(associatedDomains(undefined, true)).toEqual([]);
 });
 
-test('App Attest and the age range: a Mac build signs neither, a release is refused; the environment is by build', async () => {
+test('Sign in with Apple: a simulator signs it, a device build when its profile allows it, development or distribution (LLP 1133.014 D7)', async () => {
+  const { entitlements } = await import('./build.mjs');
+  const app = { id: 'com.example.app', manifest: { host: { ios: {} } } };
+  const reach = { auth: { signIn: { apple: ['com.example.web'] } } };
+  const signs = (team, debuggable, options) => entitlements(app, team, debuggable, reach, options).includes('com.apple.developer.applesignin');
+  const allows = ['com.apple.developer.applesignin'];
+  expect(signs(null, true, { simulator: true })).toBe(true);
+  // A device: the signing profile's entitlements decide, whatever its kind.
+  expect(signs('TEAM', true, { allows: [] })).toBe(false);
+  expect(signs('TEAM', true, { allows })).toBe(true);
+  expect(signs('TEAM', false, { allows, distributed: true })).toBe(true);
+  // Unsigned (no profile), or a grant without `auth.apple`: none.
+  expect(signs(null, false, {})).toBe(false);
+  expect(entitlements(app, 'TEAM', false, { auth: {} }, { allows })).not.toContain('applesignin');
+});
+
+test('App Attest and the age range: a Mac build signs neither, a release is refused; the environment is by build (LLP 1133.028)', async () => {
   const { macProfileRows, entitlementValue } = await import('./presence.mjs');
   const said = [];
   macProfileRows(app, 'device.attestation\ndevice.age-range\ndevice.tracking purpose.ads', { log: (l) => said.push(l) });
@@ -70,4 +86,5 @@ test('App Attest and the age range: a Mac build signs neither, a release is refu
   expect(() => macProfileRows(app, 'device.tracking purpose.ads', { release: true })).not.toThrow();
   const env = 'com.apple.developer.devicecheck.appattest-environment';
   expect([entitlementValue(env, true), entitlementValue(env, false), entitlementValue('com.apple.developer.declared-age-range', true)]).toEqual(['development', 'production', true]);
+  expect([entitlementValue('aps-environment', true), entitlementValue('aps-environment', false)]).toEqual(['development', 'production']);
 });

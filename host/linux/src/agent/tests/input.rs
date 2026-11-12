@@ -74,7 +74,7 @@ fn the_clipboard_events_reach_the_nearest_handler() {
 /// A paste is Ctrl+V first. A `key` handler that `preventDefault()`s that
 /// chord keeps the clipboard event from landing; one that does not still
 /// hears the key and the paste. Copy stays the clipboard event alone
-/// (a driver's paste that skipped the key would hide a bug).
+/// (drums R15: the driver's paste skipped the key and hid that bug).
 #[test]
 fn a_paste_is_ctrl_v_and_a_prevented_chord_skips_the_clipboard() {
     let head = r#"component App
@@ -158,7 +158,7 @@ fn a_paste_is_ctrl_v_and_a_prevented_chord_skips_the_clipboard() {
     }
 }
 
-/// `tap <id> modifiers Shift+Meta` presses with the keys held,
+/// Gallery F20: `tap <id> modifiers Shift+Meta` presses with the keys held,
 /// which the action's `MouseEvent` reports; the keys are released after.
 #[test]
 fn a_tap_holds_its_modifiers_for_the_press() {
@@ -195,6 +195,223 @@ fn a_tap_holds_its_modifiers_for_the_press() {
     assert!(reply.contains("error"), "{reply}");
 }
 
+#[test]
+fn a_refused_modifier_does_not_stay_held_for_later_input() {
+    refused_keys_preserve_modifiers(false);
+}
+
+#[test]
+fn a_refused_chord_preserves_held_modifiers() {
+    refused_keys_preserve_modifiers(true);
+}
+
+fn refused_keys_preserve_modifiers(chords: bool) {
+    let plan = contract::compile(
+        r#"component App
+  state log = ""
+  action pick(e: MouseEvent)
+    log = `tap:${e.shiftKey}:${e.ctrlKey}:${e.altKey}:${e.metaKey}`
+  action keyed(k: string, e: KeyboardEvent)
+    log = `key:${k}:${e.shiftKey}:${e.ctrlKey}:${e.altKey}:${e.metaKey}`
+  action released(k: string)
+    log = `up:${k}`
+  view
+    column width=300
+      button press=pick key=keyed keyup=released testId="b" width=50 height=20
+      button disabled=true testId="off" width=50 height=20
+      button inert=true testId="inert" width=50 height=20
+      text log testId="log" height=20
+"#,
+    )
+    .unwrap();
+    let (mut p, boot_error) = Presenter::boot_with(
+        &plan.encode(),
+        (),
+        (300.0, 300.0),
+        1.0,
+        std::path::PathBuf::new(),
+        PainterChoice::Cpu,
+    )
+    .unwrap();
+    assert!(boot_error.is_none(), "{boot_error:?}");
+    let id = |test_id: &str| {
+        let k = p.host().kernel();
+        k.node_by_key(k.find_by_test_id(test_id)[0]).unwrap().id
+    };
+    let (b, off, inert, log_id) = (id("b"), id("off"), id("inert"), id("log"));
+    let log = |p: &Presenter<()>| {
+        p.host()
+            .kernel()
+            .node(log_id)
+            .unwrap()
+            .props
+            .str(exact_kernel::PropId::Text)
+            .unwrap()
+            .to_owned()
+    };
+    let tap = format!(r#"{{"op":"tap","id":{b}}}"#);
+    let accepted = |p: &mut Presenter<()>, request: &str| {
+        let reply = handle(p, request);
+        assert!(!reply.contains("error"), "{request}: {reply}");
+    };
+    let edge = |p: &mut Presenter<()>, key: &str, phase: &str| {
+        accepted(
+            p,
+            &format!(r#"{{"op":"type","id":{b},"key":"{key}","phase":"{phase}"}}"#),
+        );
+    };
+    let reply = handle(&mut p, &tap);
+    assert!(!reply.contains("error"), "{reply}");
+    assert_eq!(log(&p), "tap:false:false:false:false");
+    for (name, left, right, flags) in [
+        ("Shift", "ShiftLeft", "ShiftRight", "true:false:false:false"),
+        (
+            "Control",
+            "ControlLeft",
+            "ControlRight",
+            "false:true:false:false",
+        ),
+        ("Alt", "AltLeft", "AltRight", "false:false:true:false"),
+        ("Meta", "MetaLeft", "MetaRight", "false:false:false:true"),
+    ] {
+        let chord = format!("{name}+a");
+        let keys = if chords {
+            vec![chord.as_str()]
+        } else {
+            vec![name, left, right]
+        };
+        for key in keys {
+            for held in [vec![], vec![left], vec![right], vec![left, right]] {
+                for phase in ["", r#", "phase":"down""#] {
+                    for repeat in [false, true] {
+                        for (target, reason) in [
+                            (off, format!("view {off} is disabled or inert")),
+                            (inert, format!("view {inert} is disabled or inert")),
+                            (u32::MAX, format!("no view {}", u32::MAX)),
+                        ] {
+                            for held_key in &held {
+                                edge(&mut p, held_key, "down");
+                            }
+                            let before = log(&p);
+                            let request = format!(
+                                r#"{{"op":"type","id":{target},"key":"{key}"{phase},"repeat":{repeat}}}"#
+                            );
+                            let reply: serde_json::Value =
+                                serde_json::from_str(&handle(&mut p, &request)).unwrap();
+                            assert_eq!(reply["error"], reason, "{request}: {reply}");
+                            assert_eq!(
+                                log(&p),
+                                before,
+                                "refused input dispatched an event: {request}"
+                            );
+                            let expected = if held.is_empty() {
+                                "false:false:false:false"
+                            } else {
+                                flags
+                            };
+                            accepted(&mut p, &tap);
+                            assert_eq!(
+                                log(&p),
+                                format!("tap:{expected}"),
+                                "held {held:?}, after {request}"
+                            );
+                            edge(&mut p, "a", "down");
+                            assert_eq!(
+                                log(&p),
+                                format!("key:a:{expected}"),
+                                "held {held:?}, after {request}"
+                            );
+                            edge(&mut p, "a", "up");
+                            for (i, held_key) in held.iter().enumerate() {
+                                edge(&mut p, held_key, "up");
+                                accepted(&mut p, &tap);
+                                let expected = if i + 1 == held.len() {
+                                    "false:false:false:false"
+                                } else {
+                                    flags
+                                };
+                                assert_eq!(
+                                    log(&p),
+                                    format!("tap:{expected}"),
+                                    "released {held_key}, after {request}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_partly_refused_chord_releases_only_its_new_modifiers() {
+    for chord in ["Shift+Alt+Control+a", "Shift+Alt+a"] {
+        let plan = contract::compile(
+            r#"component App
+  state blocked = false
+  state log = ""
+  action down(k: string)
+    log = `${log}down:${k};`
+    if k == "Alt"
+      blocked = true
+  action up(k: string)
+    log = `${log}up:${k};`
+  action pick(e: MouseEvent)
+    log = `${log}tap:${e.shiftKey}:${e.ctrlKey}:${e.altKey}:${e.metaKey};`
+  view
+    column width=300 key=down keyup=up
+      button press=pick testId="b" width=50 height=20
+      button disabled=blocked testId="target" width=50 height=20
+      text log testId="log" height=20
+"#,
+        )
+        .unwrap();
+        let (mut p, boot_error) = Presenter::boot_with(
+            &plan.encode(),
+            (),
+            (300.0, 300.0),
+            1.0,
+            std::path::PathBuf::new(),
+            PainterChoice::Cpu,
+        )
+        .unwrap();
+        assert!(boot_error.is_none(), "{boot_error:?}");
+        let id = |test_id: &str| {
+            let k = p.host().kernel();
+            k.node_by_key(k.find_by_test_id(test_id)[0]).unwrap().id
+        };
+        let (b, target, log) = (id("b"), id("target"), id("log"));
+        let reply = handle(
+            &mut p,
+            &format!(r#"{{"op":"type","id":{b},"key":"Shift","phase":"down"}}"#),
+        );
+        assert!(!reply.contains("error"), "{reply}");
+        let reply: serde_json::Value = serde_json::from_str(&handle(
+            &mut p,
+            &format!(r#"{{"op":"type","id":{target},"key":"{chord}"}}"#),
+        ))
+        .unwrap();
+        assert_eq!(
+            reply["error"],
+            format!("view {target} is disabled or inert")
+        );
+        for request in [
+            format!(r#"{{"op":"tap","id":{b}}}"#),
+            format!(r#"{{"op":"type","id":{b},"key":"Shift","phase":"up"}}"#),
+            format!(r#"{{"op":"tap","id":{b}}}"#),
+        ] {
+            let reply = handle(&mut p, &request);
+            assert!(!reply.contains("error"), "{request}: {reply}");
+        }
+        assert_eq!(
+            p.host().kernel().node(log).unwrap().props.str(exact_kernel::PropId::Text),
+            Some("down:Shift;down:Shift;down:Alt;up:Alt;tap:true:false:false:false;up:Shift;tap:false:false:false:false;"),
+            "{chord}"
+        );
+    }
+}
+
 /// A request that answers long after the drive moves on.
 #[derive(Default)]
 struct Stalled;
@@ -223,8 +440,8 @@ impl DataSource for Stalled {
 }
 
 /// A jump waits for no request with no timer due before it, and its reply
-/// names what it left in flight, as the web hosts' do;
-/// `clock settle` waits for it and says `requests` past its bound.
+/// names what it left in flight, as the web hosts' do (calendar F10, workout
+/// F6); `clock settle` waits for it and says `requests` past its bound.
 #[test]
 fn a_jump_names_the_requests_it_left_in_flight() {
     let plan = contract::compile(
@@ -295,7 +512,7 @@ fn a_mouse_contact_goes_down_holds_and_lifts() {
     .unwrap();
     assert!(again["error"].as_str().unwrap().contains("already down"));
     assert!(again["malformed"].is_null());
-    // A hold seeks the presenter clock and reports it, so the driver does not seek again.
+    // A hold seeks the presenter clock and reports it, so the driver does not seek again (platformer R7).
     let before = p.host().now();
     let held = handle(
         &mut p,
@@ -616,7 +833,7 @@ fn keyup_hears_a_release_and_both_carry_code_and_repeat() {
     );
 }
 
-/// A tap addressed by id presses what it names: a row with a
+/// A tap addressed by id presses what it names (LLP 1012 §1): a row with a
 /// press of its own is pressed beside the card at its center, never the card;
 /// a box without one never presses the Like inside it; a row its child
 /// covers is refused; `at` keeps a point's semantics (the Bluesky clone's
@@ -709,11 +926,11 @@ fn a_named_tap_presses_what_it_names_never_a_control_inside_it() {
     assert!(reply.contains("outside its"), "{reply}");
 }
 
-/// What `press_at` delivers without a `press` handler is a control too: a
-/// checkbox toggles, a text field takes the focus, an inline run's `href` is
-/// followed. A named row with its own press is pressed beside them; a box
-/// without one refuses; a disabled row presses nothing; a point presses what
-/// is there.
+/// What `press_at` delivers without a `press` handler is a control too (Astra
+/// and Grok, round 1): a checkbox toggles, a text field takes the focus, an
+/// inline run's `href` is followed. A named row with its own press is pressed
+/// beside them; a box without one refuses; a disabled row presses nothing;
+/// a point presses what is there.
 #[test]
 fn a_named_tap_never_toggles_focuses_or_follows_what_is_inside_it() {
     let plan = contract::compile(concat!(
@@ -933,7 +1150,7 @@ fn into_alignment_is_malformed_before_any_delivery() {
     assert_eq!(state["slots"]["n"], 0, "{state}");
 }
 
-/// The driver's `post` is the page's `postMessage`: held per
+/// The driver's `post` (LLP 1139.004 D1) is the page's `postMessage`: held per
 /// surface until a canvas of it is live, at most POST_BOUND, refused by name past it.
 #[test]
 fn a_post_is_held_for_its_surface_and_refused_past_the_bound() {
@@ -983,7 +1200,7 @@ fn a_post_is_held_for_its_surface_and_refused_past_the_bound() {
 }
 
 /// `item()` asks `/changes`, which the server holds until released, as a long
-/// poll does: marked held or not. Its reply asks `/detail`
+/// poll does: marked held (LLP 1016.000 D9) or not. Its reply asks `/detail`
 /// (unmarked), which the server answers 1.5 s on: the answer's work after
 /// its held reply.
 #[derive(Default)]
@@ -1099,7 +1316,7 @@ fn boot_polled(data: Polled) -> Presenter<Polled> {
 }
 
 /// A held ask is not waited on: a jump across timers goes on at once, and
-/// it, `clock data` and `clock settle` each name it.
+/// it, `clock data` and `clock settle` each name it (LLP 1016.000 D9).
 /// Released, the answer's next ask (unmarked, 1.5 s) is waited on before
 /// the next timer, and its value lands.
 #[test]
@@ -1163,7 +1380,7 @@ fn a_jump_does_not_wait_on_a_held_request_and_names_it() {
     assert_eq!(state["resources"]["item"], 6, "{state}");
 }
 
-/// The same ask unmarked is waited on before each due timer,
+/// The same ask unmarked is waited on before each due timer (calendar F10),
 /// to the call's bound.
 #[test]
 fn an_unmarked_long_hold_is_waited_on_before_a_timer() {

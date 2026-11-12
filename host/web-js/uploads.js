@@ -1,4 +1,4 @@
-// The uploads a resource has asked, as the runner keeps
+// The uploads a resource has asked (LLP 1016.000 D10), as the runner keeps
 // them (runner/src/runner/uploads.rs): for each, the identifying arguments
 // it was asked at (not its `with` context) and how it stands, `t` its
 // ticket while on its way, `v` the answer it ended with, `failed`, or
@@ -13,6 +13,11 @@ export const INTERRUPTED = ['the upload was cut off before its reply; it is not 
 const ANSWERS_KEPT = 32;
 const ALREADY_SENT = [`already sent: the upload went out at these arguments, and of a resource's uploads only the newest ${ANSWERS_KEPT} keep their answers; give new arguments to send it again`, 'error', 'already-sent'];
 const identity = (r, a) => (r.context ? a.slice(0, a.length - r.context) : a);
+const streamLocked = Object.getOwnPropertyDescriptor(ReadableStream.prototype, 'locked').get;
+export function refuseStreamBody(body) {
+  try { streamLocked.call(body); } catch { return; }
+  throw new TypeError('fetch: ReadableStream request bodies are unavailable; collect the bytes with new Response(body).arrayBuffer() first');
+}
 
 /** The uploads of `r` whose ticket was let go once that commit stood (rt.js `closeLetGo` closes it): each is cut off
  * if it reached the network, and forgotten if it never did. */
@@ -40,7 +45,7 @@ export function uploadEnded(r, t, how) {
   r.marks = marks.map(m => over > 0 && (m.v !== undefined || m.failed) && over-- ? { args: m.args, gone: true } : m);
 }
 /** What `r` answers at arguments `a` its upload `mark` was asked at, in place of asking its source: its ticket goes on for
- * them (the same request), or it answers as it ended, while that still fits, or with its failure, or
+ * them (the same request, LLP 1054.000.000 D3), or it answers as it ended, while that still fits, or with its failure, or
  * that it was sent already. */
 export function uploadAnswer(r, mark, a, { take, fails, release }) {
   if (mark.t && mark.t === r.ticket) { r.ticket.args = a; return r.value; }
@@ -63,17 +68,18 @@ export const ledger = {
   at: uploadAt,
   answer: uploadAnswer,
   ends,
-  /** The same request goes on for newer arguments `a`: an upload's mark covers them too. What `r` shows meanwhile. */
+  /** The same request goes on for newer arguments `a` (D3): an upload's mark covers them too. What `r` shows meanwhile. */
   kept: (r, a) => { if (r.ticket.upload) uploadSent(r, a, r.ticket); return r.value; },
 };
 /** The identity of an upload's request (`exactUploadProgress`) among `fetch`'s arguments, which the same request for newer
- * arguments shares: its URL, method, headers, body (by length and FNV-1a), file, deadline and redirect mode. */
+ * arguments shares (D3): its URL, method, headers, body (by length and FNV-1a), file, deadline, cache mode and redirect mode. */
 export function requestKey({ input, init, redirect }) {
   if (init?.exactUploadProgress !== true) return undefined;
   const request = typeof Request === 'function' && input instanceof Request ? input : null, body = init.body;
+  refuseStreamBody(body);
   const bytes = body == null ? null : body instanceof ArrayBuffer ? new Uint8Array(body) : ArrayBuffer.isView(body) ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength) : new TextEncoder().encode(String(body));
   let hash = 0x811c9dc5;
   for (const b of bytes ?? []) hash = Math.imul(hash ^ b, 16777619) >>> 0;
   return JSON.stringify([request ? request.url : String(input), init.method ?? request?.method ?? 'GET', [...new Headers(init.headers ?? request?.headers ?? [])].sort(),
-    bytes ? [bytes.length, hash] : null, init.exactBodyFrom ?? null, init.exactTimeout ?? null, redirect ?? null]);
+    bytes ? [bytes.length, hash] : null, init.exactBodyFrom ?? null, init.exactTimeout ?? null, init.cache ?? request?.cache ?? 'default', redirect ?? null]);
 }

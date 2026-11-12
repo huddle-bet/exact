@@ -19,12 +19,12 @@ package struct Bitmap {
     package var image: UIImage? { context.makeImage().map { UIImage(cgImage: $0) } }
 }
 
-/// A view's subtree as pixels.
+/// A view's subtree as pixels (LLP 1014 D3).
 package enum Capture {
-    /// A capture is drawing: its draws are not repaints.
+    /// A capture is drawing: its draws are not repaints (D4 b).
     nonisolated(unsafe) static var capturing = false
     /// Guest pictures when this turn chooses arm snapshots; their remote
-    /// platform views are hidden while the nodes draw these.
+    /// platform views are hidden while the nodes draw these (LLP 1020 D4/D6).
     nonisolated(unsafe) static var web: [UInt32: ExactWebImage] = [:]
     /// EXACT_CAPTURE=cpu: the Core Graphics capture even where Metal is
     /// present — the measure's baseline, and the fixture's oracle.
@@ -67,8 +67,12 @@ package enum Capture {
         ctx.scaleBy(x: scale, y: -scale)
         // A subtree painted through its canvas composites at alpha 0; paint
         // it opaque into the bitmap regardless.
-        let alpha = view.alpha
-        view.alpha = 1
+        // A placed canvas child is drawn as its writers asked (`asAsked`).
+        let elsewhere = (view.layer as? NodeLayer)?.drawnElsewhere ?? false
+        (view.layer as? NodeLayer)?.drawnElsewhere = false
+        // Its alpha raised to 1 and put back is no author's change (`passing`).
+        let alpha = view.alpha, node = view.layer as? NodeLayer
+        if let node { node.passing { view.alpha = 1 } } else { view.alpha = 1 }
         // A canvas nested under this one that is painted through its own
         // surface: its picture comes by readback (its draw), not from its
         // overlay's views, which the render would paint regardless of their
@@ -77,7 +81,7 @@ package enum Capture {
         func hide(_ v: UIView) {
             for s in v.subviews {
                 if let n = s as? NodeView, n.placement != nil, !n.isHidden { n.isHidden = true; hidden.append(n); continue }
-                // A nested canvas paints its readback in `draw`:
+                // A nested canvas paints its readback in `draw` (LLP 1014):
                 // drop the layer's cached picture so the render calls `draw`
                 // instead of copying what it drew last time (its placements
                 // are read there too, so the cards of a deck in the sky move).
@@ -89,11 +93,21 @@ package enum Capture {
         hide(view)
         capturing = true
         UIGraphicsPushContext(ctx)
-        paintOrderLayer(of: view, root: view.layer).render(in: ctx)
+        // A filtered box shows as its picture (`BoxFilter`), drawn here as
+        // the box is, shown and opaque (a placed canvas child's is hidden).
+        if let picture = (view as? NodeView)?.filterPicture {
+            let (hidden, opacity) = (picture.isHidden, picture.opacity)
+            (picture.isHidden, picture.opacity) = (false, 1)
+            picture.render(in: ctx)
+            (picture.isHidden, picture.opacity) = (hidden, opacity)
+        } else {
+            paintOrderLayer(of: view, root: view.layer).render(in: ctx)
+        }
         UIGraphicsPopContext()
         capturing = false
         for o in hidden { o.isHidden = false }
-        view.alpha = alpha
+        if let node { node.passing { view.alpha = alpha } } else { view.alpha = alpha }
+        node?.drawnElsewhere = elsewhere
     }
 }
 

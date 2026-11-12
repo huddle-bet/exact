@@ -6,14 +6,14 @@ changed after the first build makes the next build cold and leaves the app insta
 old id, to delete by hand. Changing one later means app.json's `app.id`
 (and an `appId` app.ts exports, which must agree). An app ships the platforms app.json names: a native verb names
 its own on its first run, and `bun exact.mjs update --without <platform>` stops shipping one
-. A port that ran `linux` once hears each `symbol:sf/…` warn that Linux draws it
+(LLP 1153 D1). A port that ran `linux` once hears each `symbol:sf/…` warn that Linux draws it
 blank until `update --without linux`; one that ran `mac` hears `tamber-unreachable` name a Mac
 control that ignores the design (NSSlider's accent) until `update --without macos`. The SF
 Symbols the web draws blank are one warning line.
 
 **Comparing a port with the original.** `agent ios --touch platform` makes each tap a real touch,
 which opens UIKit's menus and reaches a native module's own controls: drive with it to compare a
-port's screens with the original's ([ios-driving](ios-driving.md)). Porting a React Native app,
+port's screens with the original's ([driving iOS](ios-driving.md)). Porting a React Native app,
 read [its pitfalls](../agent-pitfalls.md#porting-a-react-native-app) first.
 
 **What ships.** `ios --release` builds what ships; it ignores `EXACT_AGENT`, so drive the

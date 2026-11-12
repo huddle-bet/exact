@@ -1,4 +1,4 @@
-//! The recipes and the patterns, answered by name: a
+//! The recipes and the patterns, answered by name (LLP 1116.021 D1): a
 //! recipe (`docs/recipes/<name>.md`) prints whole, a pattern
 //! (`docs/patterns/<name>`) its starter comment and how to write it, so the
 //! names a screen needs are one call. A recipe or pattern added under `docs/`
@@ -33,8 +33,11 @@ pub const RECIPES: &[(&str, &str)] = &[
     recipe!("background-work"),
     recipe!("chat-thread"),
     recipe!("content-design"),
+    recipe!("convex"),
     recipe!("dates-and-days"),
     recipe!("device"),
+    recipe!("eas-android"),
+    recipe!("eas-ios"),
     recipe!("edit-sheet"),
     recipe!("editable-rows"),
     recipe!("error-alert"),
@@ -43,11 +46,15 @@ pub const RECIPES: &[(&str, &str)] = &[
     recipe!("first-launch"),
     recipe!("foldables"),
     recipe!("functions"),
+    recipe!("gpu-module"),
     recipe!("grouped-form"),
+    recipe!("in-app-browser"),
     recipe!("ios-driving"),
     recipe!("keyboard-and-focus"),
     recipe!("list-rows"),
     recipe!("local-network"),
+    recipe!("long-lists"),
+    recipe!("mobile-build"),
     recipe!("money"),
     recipe!("motion"),
     recipe!("native-module"),
@@ -59,6 +66,7 @@ pub const RECIPES: &[(&str, &str)] = &[
     recipe!("oauth"),
     recipe!("permissions"),
     recipe!("persisted-setting"),
+    recipe!("phone-manifest"),
     recipe!("porting-and-release"),
     recipe!("ports-and-browsers"),
     recipe!("purchases"),
@@ -72,6 +80,7 @@ pub const RECIPES: &[(&str, &str)] = &[
     recipe!("snapback"),
     recipe!("snapback-auth"),
     recipe!("snapback-tests"),
+    recipe!("socket-ticket"),
     recipe!("symbols"),
     recipe!("tabs"),
     recipe!("tamber"),

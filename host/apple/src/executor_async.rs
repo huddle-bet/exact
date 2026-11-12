@@ -1,4 +1,4 @@
-//! The executor without a thread per request: each lane has
+//! The executor without a thread per request (LLP 1120 D3–D5): each lane has
 //! a starter, the only place its work starts, and a finisher, the only place
 //! its outcomes are built and its releases applied; one timer keeps every
 //! deadline and one disposer destroys work let go. HTTP goes to an
@@ -13,7 +13,7 @@
 //! run (ticket and generation): a parked upload's next run ignores the last
 //! one's late events.
 use super::{
-    body, bounded_outcome, failed, fetch_failure, fetch_request, handoff, retained, safe,
+    body, bounded_outcome, failed, fetch_failure, fetch_request, handoff, retained,
     scoped_bindings, Completed, Job, Running, Shared, State, StreamHost, BYTES, MAX_BODY,
     MAX_HEADERS,
 };
@@ -42,12 +42,12 @@ pub(super) use file::ReaderPhase;
 mod workers;
 
 /// Resumed independent HTTP exchanges at once, the session's per-host
-/// connection limit too: HTTP/2 multiplexes them.
+/// connection limit too (LLP 1120 D2, D5): HTTP/2 multiplexes them.
 pub(super) const IN_FLIGHT: usize = super::build_number(option_env!("EXACT_HTTP_IN_FLIGHT"), 32);
 /// HTTP/1.1 exchanges the core resumes per origin per lane until one there
-/// reports `h2` or `h3`: URLSession's own limit, so it never queues.
+/// reports `h2` or `h3` (D3): URLSession's own limit, so it never queues.
 const PER_ORIGIN: usize = 6;
-/// The base set: two starters, two finishers, the timer, the disposer.
+/// The base set: two starters, two finishers, the timer, the disposer (D4).
 pub(super) const THREADS: usize = 6 + if cfg!(any(not(target_vendor = "apple"), test)) {
     1 + super::INDEPENDENT
 } else {
@@ -58,7 +58,7 @@ pub(super) const THREADS: usize = 6 + if cfg!(any(not(target_vendor = "apple"), 
 type Run = (u64, u64);
 
 /// Who claimed a run's terminal transition, under the state lock when it
-/// happened: only that outcome settles it, whatever else is queued.
+/// happened (D3): only that outcome settles it, whatever else is queued.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Claim {
     #[default]
@@ -104,13 +104,13 @@ pub(super) struct Book {
     /// known.
     reserved: HashMap<Run, Option<String>>,
     /// Upload bytes charged per run, released once the lent buffer has
-    /// gone and the run has physically ended.
+    /// gone and the run has physically ended (D5).
     uploads: HashMap<Run, Charged>,
     /// A file job's request and what its fetch needs, while a reader sizes
     /// or reads its file.
     files: HashMap<Run, FileJob>,
     /// What a sized `exactBodyFrom` job learned: its file's size, kept
-    /// while it is parked at the head.
+    /// while it is parked at the head (D5).
     pub(super) sized: HashMap<u64, u64>,
     /// One sizing decision per lane: successors remain queued, so a park
     /// accounts for every request buffer that could otherwise crowd it out.
@@ -126,7 +126,7 @@ pub(super) struct Book {
 
 impl Book {
     /// The bytes the parked uploads in `jobs` still need, which admission
-    /// counts as taken (provisional), wherever in
+    /// counts as taken (LLP 1120 §6 question 8, provisional), wherever in
     /// the queue they wait.
     pub(super) fn parked(&self, lane: usize, jobs: &VecDeque<Job>) -> usize {
         jobs.iter()
@@ -436,7 +436,7 @@ impl Machine {
         }
     }
 
-    /// What `lane` starts now, decided under the lock. Every
+    /// What `lane` starts now, decided under the lock (D3, D5). Every
     /// exchange chosen holds its in-flight and origin places from here.
     fn select(&self, state: &mut State, lane: usize) -> Vec<(Run, Start)> {
         let mut starts: Vec<(Run, Start)> = Vec::new();
@@ -474,6 +474,9 @@ impl Machine {
         }
         let mut index = 0;
         while index < state.jobs[lane].len() {
+            if super::forget::refuse_crowded(&self.shared, state, lane, index) {
+                continue;
+            }
             let job = &state.jobs[lane][index];
             let kind = Kind::of(job);
             if lane == 0 && (index > 0 || state.book.blocking) {
@@ -498,7 +501,7 @@ impl Machine {
             }
             if exchange && at_limit(state, lane, &origin(&job.request.url)) {
                 // The independent lane passes over a head at its origin's
-                // HTTP/1.1 limit; the ordered one waits for it.
+                // HTTP/1.1 limit; the ordered one waits for it (D3).
                 if lane == 0 {
                     break;
                 }
@@ -546,12 +549,15 @@ impl Machine {
             charge: job.charge,
             limit: job.limit,
             // Only an exchange is cancelled by a forget (a safe read's).
-            abort: (kind == Kind::Http && safe(&job.request)).then(|| abort.clone()),
+            abort: (kind == Kind::Http && super::reads::safe_to_forget(&job.request, job.class))
+                .then(|| abort.clone()),
             exchange: (kind == Kind::Http).then(|| abort.clone()),
             forgotten: job.forgotten,
             stream: false,
             waiting: false,
-            read: lane == 0 && super::read(&job.request, job.work.is_some()),
+            read: lane == 0 && super::reads::safe_read(&job.request, job.work.is_some(), job.class),
+            overlap: false,
+            class: job.class,
             terminal: false,
             // The start holds its run until it has run (`starter`).
             live: 1,
@@ -559,6 +565,16 @@ impl Machine {
             blocking,
             generation: run.1,
             claim: Claim::None,
+            cached: false,
+            cache_exchange: None,
+            cache_replacing: super::cache::replacing(
+                &job.request,
+                job.class,
+                job.forced,
+                job.work.is_some(),
+            ),
+            cache_barrier: super::cache::barrier(&job.request, job.class, job.work.is_some()),
+            invalidates: super::cache::invalidates(&job.request, job.work.is_some()),
         });
         let start: Start =
             Box::new(move |m: &Arc<Machine>| m.run(lane, run, kind, job, sized, abort));
@@ -580,6 +596,7 @@ impl Machine {
             forced,
             work,
             queued_deadline,
+            class,
             ..
         } = job;
         let refuse = |outcome| self.answer(lane, run, outcome);
@@ -620,7 +637,7 @@ impl Machine {
             }
             Kind::Closure => {
                 // Run here (a driver fault's, a continuation, storage): the
-                // lane's starts wait for it (a declared change).
+                // lane's starts wait for it (a declared change, D3).
                 let work = match work {
                     Some(OwnedWork::Now(work)) => Some(work),
                     _ => None,
@@ -632,6 +649,12 @@ impl Machine {
                 refuse(outcome);
             }
             Kind::Http => {
+                if let Some(outcome) =
+                    super::cache::prepare(&self.shared, run.0, &mut request, class, forced)
+                        .or_else(|| super::cache::missing(&request, forced))
+                {
+                    return refuse(outcome);
+                }
                 let fetch = scoped.map(|s| s.expect("checked").fetch);
                 self.http(lane, run, request, forced, sized, abort, retiring, fetch)
             }
@@ -686,7 +709,7 @@ impl Machine {
             };
             return self.file(lane, run, file, sized);
         }
-        // The deadline arms when the task is resumed, in `Tracked`.
+        // The deadline arms when the task is resumed (D3), in `Tracked`.
         let deadline = request.timeout_ms.map(|ms| (ms, abort.clone()));
         self.fetch(
             lane, run, request, None, forced, abort, retiring, limit, transport, fetch, deadline,
@@ -710,23 +733,47 @@ impl Machine {
     ) {
         let timeout = request.timeout_ms;
         let mut req = fetch_request(request, forced);
+        super::cache::observe(&self.shared, &mut req);
         req.max_body = Some(limit);
         // The platform's idle timeout follows the deadline a second later,
         // as on the workers.
         req.timeout = timeout.map(|ms| Duration::from_millis(u64::from(ms) + 1_000));
-        let events = Arc::new(Events {
-            machine: self.clone(),
-            lane,
-            run,
-            limit,
-            _retiring: Mutex::new(Some(retiring)),
-        });
         let tracked = Arc::new(Tracked {
             inner: transport,
             machine: self.clone(),
             lane,
             run,
             deadline: Mutex::new(deadline),
+        });
+        let retry = super::cache::retry_request(&self.shared, run.0, &req).map(|request| {
+            let (fetch, tracked, upload, signal) = (
+                fetch.clone(),
+                tracked.clone(),
+                upload.clone(),
+                abort.signal(),
+            );
+            Box::new(move |events: Arc<Events>| {
+                fetch.start_async(
+                    tracked,
+                    request,
+                    upload,
+                    signal,
+                    HeaderCaps {
+                        bytes: MAX_HEADERS,
+                        entries: 1024,
+                    },
+                    events,
+                );
+            }) as Retry
+        });
+        let events = Arc::new_cyclic(|this| Events {
+            machine: self.clone(),
+            lane,
+            run,
+            limit,
+            this: this.clone(),
+            retry: Mutex::new(retry),
+            _retiring: Mutex::new(Some(retiring)),
         });
         fetch.start_async(
             tracked,
@@ -756,7 +803,7 @@ impl Machine {
                 after(&self);
             }
             // What it settled or ended may have freed the independent lane
-            // room an upload waits for.
+            // room an upload waits for (LLP 1016.000 D10).
             if lane == 1 {
                 super::stream::start_uploads(&self.shared);
             }
@@ -793,7 +840,13 @@ impl Machine {
                     ),
                     Done::Cancelled => failed(FailureKind::Aborted, "native request aborted"),
                     Done::Fetch(result, limit) => {
-                        classify(result, limit, self.shared.abort.signal().aborted())
+                        let redirected = result.as_ref().is_ok_and(|r| r.redirected);
+                        let mut outcome =
+                            classify(result, limit, self.shared.abort.signal().aborted());
+                        if let Outcome::Response(response) = &mut outcome {
+                            super::cache::response(state, run.0, response, redirected);
+                        }
+                        outcome
                     }
                 };
                 Some(self.settled(state, run, outcome))
@@ -919,9 +972,9 @@ impl Machine {
 }
 
 /// Whether `Core::start_switched` (Apple's executor) and a test core run
-/// the asynchronous machine: off by default;
+/// the asynchronous machine (LLP 1120): off until the gate (§5) decides;
 /// `EXACT_HTTP_ASYNC=1` at build or run turns it on. Linux and the render
-/// host keep their workers.
+/// host keep their workers until stage 2.
 pub(super) fn asynchronous() -> bool {
     option_env!("EXACT_HTTP_ASYNC") == Some("1")
         || std::env::var("EXACT_HTTP_ASYNC").is_ok_and(|v| v == "1")
@@ -984,7 +1037,7 @@ fn origin(url: &str) -> String {
     )
 }
 
-/// `origin` is at its HTTP/1.1 limit on `lane`.
+/// `origin` is at its HTTP/1.1 limit on `lane` (D3).
 fn at_limit(state: &State, lane: usize, origin: &str) -> bool {
     !state.book.multiplexed[lane].contains(origin)
         && state.book.origins[lane].get(origin).copied().unwrap_or(0) >= PER_ORIGIN
@@ -992,7 +1045,7 @@ fn at_limit(state: &State, lane: usize, origin: &str) -> bool {
 
 /// What starting `job` charges more: response bytes, and a sized upload's
 /// file. A handoff charges no response bytes, a job sizing its file only
-/// the request buffers it holds.
+/// the request buffers it holds (D5).
 fn charge(book: &Book, lane: usize, job: &Job, kind: Kind) -> (usize, usize) {
     let sized = book.sized.get(&job.ticket).map(|n| *n as usize);
     let more = match kind {
@@ -1076,7 +1129,7 @@ fn classify(result: Result<Collected, HostError>, limit: usize, retired: bool) -
             headers: r.headers.entries().to_vec(),
             body: r.body,
         }),
-        // Over its size limit is the host refusing it.
+        // @ref LLP 1109 D3 — over its size limit is the host refusing it.
         Err(e) if !retired && e == ibex2::stdlib::fetch::over_limit(limit) => {
             failed(FailureKind::Refused, "HTTP response exceeds limit")
         }
@@ -1090,9 +1143,9 @@ fn classify(result: Result<Collected, HostError>, limit: usize, retired: bool) -
     }
 }
 
-/// The terminal transition of `run`: its outcome is
+/// The terminal transition of `run` (LLP 1120 D3): its outcome is
 /// published, the ordered slot released; its charge stays until its
-/// physical end too, whichever is later.
+/// physical end too (D5's later-of rule).
 fn settle(state: &mut State, run: Run, outcome: Outcome) {
     let Some(r) = find(&mut state.running, run) else {
         state.book.trash.push(Box::new(outcome));
@@ -1103,13 +1156,19 @@ fn settle(state: &mut State, run: Run, outcome: Outcome) {
         return;
     }
     r.terminal = true;
-    let (lane, limit, read, forgotten) = (r.lane, r.limit, r.read, r.forgotten);
-    let elapsed = r.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let (lane, limit, read, forgotten, cached) = (r.lane, r.limit, r.read, r.forgotten, r.cached);
+    let invalidates = r.invalidates.take();
+    let finished_at = std::time::Instant::now();
+    let elapsed = finished_at
+        .duration_since(r.started)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
     if r.blocking {
         r.blocking = false;
         state.book.blocking = false;
     }
     let outcome = bounded_outcome(outcome, limit);
+    super::cache::invalidate(state, invalidates.as_ref(), &outcome);
     if forgotten {
         state.book.trash.push(Box::new(outcome));
         state.counts[lane] -= 1;
@@ -1117,6 +1176,8 @@ fn settle(state: &mut State, run: Run, outcome: Outcome) {
     } else {
         state.light += usize::from(read);
         state.completed[lane].push_back(Completed {
+            cached,
+            finished_at,
             elapsed_ms: elapsed,
             ticket: run.0,
             outcome,
@@ -1130,6 +1191,7 @@ fn settle(state: &mut State, run: Run, outcome: Outcome) {
         });
     }
     physical(state, run);
+    super::cache::serve_ready(state);
     if super::has_ready(state) || (lane == 0 && state.counts[0] == 0) {
         super::wake(state);
     }
@@ -1137,7 +1199,7 @@ fn settle(state: &mut State, run: Run, outcome: Outcome) {
 
 /// If `run` is terminal and nothing physical runs, its charge moves to its
 /// undrained outcome (independent: the running charge, as `complete`;
-/// ordered: what it retains), or goes if the outcome is gone.
+/// ordered: what it retains), or goes if the outcome is gone (D5).
 fn physical(state: &mut State, run: Run) {
     let Some(at) = state
         .running
@@ -1197,7 +1259,7 @@ fn physical(state: &mut State, run: Run) {
 
 /// A run's upload charge goes once its buffer is gone and no exchange
 /// sending it is still on the wire: the later of its last release and the
-/// last sending hop's physical end. A buffer never made (a failed
+/// last sending hop's physical end (D5). A buffer never made (a failed
 /// read, a timeout first) goes with the run's physical end.
 fn release_upload(state: &mut State, run: Run) {
     if state.book.uploads.get(&run).is_some_and(|u| {
@@ -1213,7 +1275,7 @@ fn release_upload(state: &mut State, run: Run) {
 }
 
 /// The lane's transport, counting each hop it starts: the in-flight cap,
-/// the per-origin limit, the run's live count. Its first hop arms
+/// the per-origin limit, the run's live count (D3, D5). Its first hop arms
 /// the deadline, when the task is resumed.
 struct Tracked {
     inner: Arc<dyn AsyncTransport>,
@@ -1228,6 +1290,8 @@ mod metrics_log;
 #[path = "executor_async_transport.rs"]
 mod tracked_transport;
 
+type Retry = Box<dyn FnOnce(Arc<Events>) + Send>;
+
 /// A fetch's events, to its lane's finisher.
 struct Events {
     machine: Arc<Machine>,
@@ -1235,17 +1299,34 @@ struct Events {
     run: Run,
     /// The response ceiling, which names an over-limit failure.
     limit: usize,
+    this: std::sync::Weak<Events>,
+    retry: Mutex<Option<Retry>>,
     /// Retirement's abort registration, held for the fetch's life.
     _retiring: Mutex<Option<AbortRegistration>>,
 }
 
 impl FetchEvents for Events {
     fn outcome(&self, result: Result<Collected, HostError>) {
-        let accepted = {
+        let (retry, accepted) = {
             let state = &mut self.machine.shared.state.lock().unwrap();
-            claim(state, self.run, Claim::Answered)
+            let open = find(&mut state.running, self.run)
+                .is_some_and(|r| !r.terminal && r.claim == Claim::None);
+            let retry = open
+                && result
+                    .as_ref()
+                    .is_ok_and(|r| super::cache::retry(state, self.run.0, r.status, r.redirected));
+            (retry, !retry && claim(state, self.run, Claim::Answered))
         };
-        if accepted {
+        if retry {
+            let retry = self
+                .retry
+                .lock()
+                .unwrap()
+                .take()
+                .expect("a cache conditional");
+            let events = self.this.upgrade().expect("live fetch events");
+            self.next_hop(Box::new(move || retry(events)));
+        } else if accepted {
             self.machine.post(
                 self.lane,
                 Event::Outcome(self.run, Done::Fetch(result, self.limit)),
@@ -1294,7 +1375,7 @@ impl Drop for Ended {
 /// A forget cancels `run` if it is an exchange still open (a safe read's,
 /// or any method's the app aborted, `by_app`; never a stream's, nor an
 /// upload's waiting for its start, which its queue ends): its terminal
-/// transition is claimed now.
+/// transition is claimed now (D3).
 pub(super) fn cancel(run: &mut Running, by_app: bool) -> bool {
     let open = !run.terminal && run.claim == Claim::None;
     let exchange = run.abort.is_some() || (by_app && run.exchange.is_some());

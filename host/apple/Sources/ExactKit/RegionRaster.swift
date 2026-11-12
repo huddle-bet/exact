@@ -32,7 +32,7 @@ struct RegionRasterRequest: Sendable {
     let format: UInt32
     let background: [CGFloat]
     /// A selection's fill, as four components. With four more, the colour
-    /// its glyphs are painted in over that fill (the Mac),
+    /// its glyphs are painted in over that fill (the Mac, LLP 1115.000 D7.9),
     /// and with a ninth that is 1, a glyph whose colour its author fixed
     /// keeps it (`Run.fixedInk`; the Mac's light appearance). With four, the
     /// fill is under the ink and the ink is the text's own.
@@ -305,15 +305,17 @@ final class RegionPaintIndex {
                         guard hi > lo else { continue }
                         var a: CGFloat = 0, d: CGFloat = 0
                         _ = CTLineGetTypographicBounds(line, &a, &d, nil)
-                        let x0 = CTLineGetOffsetForStringIndex(line, lo, nil), x1 = CTLineGetOffsetForStringIndex(line, hi, nil)
-                        let rect = CGRect(x: x + min(x0, x1), y: y - a, width: max(1, abs(x1 - x0)), height: a + d)
-                        guard pass == .selected, let selectedInk else { ctx.fill(rect); continue }
-                        ctx.saveGState()
-                        ctx.clip(to: rect)
-                        ctx.setFillColor(fill)
-                        ctx.fill(rect)
-                        TextLinePaint.draw(line, at: CGPoint(x: x, y: y), in: ctx, ink: selectedInk, keepsFixed: keepsFixed)
-                        ctx.restoreGState()
+                        for span in TextEngine.selectionSpans(line, range: NSRange(location: lo, length: hi - lo)) {
+                            let rect = CGRect(x: x + span.lowerBound, y: y - a,
+                                              width: max(1, span.upperBound - span.lowerBound), height: a + d)
+                            guard pass == .selected, let selectedInk else { ctx.fill(rect); continue }
+                            ctx.saveGState()
+                            ctx.clip(to: rect)
+                            ctx.setFillColor(fill)
+                            ctx.fill(rect)
+                            TextLinePaint.draw(line, at: CGPoint(x: x, y: y), in: ctx, ink: selectedInk, keepsFixed: keepsFixed)
+                            ctx.restoreGState()
+                        }
                     }
                 }
             }

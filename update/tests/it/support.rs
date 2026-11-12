@@ -1,8 +1,10 @@
 //! The store's test harness: an in-memory origin that publishes bundles as
 //! `exact deploy` does, and store directories that remove themselves.
+//!
+//! @ref LLP 1026 D9–D12 / LLP 1030 D3a, D5, D9 / LLP 1030.000 §4 stage 4
 
 use ed25519_dalek::{Signer, SigningKey};
-use exact_update::{canonical_bytes, sha256_hex, Check, Embedded, Store};
+use exact_update::{canonical_bytes, sha256_hex, Check, Embedded, EmbeddedAsset, Store};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -14,7 +16,7 @@ pub(crate) const EMBEDDED_SEQ: u64 = 3;
 
 // ---------------------------------------------------------------- the origin
 
-/// One published bundle, as `exact deploy` would write it.
+/// One published bundle, as `exact deploy` would write it (LLP 1030.000 D3).
 pub(crate) struct Bundle {
     pub(crate) app: String,
     pub(crate) cohort: String,
@@ -142,11 +144,17 @@ impl Origin {
             asked.push(url.to_string());
             files.get(url).cloned().ok_or_else(|| format!("404 {url}"))
         };
-        let mut embedded = |name: &str| -> Option<String> {
-            assets
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, bytes)| sha256_hex(bytes))
+        static BUNDLES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = BUNDLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let bundle = Temp::new(&format!("embedding-{n}"));
+        let mut embedded = |name: &str| -> Option<EmbeddedAsset> {
+            let (_, bytes) = assets.iter().find(|(n, _)| *n == name)?;
+            let path = bundle.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            Some(EmbeddedAsset {
+                sha256: sha256_hex(bytes),
+                path,
+            })
         };
         store.check(
             &exact_update::head_url(ORIGIN, "release", COHORT),
@@ -231,7 +239,7 @@ pub(crate) fn open(temp: &Temp) -> Store {
 
 /// A spawned process holds a copy of every open descriptor, a store's
 /// `owner.lock` too, until its exec closes them; a store dropped in that
-/// window keeps its lock, and reopening it finds an "exclusive owner".
+/// window keeps its lock, and reopening it opens a reader that writes nothing.
 /// Under load that window is long enough to fail a parallel run. A spawn
 /// holds this for writing ([`finished`]) and an open for reading
 /// ([`open_store`]), so no reopen meets a child's copy.

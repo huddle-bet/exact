@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Approved diagnostic, not a sixth check: UIKit touch reduction.
+// Approved diagnostic, not a sixth check: UIKit touch reduction (LLP 1012).
 // bun host/apple/touch.mjs [--device] [--phone <id>] [--presenter] [--case 0..6] [--early-session] [--run]
 // Separate bundle; never overwrites Caltrain or adds dependencies to ExactKit.
 import {spawnSync} from 'node:child_process';
@@ -8,6 +8,8 @@ import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {entitlements, infoPlist, install} from './build.mjs';
 import {phone, profile, identity, simulator} from './devices.mjs';
+import {resolveApp} from '../../scripts/app.mjs';
+import {appleProduction} from './link.mjs';
 
 const args = process.argv.slice(2);
 function option(flag) {
@@ -49,7 +51,8 @@ copyFileSync(fileURLToPath(new URL('./ios/touch.swift', import.meta.url)), sourc
 const linked = [];
 if (presenter) {
   const rustTarget = device ? 'aarch64-apple-ios' : process.arch === 'arm64' ? 'aarch64-apple-ios-sim' : 'x86_64-apple-ios';
-  const archive = resolve(option('--archive') ?? resolve(root, 'target', rustTarget, 'release/libcaltrain_ts_apple.a'));
+  const client = resolveApp('caltrain');
+  const archive = resolve(option('--archive') ?? resolve(client.target, rustTarget, appleProduction(client, 'ios', args).profile, `lib${client.crate('ios').replaceAll('-', '_')}.a`));
   if (!existsSync(archive)) throw new Error(`Build the native client first, or pass --archive: ${archive}`);
   const kit = resolve(root, 'host/apple/Sources/ExactKit');
   sources.push(...readdirSync(kit, {recursive: true}).filter(p => p.endsWith('.swift')).sort().map(p => resolve(kit, p)));

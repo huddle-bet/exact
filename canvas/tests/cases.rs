@@ -1,5 +1,5 @@
 //! `cases.txt` against the Rust recorder: the same calls, the same getters
-//! and throws Chrome gave. The TypeScript recorder runs the
+//! and throws Chrome gave (LLP 1056 §4). The TypeScript recorder runs the
 //! same file through `cases.mjs`.
 
 use exact_canvas::{list, CanvasGradient, CanvasWindingRule, Context2d, DomMatrix, Radius, Style};
@@ -311,7 +311,7 @@ fn query(ctx: &Context2d, q: &str) -> String {
 }
 
 /// A fresh context for a case: a `display-p3` canvas's when its name ends
-/// `(display-p3)`.
+/// `(display-p3)` (LLP 1100 D12a).
 fn context(name: &str) -> Context2d {
     let ctx = Context2d::new();
     if name.ends_with("(display-p3)") {
@@ -465,6 +465,51 @@ fn the_shared_cases_hold_for_the_rust_recorder() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+#[test]
+fn arc_to_near_collinear_turns_record_a_line_to_the_corner() {
+    use exact_canvas::{list::Op, Path2d};
+
+    for dy in [1e-7, 1e-4, 1e-2, 0.0244, 0.0245] {
+        for sign in [-1.0, 1.0] {
+            for x2 in [0.0, 200.0] {
+                for path2d in [false, true] {
+                    let ctx = Context2d::new();
+                    let (line, cubic) = if path2d {
+                        let path = Path2d::new();
+                        path.move_to(0.0, 50.0);
+                        path.arc_to(100.0, 50.0, x2, 50.0 + sign * dy, 5.0).unwrap();
+                        ctx.stroke_with_path(&path);
+                        (Op::PathLineTo, Op::PathCubicTo)
+                    } else {
+                        ctx.begin_path();
+                        ctx.move_to(0.0, 50.0);
+                        ctx.arc_to(100.0, 50.0, x2, 50.0 + sign * dy, 5.0).unwrap();
+                        ctx.stroke();
+                        (Op::LineTo, Op::CubicTo)
+                    };
+                    let lists = ctx.take_lists();
+                    assert_eq!(lists.len(), 1);
+                    list::check(&lists[0], &mut Vec::new()).unwrap();
+                    let records = list::records(&lists[0]).unwrap();
+                    let lines: Vec<Vec<f64>> = records
+                        .iter()
+                        .filter(|r| r.op == line)
+                        .map(|r| r.operands().collect())
+                        .collect();
+                    let curves = records.iter().filter(|r| r.op == cubic).count();
+                    if dy <= 0.0244 {
+                        assert_eq!(lines, [vec![100.0, 50.0]]);
+                        assert_eq!(curves, 0);
+                    } else {
+                        assert_ne!(lines, [vec![100.0, 50.0]]);
+                        assert!(curves > 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A palette cycled through more colours than the recorder keeps parsed
 /// records each paint's colour as a fresh context would.
 #[test]
@@ -511,7 +556,7 @@ fn a_cycled_palette_records_what_a_fresh_parse_records() {
     assert_eq!(got, want);
 }
 
-/// A `display-p3` canvas records Display P3 bytes: sRGB red
+/// A `display-p3` canvas (LLP 1100 D12a) records Display P3 bytes: sRGB red
 /// converted, P3 red as written, and an sRGB `ImageData`'s pixels converted
 /// as they are put. `recorder.test.mjs` holds the TypeScript recorder to the
 /// same numbers.

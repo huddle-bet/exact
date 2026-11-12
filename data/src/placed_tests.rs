@@ -31,7 +31,7 @@ impl DataSource for Slow {
     }
 
     fn module_landed(&mut self, store: &mut Store, _: u64, _: Outcome) -> Result<(), DataError> {
-        store.set_durable("document", "kept")?;
+        store.set_durable("document", &format!("kept at {}", store.clock_ms()))?;
         Ok(())
     }
 
@@ -254,6 +254,7 @@ fn a_coalesced_retirement_still_lets_go_what_an_earlier_one_did() {
         target: Target::Resource(0),
         source: "read",
         args: &args,
+        fetch: None,
         continuation: Some(replacement),
     }];
     placed.forgotten(&store, &in_flight);
@@ -314,6 +315,7 @@ fn a_key_both_coalesced_retirements_keep_stays_in_flight() {
             target: Target::Resource(0),
             source: "read",
             args: &args,
+            fetch: None,
             continuation: Some(continuation),
         }]
     };
@@ -456,6 +458,7 @@ fn a_turn_not_yet_handed_over_survives_a_retirement_that_keeps_its_call() {
         target: Target::Resource(0),
         source: "read",
         args: &args,
+        fetch: None,
         continuation: None,
     }];
     placed.forgotten(&empty, &in_flight);
@@ -510,7 +513,7 @@ fn coalesced_retirements_let_go_what_retiring_each_in_order_does() {
                     };
                     let live: Vec<Key> = view
                         .iter()
-                        .map(|(t, s, a)| (Some(*t), s.clone(), a.concat()))
+                        .map(|((t, s, a), _)| (Some(*t), s.clone(), a.concat()))
                         .collect();
                     parked.retain(|(id, k)| {
                         let keep = live.contains(k);
@@ -554,7 +557,12 @@ fn coalesced_retirements_let_go_what_retiring_each_in_order_does() {
         for _ in 0..30 {
             match next(3) {
                 0 => {
-                    let view: Vec<_> = keys.iter().filter(|_| next(2) == 0).cloned().collect();
+                    let view: Vec<_> = keys
+                        .iter()
+                        .filter(|_| next(2) == 0)
+                        .cloned()
+                        .map(|call| (call, None))
+                        .collect();
                     coalesced.forgotten((view.clone(), Vec::new()));
                     // In order: each its own marker, never merged.
                     ordered.pending = None;
@@ -589,7 +597,7 @@ fn coalesced_retirements_let_go_what_retiring_each_in_order_does() {
     }
 }
 
-/// In a worker: a long poll attached to the worker's own
+/// LLP 1016.000 D8 in a worker: a long poll attached to the worker's own
 /// work is refused before that work runs.
 struct PollsOtherWork(Arc<Mutex<bool>>);
 
@@ -635,6 +643,40 @@ fn a_long_poll_on_a_worker_s_own_work_is_refused_before_it_runs() {
 }
 
 #[test]
+fn a_native_storage_change_is_reported_while_the_source_is_on_its_worker() {
+    let mut placed = Placed::new(Aborting::default(), Placement::Worker);
+    placed.activate().unwrap();
+    assert!(!placed.take_storage_changed());
+    for _ in 0..2 {
+        placed.note_storage_changed();
+        assert!(placed.take_storage_changed());
+        assert!(!placed.take_storage_changed());
+    }
+}
+
+#[test]
+fn an_inline_kept_reply_writes_the_store() {
+    let (started, _) = channel();
+    let (_, release) = channel();
+    let mut placed = Placed::new(
+        Slow {
+            started,
+            release,
+            retired: Default::default(),
+        },
+        Placement::Main,
+    );
+    placed.activate().unwrap();
+    let mut store = Store::new("secret.keep document", []);
+    store.set_clock_ms(5000.);
+    placed
+        .module_landed(&mut store, 9, Dispatch::again_outcome())
+        .unwrap();
+    assert_eq!(store.get("document"), Some("kept at 5000"));
+    assert!(store.take_writes()[0].durable);
+}
+
+#[test]
 fn a_kept_reply_waits_off_the_host_while_its_owner_has_unrelated_work() {
     let (started, running) = channel();
     let (release, proceed) = channel();
@@ -658,6 +700,7 @@ fn a_kept_reply_waits_off_the_host_while_its_owner_has_unrelated_work() {
         let _ = wake.send(());
     }));
     placed.kept.insert(17, Some(9));
+    store.set_clock_ms(5000.);
     // Only this thread can release the unrelated owner turn. Delivery must
     // return without waiting for it, and nothing enters ordered admission.
     let request = placed
@@ -680,6 +723,6 @@ fn a_kept_reply_waits_off_the_host_while_its_owner_has_unrelated_work() {
         .module_delivery(&mut store, 17, reply())
         .unwrap()
         .is_none());
-    assert_eq!(store.get("document"), Some("kept"));
+    assert_eq!(store.get("document"), Some("kept at 5000"));
     assert!(store.take_writes()[0].durable);
 }

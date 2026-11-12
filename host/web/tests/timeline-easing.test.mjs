@@ -1,4 +1,5 @@
-// A drag timeline's release on the web: a consumer plays a
+import { hostFixtureFile as readFileSync } from './glue-fixture.mjs';
+// A drag timeline's release on the web (LLP 1057.003 D3): a consumer plays a
 // copy of its keyframes with the `linear()` easing `timelineEasing` gives
 // for the spring's frames. The first tests evaluate that easing against the
 // directed progress written out by hand; the browser test holds it, between
@@ -7,7 +8,7 @@
 // directions and keyframe easing included.
 import { test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -17,13 +18,14 @@ import { timelineEasing } from '../motion-glue.js';
 import { need } from '../../../scripts/coverage.mjs';
 import { readyPage } from './page.mjs';
 import { glueDeclarations, checkedGlueCall } from './glue-fixture.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('../../..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const compiler = resolve(process.env.CARGO_TARGET_DIR ?? resolve(ROOT, 'target'), 'debug', process.platform === 'win32' ? 'contract.exe' : 'contract');
-const WEB = resolve(new URL('..', import.meta.url).pathname);
+const WEB = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const WEB_JS = resolve(WEB, '../web-js');
 const GLUE = readFileSync(resolve(WEB, 'glue.js'), 'utf8');
-const commitSource = glueDeclarations(GLUE, ['apply', 'applyBatch', 'wakeLock', 'holdWake', 'orientationLock', 'holdOrientation']);
+const commitSource = glueDeclarations(GLUE, ['apply', 'applyBatch', 'holdWake', 'holdOrientation']);
 // The wasm host's real operation switch and commit tail, with the unrelated
 // host pieces inert. Keeping both functions in this one closure matters:
 // the `timelines` operation sets the flag that the commit tail consumes.
@@ -39,6 +41,7 @@ const hostCommitBody = `
   const followScroll = () => {}, settleFollow = () => {}, settleValue = () => {}, letGo = () => {}, flowBatch = () => {}, noteFit = () => {}, refitTexts = () => {};
   const navigation = {project() {}, apply() {}}, log = () => {}, inputReady = false, agentMode = false, agentKeepsStore = false, frameSampler = null, clocks = {sync() {}};
   const viewFor = (_, id) => views.get(id), applyProps = () => {}, attach = () => {}, listView = () => {};
+  const host = { timelinesMoved, agentClock, followOnSeek, listSelection, textflow, page, inputHandlers, inputReady, frameSampler };
   ${commitSource}
   return (${checkedGlueCall})(applyBatch);
 `;
@@ -59,7 +62,7 @@ test('the extracted wake-lock bindings share one lazy module and recheck holders
     holders: el => { expect(el).toBe(root); return holders; },
     hold: (held, report) => { expect(report).toBe(log); holds.push(held); },
   }; };
-  const hold = new Function('loadAfterPaint', 'root', 'log', `${glueDeclarations(GLUE, ['wakeLock', 'holdWake'])}; return holdWake;`)(load, root, log);
+  const hold = new Function('loadAfterPaint', 'root', 'log', `const host = { wakeLock: null }; ${glueDeclarations(GLUE, ['holdWake'])}; return holdWake;`)(load, root, log);
   await hold(); holders = []; await hold();
   expect(loads).toEqual([['./wakelock-glue.js', 'wakeLockGlue']]);
   expect(holds).toEqual([true, false]);
@@ -358,7 +361,7 @@ check('a real commit rebinds a spring follower on the wasm and JS runtimes', asy
   try {
     writeFileSync(resolve(tmp, 'follower.contract'), FOLLOWER_SOURCE);
     run(compiler, ['build', resolve(tmp, 'follower.contract'), '-o', plan]);
-    // Use prepared Caltrain builds when both paths are set (the plan reads no app data), else build
+    // Use the lane's prepared Caltrain builds when both paths are set (the plan reads no app data), else build
     // Interaction Gallery's
     const { EXACT_MOTION_DIST: preparedWasm, EXACT_WEB_JS_DIST: preparedJs } = process.env;
     const prepared = Boolean(preparedWasm && preparedJs), app = prepared ? 'caltrain' : 'interaction-gallery';

@@ -243,7 +243,7 @@ theorem lateEnvOKE {p : Program} (hp : WellTyped p) {k : Nat} {st : Settled} {sl
     (hpres : SlotsPresent p slots) (hb : ∀ x v, (x, v) ∈ slots → BootOK p (lateNames (p.states.drop k)) x v)
     (hst : SettledOK p st) (hc : Complete p st) :
     EnvOKE p Strict (lateScope p k)
-      { prog := p, slots, derives := st.derives, resources := st.resources, now := 0 } := by
+      { prog := p, slots, derives := st.derives, resources := st.resources, now := 0, idle := st.idle } := by
   have N := Names.of hp.names
   let L : String → Bool := fun x => !((lateScope p k).any (·.1 == x))
   have hL : ∀ x, L x = false → ∃ t, (x, t) ∈ lateScope p k := by
@@ -353,7 +353,7 @@ theorem boot_sound {p : Program} (hp : WellTyped p) (o : Oracle) : OutcomeOK (bo
     obtain ⟨t, htk, ha, hg, hk⟩ := startTimers_tasks ht tm htm
     refine ⟨by rw [ha]; exact hp.taskActions t htk, ?_⟩
     rw [hg, hk]; exact hp.taskGates t htk
-  -- The gate step at boot: a key that is no key refuses it.
+  -- The gate step at boot (LLP 1092 D8): a key that is no key refuses it.
   split
   · next e he =>
     exact ofW (gateStep_good hp
@@ -363,7 +363,7 @@ theorem boot_sound {p : Program} (hp : WellTyped p) (o : Oracle) : OutcomeOK (bo
   · trivial
   · next e he =>
     exact ofW (renderTabs_good hp (E := Strict) (fun _ h hn => ⟨h, hn⟩) fuel
-      (cx := { env := { prog := p, slots, derives := st.derives, resources := st.resources, now := 0 },
+      (cx := { env := { prog := p, slots, derives := st.derives, resources := st.resources, now := 0, idle := st.idle },
                store := [], tabs := { every := o.everyTab } })
       ⟨rfl, hs, hpres.of_keys hkeys, RowsOK.nil, hok.1, hok.2⟩ (.inl hc) StoreOK.nil) he
 

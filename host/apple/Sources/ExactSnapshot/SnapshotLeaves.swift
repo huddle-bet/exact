@@ -1,7 +1,7 @@
-// The leaves: a paragraph as one single-line `Text` per kernel line,
+// The leaves: a paragraph as one single-line `Text` per kernel line (D4),
 // an image from the bundle or the app group, a symbol, and the platform's
-// live time and progress. Text and symbols are the accented group:
-// the glyphs take `widgetAccentable`; a raster image stays in the
+// live time and progress (D6). Text and symbols are the accented group
+// (D5): the glyphs take `widgetAccentable`; a raster image stays in the
 // default group, desaturated unless the author says otherwise.
 #if canImport(WidgetKit)
 import SwiftUI
@@ -44,7 +44,7 @@ struct SnapshotTextView: View {
 
     /// The line's runs, each in the font the kernel measured it in and its
     /// own colour or the paragraph's, concatenated into one `Text`. The
-    /// text is the line's `Line.text`: a clamped line's cut and "…" come from
+    /// text is WP1's `Line.text`: a clamped line's cut and "…" come from
     /// there. A run's background and `href` are refused by the profile.
     private func text(_ line: HeadlessSession.Line) -> Text {
         let dark = scheme == .dark
@@ -78,7 +78,7 @@ package enum SnapshotTextPaint {
     }
 }
 
-/// Under the accented rendering mode, text and symbols are the accented
+/// D5: under the accented rendering mode, text and symbols are the accented
 /// group (their glyphs take the tint); a raster image is the default
 /// group, desaturated unless the author wrote `data-rendering="full-color"`.
 package enum SnapshotAccent {
@@ -94,7 +94,7 @@ package enum SnapshotAccent {
     }
 }
 
-/// `time` and `progress` as the platform's live views, which update
+/// D6: `time` and `progress` as the platform's live views, which update
 /// with no code running. A `time` has `datetime` (an instant: epoch
 /// milliseconds, or ISO 8601 with or without fractional seconds) and
 /// `format` (the prop `timeFormat` on the wire): `relative` is
@@ -175,30 +175,50 @@ struct SnapshotLiveText: View {
 /// determinate bar; else the activity indicator. A ring where the platform
 /// draws one: in the circular accessory family, or a `progress` the author
 /// rounded into a circle (`border-radius: 50%`, or at least half its box),
-/// as SwiftUI's circular capacity gauge draws the value.
+/// as SwiftUI's circular capacity gauge draws the value. A bar draws in the
+/// tint, which an `accent-color` sets (`SnapshotNodeView`), as UIKit's
+/// progress view does; the indicator in its own `color`, else the tint
+/// (`docs/contract-grammar.md`, "Progress").
 @available(iOS 17.0, macOS 14.0, watchOS 10.0, visionOS 26.0, *)
 struct SnapshotProgressView: View {
     let node: HeadlessSession.Node
     let environment: SnapshotEnvironment
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.snapshotTint) private var around
+
+    /// A bar's and a ring's own tint: a share of the tint in effect where its
+    /// accent is one (`Highlight`), as the iOS host's bar takes it
+    /// (`accentShare`), else its accent; none for `AccentColor` itself, which
+    /// is the tint in effect. The ring, unaccented, takes the box's colour.
+    private func barTint(ring: Bool = false) -> Color? {
+        let style = SnapshotStyle(node)
+        return SnapshotTint.given(style.color("accent_color") ?? (ring ? style.color("text_color") : nil), around: around, dark: scheme == .dark)
+    }
+    /// The indicator's own `color`, where it wrote one, else its accent.
+    private var indicatorTint: Color? {
+        let style = SnapshotStyle(node)
+        return SnapshotTint.given(style.wrote("text_color") ? style.color("text_color") : style.color("accent_color"), around: around, dark: scheme == .dark)
+    }
 
     var body: some View {
         Group {
             if let interval = SnapshotLive.interval(node), let date = environment.frozenDate {
                 let fraction = min(1, max(0, date.timeIntervalSince(interval.lowerBound) / max(0.001, interval.upperBound.timeIntervalSince(interval.lowerBound))))
                 let shown = (node.props["timeFormat"] ?? node.props["format"]) == "countdown" ? 1 - fraction : fraction
-                if circular { gauge(shown, total: 1) } else { ProgressView(value: shown) }
+                if circular { gauge(shown, total: 1) } else { ProgressView(value: shown).modifier(OwnTint(color: barTint())) }
             } else if let interval = SnapshotLive.interval(node) {
                 if circular {
                     ProgressView(timerInterval: interval, countsDown: (node.props["timeFormat"] ?? node.props["format"]) == "countdown") { EmptyView() } currentValueLabel: { EmptyView() }
                         .progressViewStyle(.circular)
+                        .modifier(OwnTint(color: barTint(ring: true)))
                 } else {
                     ProgressView(timerInterval: interval, countsDown: (node.props["timeFormat"] ?? node.props["format"]) == "countdown") { EmptyView() } currentValueLabel: { EmptyView() }
+                        .modifier(OwnTint(color: barTint()))
                 }
             } else if let value = Double(node.props["value"] ?? "") {
-                if circular { gauge(min(value, total), total: total) } else { ProgressView(value: min(value, total), total: total) }
+                if circular { gauge(min(value, total), total: total) } else { ProgressView(value: min(value, total), total: total).modifier(OwnTint(color: barTint())) }
             } else {
-                ProgressView()
+                ProgressView().modifier(OwnTint(color: indicatorTint))
             }
         }
         .frame(width: node.contentBox.width, height: node.contentBox.height)
@@ -211,9 +231,9 @@ struct SnapshotProgressView: View {
         #if os(iOS) || os(watchOS)
         Gauge(value: value, in: 0...total) { EmptyView() }
             .gaugeStyle(.accessoryCircularCapacity)
-            .tint(SnapshotColor.color(SnapshotStyle(node).color("accent_color") ?? SnapshotStyle(node).color("text_color"), dark: scheme == .dark))
+            .modifier(OwnTint(color: barTint(ring: true)))
         #else
-        ProgressView(value: value, total: total).progressViewStyle(.circular)
+        ProgressView(value: value, total: total).progressViewStyle(.circular).modifier(OwnTint(color: barTint(ring: true)))
         #endif
     }
 
@@ -288,7 +308,7 @@ struct SnapshotImageView: View {
             .font(.system(size: points, weight: Font.Weight(css: Int(weight))))
             .foregroundStyle(ink)
         } else if let commands = node.props["symbolPath"] {
-            // An icon with no SF Symbol draws its own path, as the page hosts do: its
+            // An icon with no SF Symbol draws its own path (LLP 1121 D10, stage 9 A), as the page hosts do: its
             // em square placed by `object-fit` in the box, the viewBox met in that square, each path filled
             // by its rule (nonzero, or even-odd by `symbolFillRule`) into one mask that its tint (else its
             // colour) shows through once.
@@ -318,7 +338,7 @@ private struct IconShape: Shape {
     }
 }
 
-/// Raster decoding, bounded (an extension's memory ceiling): ImageIO's
+/// Raster decoding, bounded (D8: an extension's memory ceiling): ImageIO's
 /// thumbnail at the pixels the box shows, never the full image, kept for
 /// the invocation under a decoded-byte budget (the oldest evicted past it;
 /// an image larger than the budget is never retained) and released with
@@ -456,7 +476,7 @@ public final class SnapshotRasters {
 /// CSS `object-fit` over the image's natural size: `fill` stretches,
 /// `contain` and `cover` keep the aspect, `scale-down` keeps the natural
 /// size when it fits, else contains; `none` is the profile's to refuse and
-/// draws as `scale-down` here. Under the accented mode the raster is
+/// draws as `scale-down` here. D5: under the accented mode the raster is
 /// desaturated (the default group keeps its detail) unless the author
 /// asked for full colour; the modifier is iOS 18's, and older systems draw
 /// the default.

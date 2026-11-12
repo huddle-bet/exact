@@ -1,9 +1,10 @@
-// `tree --ax` on the web, the oracle: the
+// @ref LLP 1080.002 §3 stage 1 — `tree --ax` on the web, the oracle: the
 // fixture's controls as Chrome exposes them, joined to their views; the
 // findings caught through the real collector and gone once repaired; a
 // protected value omitted; the wasm and JS targets agreeing by testId; and
 // Caltrain with complete coverage and no findings. It compiles the fixture
-// and needs a wasm Caltrain dist (host/web/dist, or EXACT_WEB_DIST); without one it skips.
+// and needs a wasm Caltrain dist, so the async lane's web-build-test step
+// runs it; the glue step skips it.
 import { test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -15,8 +16,9 @@ import { axClean, axParity } from '../../../scripts/agent-ax.mjs';
 import { resolveApp } from '../../../scripts/app.mjs';
 import { jsTargetBuild } from '../serve.mjs';
 import { need, notApplicable } from '../../../scripts/coverage.mjs';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(new URL('../../..', import.meta.url).pathname);
+const ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const compiler = resolve(process.env.CARGO_TARGET_DIR ?? resolve(ROOT, 'target'), 'debug', process.platform === 'win32' ? 'contract.exe' : 'contract');
 const app = resolveApp('caltrain');
 const wasmDist = resolve(process.env.EXACT_WEB_DIST ?? resolve(ROOT, 'host/web/dist'));
@@ -59,7 +61,7 @@ async function fixtureControls(s) {
     const e = find(r, testId);
     expect(e && [e.role, e.name, e.via === 'self' || e.via === 'owner']).toEqual([role, name, true]);
   }
-  // A heading is `role="heading"`; an `aria-level` alone is words, and no element in Chrome's tree
+  // LLP 1115.000 D12.5: a heading is `role="heading"`; an `aria-level` alone is words, and no element in Chrome's tree
   // is a heading named by them.
   expect(find(r, 'heading').states.level).toBe(2);
   expect(r.ax.elements.filter(e => e.testId === 'level-only' || e.name === 'Level only').map(e => e.role).filter(role => role === 'heading')).toEqual([]);

@@ -4,7 +4,7 @@ import XCTest
 @testable import ExactKit
 import ExactGroupedLists
 
-/// A page with no native container keeps the area it is laid out
+/// LLP 1130: a page with no native container keeps the area it is laid out
 /// in, the view less its safe area, and is drawn in a viewport that takes
 /// the whole view, so it scrolls under the status bar and the home
 /// indicator; a scroller at the area's top and foot reaches into those bands
@@ -208,7 +208,7 @@ final class PageEdgesIOSTests: XCTestCase {
         XCTAssertEqual(cv.layer.animationKeys() ?? [], [], "one shown again since the last frame is at its offset at once")
     }
 
-    /// A route's list under its control bars, drawn through them and the route's cover.
+    /// LLP 1131: a route's list under its control bars, drawn through them and the route's cover.
     func testAListRunsUnderItsControlBarsAndKeepsItsPlace() throws {
         guard UIApplication.shared.connectedScenes.first is UIWindowScene else { throw missing("scene", "the bars and the safe area are a scene window's") }
         guard #available(iOS 26.0, *) else { throw XCTSkip("control bars are iOS 26's, where UIKit draws the edge effect over them") }
@@ -223,6 +223,20 @@ final class PageEdgesIOSTests: XCTestCase {
         let hit = try XCTUnwrap(filter.window?.hitTest(filter.convert(CGPoint(x: filter.bounds.midX, y: filter.bounds.midY), to: nil), with: nil))
         XCTAssertTrue(hit.isDescendant(of: filter), "a tap on the switcher is the switcher's, not \(type(of: hit))")
         XCTAssertTrue(filter.interactions.contains { $0 is UIScrollEdgeElementContainerInteraction }, "UIKit's edge effect over the list")
+        // An app's own scroll view holds the bar's edge through a batch, and its nil gives the edge
+        // back to the list at once, through the list's band under the switcher, since the title
+        // does not collapse with the list
+        let route = try XCTUnwrap(p.navigation.activeRoute)
+        XCTAssertNil(route.collapseScroll, "the switcher stands between the title and the list")
+        XCTAssertTrue(route.contentScrollView(for: .top) === sv, "the bar follows the list under the switcher")
+        let own = UIScrollView(frame: route.view.bounds)
+        route.view.addSubview(own)
+        route.setContentScrollView(own, for: .top)
+        p.apply(wireBatch([]))
+        XCTAssertTrue(route.contentScrollView(for: .top) === own)
+        route.setContentScrollView(nil, for: .top)
+        own.removeFromSuperview()
+        XCTAssertTrue(route.contentScrollView(for: .top) === sv, "nil gives the edge back to the list drawn under the switcher")
         sv.contentOffset.y = 100 - list.scrollTopInset(sv)
         p.press(try node(session, "pick-chat").id)
         until("the switcher goes and a composer comes") { list.pageBand.top == 0 && list.pageBand.bottom > 0 }
@@ -238,7 +252,7 @@ final class PageEdgesIOSTests: XCTestCase {
 
     /// A transcript in a box over a composer its author filled: the composer is no bar, so
     /// the rows stop above it, and the top still runs under the inline bar, as a hand-built
-    /// table under its navigation bar does whatever is pinned under it.
+    /// table under its navigation bar does whatever is pinned under it (bake-off r28's chat).
     func testAListOverAFilledComposerStillRunsUnderTheBar() throws {
         guard UIApplication.shared.connectedScenes.first is UIWindowScene else { throw missing("scene", "the bars and the safe area are a scene window's") }
         guard #available(iOS 26.0, *) else { throw XCTSkip("control bars are iOS 26's, where UIKit draws the edge effect over them") }

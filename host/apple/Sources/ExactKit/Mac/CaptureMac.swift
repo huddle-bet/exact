@@ -58,4 +58,77 @@ extension Capture {
         return ctx.makeImage()
     }
 }
+
+extension Capture {
+    /// `body` with each session's guest pictures (its iframes' and native views'
+    /// snapshots) in `web` for their nodes to draw, and those live views hidden,
+    /// which a capture cannot draw; put back after.
+    static func withGuests<T>(of sessions: [ExactSession], _ body: () -> T) -> T {
+        var hidden: [(NSView, Bool)] = []
+        for session in sessions {
+            let views = session.presenter.views
+            for (id, image) in session.webviews.snapshots().merging(session.natives.snapshots(), uniquingKeysWith: { web, _ in web }) {
+                if let node = views[id] { web[ObjectIdentifier(node)] = image }
+            }
+            hidden += (views.values.compactMap(\.web) + session.natives.snapshotViews).map { ($0, $0.isHidden) }
+        }
+        hidden.forEach { $0.0.isHidden = true }
+        defer { hidden.forEach { $0.0.isHidden = $0.1 }; web = [:] }
+        return body()
+    }
+}
+
+extension Agent {
+    /// Let the window server composite readbacks at the Metal layers' places.
+    /// A CPU capture of the whole content loses backdrop filters and materials.
+    static func canvasReadbacks(in window: NSWindow) -> (painted: Bool, restore: () -> Void) {
+        var replacements: [(CALayer, Bool, CALayer)] = []
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        func walk(_ view: NSView) {
+            guard !view.isHiddenOrHasHiddenAncestor else { return }
+            if let node = view as? NodeView, node.kind == "canvas",
+               let image = node.canvases?.readback(view: node)?.cgImage,
+               let metal = node.metal?.layer, let parent = metal.superlayer {
+                let picture = metal.valueCopy()
+                picture.contents = image
+                picture.zPosition = metal.zPosition
+                picture.isHidden = metal.isHidden
+                parent.insertSublayer(picture, above: metal)
+                replacements.append((metal, metal.isHidden, picture))
+                metal.isHidden = true
+            }
+            view.subviews.forEach(walk)
+        }
+        var seen: Set<Int> = []
+        func visit(_ window: NSWindow) {
+            guard seen.insert(window.windowNumber).inserted else { return }
+            if let content = window.contentView { walk(content) }
+            for child in ([window.attachedSheet].compactMap { $0 } + (window.childWindows ?? [])) where child.isVisible { visit(child) }
+        }
+        visit(window)
+        CATransaction.commit()
+        return (!replacements.isEmpty, {
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            for (metal, hidden, picture) in replacements {
+                metal.isHidden = hidden
+                picture.removeFromSuperlayer()
+            }
+            CATransaction.commit()
+        })
+    }
+
+    static func drawingWindows(_ windows: [(CGRect, CGImage)], over image: CGImage, in frame: CGRect) -> CGImage {
+        guard frame.width > 0,
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        let scale = CGFloat(image.width) / frame.width
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        for (child, picture) in windows {
+            context.draw(picture, in: CGRect(x: (child.minX - frame.minX) * scale, y: (child.minY - frame.minY) * scale,
+                                             width: child.width * scale, height: child.height * scale))
+        }
+        return context.makeImage() ?? image
+    }
+}
 #endif

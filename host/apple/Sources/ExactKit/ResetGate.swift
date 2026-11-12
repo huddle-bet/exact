@@ -2,7 +2,7 @@
 // new runtime, then tears the old tree's views down, then applies the new runtime's committed batch. What the
 // teardown sets off (a cover cleared, a sheet giving focus back, an edit ended, a key window moving, a due timer, a
 // list's report) once reached the new runtime first, and the stale committed batch then undid what it answered: feed
-// rows the runtime kept mounted with no view (blank rows, every dev-joined iOS launch that reloaded).
+// rows the runtime kept mounted with no view (the Apple pass's blank rows, every dev-joined iOS launch that reloaded).
 // So every batch-answering runtime call is held over the teardown at its one entry (ExactCore `Runtime.on`, `held`):
 // it reaches nothing and is named. Here, per call, what becomes of it once the committed batch is in: DROPPED, being
 // about the old tree, or REPLAYED, being work the new runtime must still see, recomputed from the live presenter (the
@@ -89,7 +89,7 @@ enum ResetGate {
         "hover(_:over:now:)": "a pointer leaving views going away",
         "key(_:_:up:capture:now:)": "a key down on the old tree",
         "scroll(_:metrics:now:)": "an old scroller's offset",
-        // Native timer calls: each recovers by itself, so a replay would fire it twice.
+        // #1144's timer calls: each recovers by itself, so a replay would fire it twice.
         "fireNativeTimer(_:now:)": "a task's native firing answered `held` stays at the front of its queue, which asks for it again a frame later (NativeTaskTimers `complete(retry:)`); a new generation's rows re-arm the task at its own deadline",
         "fireNativeTimerAsync(_:now:done:)": "a task's native firing sent to the owner, as `fireNativeTimer`'s: kept by its queue, asked for again",
         "timerWaits(kinds:cutoff:mode:)": "a timer admission check answered `held` leaves nothing pending (TimerAdmissions); the next frame or update checks again, against the new runtime's waits",
@@ -98,8 +98,11 @@ enum ResetGate {
         "contextmenu(_:now:)": "a context menu asked of the old tree",
         "dblclick(_:now:)": "a double click on the old tree",
         "swiperight(_:now:)": "a swipe on the old tree",
+        "swipeleft(_:now:)": "a swipe on the old tree",
         "historySwipe(_:phase:direction:amount:client:now:)": "a history swipe's progress told to the old tree's root",
         "scrollend(_:now:)": "an old scroller's end",
+        "scrolldragstart(_:now:)": "a drag of an old scroller",
+        "scrolldragend(_:velocity:target:now:)": "a drag of an old scroller let go",
         "refresh(_:now:)": "a pull to refresh on the old tree's list",
         "intoView(_:key:block:inline:)": "the agent's scroll into an old list",
         "heightDragUpdate(_:height:now:)": "a height drag moving on the old tree",
@@ -121,6 +124,8 @@ enum ResetGate {
         "pickerCancel(_:now:)": "an old picker dismissed as its view goes",
         "hostBack(_:now:)": "a back gesture the teardown set off is the old navigation's",
         "hostBack(from:to:now:)": "a back the teardown set off is the old navigation's",
+        "hostForward(_:now:)": "a forward gesture belongs to the old navigation, whose forward history is not carried",
+        "buildTabs(_:now:)": "the old tree's tab panels; the new tree's are built when More shows them",
         "beforeunload(_:now:)": "the old page's unload as it goes",
         "surfaceRecord(_:_:)": "an old canvas publisher released as the teardown ends it: the new runner starts with no surface records (none is carried), and the new tree's publishers record their own",
         "regionComplete(_:)": "an old generation's region artifact: `RegionController` drops one from another generation before it is told, and the new tree asks its own",
@@ -169,7 +174,7 @@ enum ResetGate {
         "designRows(_:)": "a live design frame: the old design shows until the next",
         "setModes(_:check:)": "mode pins: not applied",
         "navigate(_:_:now:)": "a URL opened from outside (`openIncoming`), or a navigation from the old tree: the URL is not followed",
-        "hostGo(_:now:)": "a forward the platform delivers, or the old navigation's: not taken",
+        "hostGo(_:now:)": "a URL followed without a navigate handler: not taken",
         "share(_:now:)": "an incoming share: its inbox is deleted after delivery (`ShareReceive.claimInbox`), so it is gone",
         "picked(_:_:now:)": "a picker's chosen files, copied before the pick is told: told once, not again",
         "change(_:_:selection:now:)": "an edit the teardown ends (the Mac commits it as its field goes) is the old field's, moot; but a document's delivered file paths ride it too (`ExactDocuments.deliver`), and are lost",

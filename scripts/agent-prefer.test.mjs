@@ -1,9 +1,9 @@
 // `prefer`'s facts by their names (agent-prefer.mjs `preferGroups`): a fact answers to its near spellings
-// (`prefer color-scheme dark`), and an unknown fact or value is still refused.
+// (LLP 1116.007 D3.5: `prefer color-scheme dark`), and an unknown fact or value is still refused.
 import { test, expect } from 'bun:test';
 import { PREFERENCES, mediaHeard, preferGroups, preferWeb } from './agent-prefer.mjs';
 import { MalformedOperation } from './agent-keys.mjs';
-import { pageReporter } from '../host/web/navigation.js';
+import { pageReporter } from '../host/web/navigation/environment.js';
 
 test('a near spelling of a fact is that fact', () => {
   for (const name of ['prefers-color-scheme', 'color-scheme', 'colorScheme', 'prefersColorScheme', 'Color_Scheme']) {
@@ -11,11 +11,13 @@ test('a near spelling of a fact is that fact', () => {
   }
   expect(preferGroups({ 'reduced-motion': 'reduce', contrast: 'more' }).media).toEqual({ 'prefers-reduced-motion': 'reduce', 'prefers-contrast': 'more' });
   expect(preferGroups({ canShare: 'false', rootFontSize: '20' }).page).toEqual({ 'can-share': false, 'root-font-size': 20 });
+  // As its help writes it, `<px>`: `53px` is 53 (LLP 1156.002 D5).
+  expect(preferGroups({ 'root-font-size': '53px' }).page).toEqual({ 'root-font-size': 53 });
   expect(preferGroups({ displayMode: 'fullscreen' }).media).toEqual({ 'display-mode': 'fullscreen' });
   expect(preferGroups({ segments: '2x1', gap: '40' }).fold).toEqual({ cols: 2, rows: 1, gap: 40 });
 });
 
-test('the midi group names what a request finds and the ports by name', () => {
+test('the midi group names what a request finds and the ports by name (LLP 1125 §4)', () => {
   expect(preferGroups({ 'midi.state': 'granted', 'midi.outputs': 'OP-XY, IAC', 'midi.inputs': 'keys' }).midi).toEqual({ state: 'granted', outputs: ['OP-XY', 'IAC'], inputs: ['keys'] });
   expect(preferGroups({ 'midi.outputs': '' }).midi).toEqual({ outputs: [] });
   expect(() => preferGroups({ 'midi.state': 'maybe' })).toThrow(MalformedOperation);
@@ -53,7 +55,7 @@ test('segments and gap are malformed before a display-mode refusal', async () =>
   expect(preferGroups({ segments: '2x3', gap: 0.5 }).fold).toEqual({ cols: 2, rows: 3, gap: 0.5 });
 });
 
-test('prefer mode is the app modes group: each pin, the scheme left alone', () => {
+test('prefer mode is the app modes group (LLP 1121 D13): each pin, the scheme left alone', () => {
   const { media, mode } = preferGroups({ mode: 'dark-style=dim, density=compact' });
   expect(mode).toEqual({ 'dark-style': 'dim', density: 'compact' });
   expect(media).toEqual({});
@@ -69,7 +71,7 @@ test('page preference refusals omit the malformed property', () => {
   catch (error) { expect(error.malformed).toBe(true); }
 });
 
-test('pointer and hover are media facts, emulated in Chrome by its touch screen', async () => {
+test('pointer and hover are media facts, emulated in Chrome by its touch screen (LLP 1132 D10)', async () => {
   expect(preferGroups({ pointer: 'coarse', hover: 'none' }).media).toEqual({ pointer: 'coarse', hover: 'none' });
   expect(() => preferGroups({ pointer: 'pen' })).toThrow(/^prefer: pointer pen: expected .*pointer coarse\|fine\|none/);
   const drive = media => {

@@ -1,4 +1,4 @@
-// `tamber import css`: a stylesheet's custom properties written into app.tamber between markers.
+// `tamber import css` (LLP 1153 D6.2): a stylesheet's custom properties written into app.tamber between markers.
 // The subset it translates, each thing it refuses by name, each scheme's value by CSS's cascade, an author's tokens
 // kept outside the markers, a second import rewriting only its block, and one that would leave the author's tokens
 // refused writing nothing. Runs the debug compiler the lane builds, as tamber-dtcg.test.mjs does.
@@ -61,6 +61,30 @@ theme
   expect(r.out).not.toContain('refused');
 });
 
+test('the report gives each token its kind and names the role it overrides', () => {
+  const [r] = imported({ 'tokens.css': `:root {
+  --ink: #111111;
+  --background: #ffffff;
+  --label: #333333;
+  --field: #f2f2f2;
+  --CaNvAs: #fafafa;
+  --secondary-label: var(--ink, #000000);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #eeeeee; --background: #000000; }
+}
+` });
+  expect(r.status).toBe(0);
+  expect(r.out.split('\n').filter((line) => line.startsWith('  '))).toEqual([
+    '  ink = light-dark(#111111, #eeeeee)  color',
+    '  background = light-dark(#ffffff, #000000)  color  (overrides role background)',
+    '  label = #333333  scheme=fixed  color  (overrides role label)',
+    '  field = #f2f2f2  scheme=fixed  color  (overrides role Field)',
+    '  CaNvAs = #fafafa  scheme=fixed  color  (overrides role Canvas)',
+    '  secondary-label = ink  color  (overrides role secondary-label)  (its fallback dropped: a token is never undefined)',
+  ]);
+});
+
 test('each thing outside the subset is refused by name, and nothing is written for it', () => {
   const [r] = imported({ 'tokens.css': `:root {
   --ink: #111111;
@@ -107,6 +131,7 @@ test('a colour the stylesheet gives one value is marked scheme=fixed', () => {
   expect(r.status).toBe(0);
   expect(r.design).toContain('  bg = #f5f6f8  scheme=fixed\n  text = bg\n  gap = 4px\n  field = Canvas\n  line = light-dark(#dddddd, #333333)\n');
   expect(r.out).toContain('  bg = #f5f6f8  scheme=fixed  color');
+  expect(r.out).toContain('  field = Canvas  color  (overrides role Field)');
   expect(r.out).toContain('1 colour has no dark value in the stylesheet, so it is marked `scheme=fixed`');
 });
 

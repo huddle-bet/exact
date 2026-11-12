@@ -1,4 +1,4 @@
-// Per-run `text-shadow` and `-webkit-text-stroke`: CSS
+// Per-run `text-shadow` and `-webkit-text-stroke` (LLP 1077 D3, D7): CSS
 // paints both per inline box, so each run carries its own computed values
 // (a run's style crosses with every inherited row resolved). A paragraph
 // whose runs all share one shadow keeps it on the paragraph: one layer
@@ -111,7 +111,7 @@ extension NSAttributedString.Key {
 
 extension TextLinePaint {
     /// A line's ink in one colour, into a y-down context: how selected text
-    /// is drawn over its selection's fill. Each glyph at
+    /// is drawn over its selection's fill (LLP 1115.000 D7.9). Each glyph at
     /// its own coverage whatever its ink's alpha, so a label colour, which is
     /// part transparent, is solid when selected, as AppKit's is. An underline,
     /// a line-through and a stroke are CoreText's own, recoloured where it
@@ -210,7 +210,7 @@ extension TextLinePaint {
     }
 
     /// Which of a line's paint a pass makes. A raster paints an HDR
-    /// `text-shadow` apart from the ink, for a layer of its own.
+    /// `text-shadow` apart from the ink, for a layer of its own (LLP 1100 D8).
     enum Pass {
         /// Everything: a view's own drawing.
         case all
@@ -218,9 +218,13 @@ extension TextLinePaint {
         case ink
         /// Only the glyphs of the runs that cast this shadow, with no shadow.
         case caster(TextRunShadow)
+        /// Only the inline boxes' backgrounds, under glyphs another view
+        /// draws (the Numerals capability's rolling text, `NumeralLink`).
+        case backgrounds
 
         /// An inline background casts no run's shadow.
         var paintsBackgrounds: Bool { if case .caster = self { false } else { true } }
+        var paintsGlyphs: Bool { if case .backgrounds = self { false } else { true } }
     }
 
     /// A line whose glyph runs carry their own shadows, in a context already
@@ -268,6 +272,7 @@ extension TextLinePaint {
         case .caster(let cast):
             draw(zip(runs, shadows).filter { $0.1 == cast && !hidden($0.0) }.map { $0.0 })
             return true
+        case .backgrounds: return true
         }
         guard shadows.contains(where: { $0 != nil }) || runs.contains(where: hidden) else { return false }
         var i = 0

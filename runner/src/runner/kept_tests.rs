@@ -1,4 +1,4 @@
-//! Persisted-answer identity and request context.
+//! Persisted-answer identity and request context (LLP 1027.005 D3–D6).
 use super::*;
 
 #[path = "kept_identity_tests.rs"]
@@ -21,8 +21,8 @@ struct Source {
     value: Value,
     asks: Vec<Vec<Value>>,
     parses: Vec<Vec<Value>>,
-    /// A device line whose app keeps no answers: Health's,
-    /// the contacts' or a calendar's.
+    /// A device line whose app keeps no answers: Health's (LLP 1069.008.000
+    /// D7), the contacts' or a calendar's (LLP 1133.018 D8).
     private: Option<&'static str>,
 }
 
@@ -199,7 +199,7 @@ fn shows(r: &Runner<Source>, value: &str) {
 }
 
 fn state(r: &Runner<Source>) -> &ResourceState {
-    r.resources[0].as_ref().unwrap()
+    r.resources[0].state.as_ref().unwrap()
 }
 
 fn answer_writes(r: &Runner<Source>) -> usize {
@@ -251,11 +251,11 @@ fn seed_survives_two_context_changes_and_activation_asks_the_latest_full_argumen
     assert_eq!(r.data.asks, [full("A", "200", 2.)]);
     shows(&r, "fresh");
     assert!(!state(&r).kept_seed);
-    assert!(!r.stale[0]);
+    assert!(!r.resources[0].stale);
     assert!(
         r.journal()
             .any(|l| l.contains("answer answered differently from its kept answer")),
-        "a contradicted kept answer is journaled"
+        "a contradicted kept answer is journaled (LLP 1102 §3.17)"
     );
     assert_eq!(state(&r).args, full("A", "200", 2.));
     assert_eq!(
@@ -304,7 +304,7 @@ fn an_activation_answer_outside_its_shape_fails_it_and_keeps_nothing() {
     r.data.ready = true;
     r.data.value = Value::Bool(false);
     // The answer outside its shape fails the resource, not the activation,
-    // which commits: the seed still shows, is not eligible, and
+    // which commits: the seed still shows, is not eligible (D4), and
     // nothing is persisted.
     assert!(r.data_ready().is_ok());
     shows(&r, "kept");
@@ -313,7 +313,7 @@ fn an_activation_answer_outside_its_shape_fails_it_and_keeps_nothing() {
         .iter()
         .any(|(name, _)| *name == "answer"));
     assert!(!state(&r).kept_seed);
-    assert!(r.stale[0]);
+    assert!(r.resources[0].stale);
     assert_eq!(answer_writes(&r), 0);
     r.data.value = Value::str("valid");
     r.data_ready().unwrap();
@@ -395,7 +395,7 @@ fn failed_activation_writes_nothing_and_only_the_full_failed_arguments_suppress_
     let ticket = r.take_requests().remove(0).ticket;
     r.fulfill(ticket, Outcome::Storage(vec![])).unwrap();
     assert!(!r.has_pending());
-    assert_eq!(r.failed_args[0], Some(full("A", "100", 0.)));
+    assert_eq!(r.resources[0].failed_args, Some(full("A", "100", 0.)));
     assert!(!state(&r).kept_seed);
     shows(&r, "kept");
     provisional(&r);
@@ -404,7 +404,7 @@ fn failed_activation_writes_nothing_and_only_the_full_failed_arguments_suppress_
     r.data.fail = false;
     r.act("minute", vec![Value::str("200")]).unwrap();
     assert_eq!(r.data.asks.len(), 2);
-    assert!(r.failed_args[0].is_none());
+    assert!(r.resources[0].failed_args.is_none());
     let ticket = r.take_requests().remove(0).ticket;
     r.fulfill(ticket, Outcome::Storage(vec![])).unwrap();
     shows(&r, "fresh");
@@ -675,8 +675,8 @@ fn a_cold_boot_forgets_kept_answers_no_declared_reader_seeds() {
 fn an_app_granting_a_private_store_neither_seeds_nor_keeps_answers() {
     // A reader's answer kept before the grant (or by an older build) is
     // forgotten on disk and does not paint the first frame; the fresh answer
-    // is never kept: Health's rule, and the contacts'
-    // and calendars'. The source loads after first pixel,
+    // is never kept: Health's rule (LLP 1069.008.000 D7), and the contacts'
+    // and calendars' (LLP 1133.018 D8). The source loads after first pixel,
     // as an app's TypeScript does.
     for line in ["health-read", "contacts", "calendar", "calendar-write-only"] {
         let source = Source {
@@ -738,11 +738,11 @@ fn a_kept_seed_failed_by_a_refused_activation_stays_failed_across_context() {
     // Activation refused by the app itself: the seed fails for its
     // identifying arguments, and a context change asks nothing.
     r.give_up(&[0], &RunnerError::Cycle);
-    assert!(r.failed_args[0].is_some());
+    assert!(r.resources[0].failed_args.is_some());
     let asks = r.data.asks.len();
     r.act("minute", vec![Value::str("300")]).unwrap();
     assert_eq!(r.data.asks.len(), asks);
-    assert!(r.failed_args[0].is_some());
+    assert!(r.resources[0].failed_args.is_some());
     shows(&r, "kept");
 }
 
@@ -770,7 +770,7 @@ fn a_refused_commit_does_not_forget_a_kept_answer() {
 fn a_refusal_after_boot_is_journaled_and_a_rolled_back_one_is_not() {
     let refused = |r: &Runner<Source>| -> Vec<String> {
         r.journal()
-            .filter(|l| l.contains("refused its kept answer"))
+            .filter(|l| l.contains("did not use its kept answer"))
             .map(str::to_string)
             .collect()
     };
@@ -784,7 +784,7 @@ fn a_refusal_after_boot_is_journaled_and_a_rolled_back_one_is_not() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
         lines[0].ends_with(
-            "answer refused its kept answer: kept for [\"A\"], this launch asks for [\"C\"]"
+            "answer did not use its kept answer: kept for [\"A\"], this launch asks for [\"C\"]"
         ),
         "{lines:?}"
     );
@@ -829,4 +829,26 @@ fn kept_answers_over_their_total_forget_the_longest_other() {
         "{}",
         said[0]
     );
+}
+
+/// `resource … transient` (LLP 1156.005 D4): the answer is neither shown
+/// from the store at launch nor written there, and an entry an earlier build
+/// kept is forgotten at boot.
+#[test]
+fn a_transient_resource_keeps_nothing_and_forgets_what_was_kept() {
+    let mut transient = plan(0, false);
+    transient.resources[0].transient = true;
+    let snapshot = entry(&full("A", "100", 0.), &Value::str("kept"));
+    let mut r = boot(transient, Source::default(), snapshot);
+    shows(&r, "loading");
+    assert_eq!(r.store.kept(&kept::kept_name("answer")), None);
+    // The one write is the boot's forgetting.
+    let forgotten = answer_writes(&r);
+    r.data.ready = true;
+    r.data.value = Value::str("fresh");
+    r.data_ready().unwrap();
+    shows(&r, "fresh");
+    r.act("minute", vec![Value::str("200")]).unwrap();
+    assert_eq!(answer_writes(&r), forgotten);
+    assert_eq!(r.store.kept(&kept::kept_name("answer")), None);
 }

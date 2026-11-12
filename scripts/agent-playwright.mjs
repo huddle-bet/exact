@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentPage, backLayer, builtSettingLines, chromium, launchFacts, listenOn, netOptions, refuseStale, staleError, warnStale, webChanges, withEpoch, withFaults } from './agent-launch.mjs';
 import { deliverClipboard, pasteChord } from './agent-keys.mjs';
-import { pageAim } from './agent-aim.mjs';
+import { pageAim, pageOutside } from './agent-aim.mjs';
 import { builtAppMatches, jsTargetBuild, serveBuildTree, serveStatic } from '../host/web/serve.mjs'; import { bootedGeneration, leaseGeneration } from '../host/web/generations.mjs';
 import { resolveApp, webBuildCommand, webDist as defaultWebDist } from './app.mjs';
 
@@ -68,10 +68,10 @@ async function assertDist(dist, app) {
 }
 
 async function files({ plan, pageURL, app, webDist, port, env }) {
-  const selected = resolveApp(app), dist = resolve(webDist ?? defaultWebDist());
+  const selected = resolveApp(app), dist = resolve(webDist ?? defaultWebDist(selected));
   if (!pageURL) {
     await assertDist(dist, selected);
-    const js = jsTargetBuild(dist), env = process.env.EXACT_APP_DIR || webDist || process.env.EXACT_WEB_DIST ? `EXACT_APP_DIR=${selected.dir} EXACT_WEB_DIST=${dist} ` : '';
+    const js = jsTargetBuild(dist), env = selected.outside || webDist || process.env.EXACT_WEB_DIST ? `EXACT_APP_DIR=${selected.dir} EXACT_WEB_DIST=${dist} ` : '';
     const command = webBuildCommand(selected, dist, js ? '' : ' --wasm', `${env}bun host/web/build.mjs ${selected.crate('web')}${js ? '' : ' --wasm'}`), changed = webChanges(dist, selected);
     refuseStale('web', resolve(dist, '.exact-build.json'), changed.app, command);
     warnStale('web', resolve(dist, '.exact-build.json'), changed.shared, `if they matter, run ${command}`);
@@ -118,6 +118,12 @@ async function waitForBoot(page, why = 'the page never booted') {
   return Number(await page.locator('#exact-root').getAttribute('data-boot-ms'));
 }
 
+/** Keep Back and Forward entries when a reload changes launch parameters (LLP 1038 D7). */
+export async function reloadPlaywrightPage(page, destination) {
+  await page.evaluate(url => history.replaceState(history.state, '', url), destination);
+  await page.reload({ waitUntil: 'commit' });
+}
+
 // A key by its `key` name or its code, on every target (as scripts/agent.mjs `cdpKey`).
 const keyName = (code) => {
   if (code.length === 1) return code;
@@ -141,7 +147,7 @@ export const chordKeys = (chord) => {
 
 /** Hold a chord (`Shift`, `Shift+Meta`) around `act` and release it in
  * reverse, including when `act` throws. Playwright's mouse has no modifier
- * field; the keys are what make `shiftKey` true. */
+ * field; the keys are what make `shiftKey` true (drums R13). */
 export async function withHeldKeys(keyboard, held, act) {
   const names = String(held ?? '').split('+').filter(Boolean);
   for (const key of names) await keyboard.down(key);
@@ -152,7 +158,7 @@ export async function withHeldKeys(keyboard, held, act) {
 /** A key focuses its target when the target can take it. A button, a link, a
  * world and a held key require that (Chrome's `browserKey` throws otherwise).
  * Any other key leaves the focus where it is and still presses
- * (docs/contract-for-agents.md). */
+ * (drums R13; docs/contract-for-agents.md). */
 export async function focusForKey(id, required, focus) {
   const result = await focus(id);
   if (required && !result?.ok) throw new Error(result?.error ?? `view ${id} could not take focus`);
@@ -160,7 +166,7 @@ export async function focusForKey(id, required, focus) {
 
 /** Mouse phases. `mouse` is named on down only; later phases keep that button.
  * A touch phase is refused: Playwright has no trusted touch stream, and a
- * synthetic one is not the same input. */
+ * synthetic one is not the same input (drums R13). */
 export function playwrightPointer({ name, move, down, up, wait }) {
   let contact = null;
   const refused = (kind) => new Error(`${name} ${kind} unsupported: Playwright cannot produce trusted phased touches; synthetic dispatchEvent input is not equal input`);
@@ -226,7 +232,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
   const hosted = await files({ plan, pageURL, app, webDist, port, env });
   let browserServer, browser, context, page, poolKey;
   // Only Chrome keeps a named store's profile between drives (agent.mjs `openWeb`); here it is this drive's own.
-  const hostLines = [...pageURL ? [] : builtSettingLines(resolve(webDist ?? defaultWebDist())), ...storage === undefined ? [] : [`${name}: --storage ${storage} is this drive's own profile, emptied when it ends; Chrome keeps a store between drives`]];
+  const hostLines = [...pageURL ? [] : builtSettingLines(resolve(webDist ?? defaultWebDist(resolveApp(app)))), ...storage === undefined ? [] : [`${name}: --storage ${storage} is this drive's own profile, emptied when it ends; Chrome keeps a store between drives`]];
   // Why a page never booted: its last 20 lines when the wait gave up, as a hangup's report (agent-wire.mjs).
   const neverBooted = what => () => `${what}; ${hostLines.slice(-20).join('\n')}`;
   const closeFiles = () => {
@@ -302,7 +308,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
         await dialog.dismiss(); await frame();
         return { closed: false, kept: 'a `beforeunload` called `preventDefault()`: the browser asked to leave, answered "Stay"', delivery: 'browser-window', native: 'page.close' };
       }
-      if (req.op === 'tap' && req.back !== undefined) { const r = await backLayer(req, { evaluate, escape: () => page.keyboard.press('Escape'), frame }); if (r) return r; } // an open dialog's Escape, else the page's Back
+      if (req.op === 'tap' && req.back !== undefined) { const r = await backLayer(req, { evaluate, escape: () => page.keyboard.press('Escape'), frame }); if (r) return r; } // an open dialog's Escape, else the page's Back (LLP 1116.006 D4)
       if (req.op === 'clock' && await page.evaluate(() => typeof ImageDecoder === 'undefined' && [...document.images].some(i => /\.(gif|webp)(?:[?#]|$)/i.test(i.currentSrc || i.src)))) throw new Error(`${name} clock refuses: this engine has no ImageDecoder, so an animated GIF/WebP would run on wall time`);
       return JSON.parse(await page.evaluate(req => globalThis.exact.agentSettled(req).then(JSON.stringify), req));
     };
@@ -329,7 +335,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
       const release = async () => { await up(); heldKeys.delete(opts.key); await frame(); return reply('up'); };
       try {
         for (const phase of opts.phase == null ? ['down', 'up'] : [opts.phase]) {
-          // A repeat presses the held key again, which Playwright reports as `repeat`.
+          // A repeat presses the held key again, which Playwright reports as `repeat` (#140).
           if (phase === 'down') { for (const key of opts.repeat ? keys.slice(-1) : keys) await page.keyboard.down(key); heldKeys.set(opts.key, keys); }
           else { await up(); heldKeys.delete(opts.key); }
         }
@@ -347,14 +353,18 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
     const carrier = {
       host: 'web', browser: name, phasedTouch: false, boot, hostLines, evaluate, launchFacts: facts,
       async gpuMs() { const ms = await page.locator('#exact-root').getAttribute('data-gpu-ms'); return ms == null ? null : Number(ms); },
-      /** A fresh document on this page: its origin's storage emptied, or `keep`ing it (a test's `reload`). */
+      /** A fresh document on this page: its origin's storage emptied, or `keep`ing it (a test's `reload`, mail F19). */
       async reset({ keep = false, failFetch, epoch } = {}) {
         await pointer.release();
         for (const keys of heldKeys.values()) for (const key of [...keys].reverse()) await page.keyboard.up(key).catch(() => {});
         heldKeys.clear();
         await page.evaluate(async (keep) => { sessionStorage.clear(); if (keep) return; localStorage.clear(); await Promise.all((await indexedDB.databases?.() ?? []).map(x => x.name && new Promise(ok => { const r = indexedDB.deleteDatabase(x.name); r.onsuccess = r.onerror = r.onblocked = ok; }))); }, keep);
         if (!keep) await context.clearCookies();
-        hostLines.length = 0; await page.goto(withEpoch(withFaults(keep ? page.url() : address.href, failFetch), epoch), { waitUntil: 'commit' }); this.boot = await waitForBoot(page, neverBooted('the reused page never booted'));
+        const destination = withEpoch(withFaults(keep ? page.url() : address.href, failFetch), epoch);
+        hostLines.length = 0;
+        if (keep) await reloadPlaywrightPage(page, destination);
+        else await page.goto(destination, { waitUntil: 'commit' });
+        this.boot = await waitForBoot(page, neverBooted('the reused page never booted'));
       },
       ask,
       async reveal(id) { const r = await ask({ op: 'reveal', id }); if (r.scrolled) await frame(); return r; },
@@ -365,7 +375,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
         Object.assign(emulated, media);
         const options = { colorScheme: emulated['prefers-color-scheme'], reducedMotion: emulated['prefers-reduced-motion'], contrast: emulated['prefers-contrast'] };
         if (Object.keys(options).length) { await page.emulateMedia(options); await frame(); }
-        const hasMode = Object.keys(mode).length > 0; // the page's own `setMode`s, as the Chrome carrier sends them
+        const hasMode = Object.keys(mode).length > 0; // @ref LLP 1121 D13 — the page's own `setMode`s, as the Chrome carrier sends them
         const pageReply = Object.keys(pageFacts).length || hasMode ? await ask({ op: 'prefer', ...(Object.keys(pageFacts).length ? { page: pageFacts } : {}), ...(hasMode ? { mode } : {}) }) : null;
         if (pageReply?.error) throw new Error(pageReply.error);
         if (pageReply) await frame();
@@ -380,7 +390,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
       },
       async input(id, kind, opts) {
         if (kind === 'history') { const reply = await ask({ op: 'tap', id, history: opts.history }); if (reply.error) throw new Error(reply.error); await frame(); return reply; }
-        // The handler the browser would call, through the media glue's `act`, as the
+        // @ref LLP 1098 D10 — the handler the browser would call, through the media glue's `act`, as the
         // Chrome carrier delivers it: no box is needed (an `audio` without controls has none).
         if (kind === 'mediasession') { const r = await page.evaluate(([id, action, seconds]) => globalThis.exact?.mediaSession?.act(id, action, seconds) ?? { error: 'mediasession: this page publishes no media session (no media glue)' }, [id, opts.mediaSession, opts.seconds ?? null]); MalformedOperation.reply(r); if (r.error) throw new Error(r.error); await frame(); return r; }
         const box = id == null ? null : (await ask({ op: 'layout' })).nodes.find(n => n.id === id);
@@ -395,10 +405,11 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
         }
         if (kind === 'key' && (opts.phase != null || await page.evaluate(id => globalThis.exact.gpu?.wantsInput(id) || globalThis.exact.views.get(id)?.matches('button, a[href], [role="button"], [role="link"]') || false, id))) return browserKey(id, opts, true);
         if (id != null && ['press', 'contextmenu', 'dblclick'].includes(kind)) {
-          const why = await page.evaluate(({ id, x, y }) => { const view = globalThis.exact.views.get(id), el = globalThis.exact.backButton?.(view) ?? view, hit = (el?.getRootNode() ?? document).elementFromPoint(x, y); return !el ? null : !hit ? 'its middle is outside the viewport; scroll it into view first' : el === hit || el.contains(hit) || hit.contains(el) ? null : `${hit.dataset?.view ? `node #${hit.dataset.view}` : hit.tagName.toLowerCase()} covers its middle`; }, { id, x, y });
+          let why = await page.evaluate(({ id, x, y }) => { const view = globalThis.exact.views.get(id), el = globalThis.exact.backButton?.(view) ?? view, hit = (el?.getRootNode() ?? document).elementFromPoint(x, y); return !el ? null : !hit ? 'outside' : el === hit || el.contains(hit) || hit.contains(el) ? null : `${hit.dataset?.view ? `node #${hit.dataset.view}` : hit.tagName.toLowerCase()} covers its middle`; }, { id, x, y });
+          if (why === 'outside') why = await page.evaluate(pageOutside, { id });
           if (why) throw new Error(`tap #${id} at (${x}, ${y}): ${why}`);
         }
-        // A plain press presses what it names: beside a control its middle holds, or refused (agent-aim.mjs).
+        // A plain press presses what it names (LLP 1012 §1): beside a control its middle holds, or refused (agent-aim.mjs).
         let avoided;
         if (kind === 'press' && id != null && !point && opts.x == null && opts.y == null && opts.selector == null) {
           const aim = await page.evaluate(pageAim, { id, x, y });
@@ -479,7 +490,7 @@ export async function openPlaywrightWeb({ browser: name, plan, world, size, url:
         return { at: kind === 'wheel' ? deliveredAt : [x, y], ...(avoided ? { avoided } : {}) };
       },
       async screenshot(path, window = false, film = false) {
-        if (!film) await ask({ op: 'picture' }); // a transition under way is shown where it ends, unless filmed
+        if (!film) await ask({ op: 'picture' }); // a transition under way is shown where it ends, unless filmed (LLP 1116.003 D8)
         await frame();
         const pending = await page.evaluate(async () => { const on = i => { const b = i.getBoundingClientRect(); return b.bottom > 0 && b.right > 0 && b.top < innerHeight && b.left < innerWidth; }; const left = () => [...document.images].filter(i => !i.complete && on(i)); const end = performance.now() + 3000; while (left().length && performance.now() < end) await new Promise(r => setTimeout(r, 25)); await globalThis.exact.imageFrames?.(); return left().length; });
         await frame(); await page.screenshot({ path, type: 'png' });

@@ -13,14 +13,14 @@ use exact_kernel::NodeFacts;
 /// its content's, as a replaced box's is, unless a height row bounds it; an
 /// absolutely positioned one is its natural size whatever its insets. Chrome
 /// sizes it as a `<canvas>` everywhere but a flex row's automatic minimum
-/// width, which would need the parent's direction.
+/// width, which would need the parent's direction (LLP 1001 §1).
 pub(super) fn canvas_css(node: &NodeFacts<'_>, parent: Option<&NodeFacts<'_>>, css: &mut String) {
     use exact_kernel::{Dimension, PositionType, StyleId};
     let style = &node.style;
     let given = |id: StyleId, value: Dimension| style.mask.has(id) && value != Dimension::Auto;
     let (width, height) = (
-        given(StyleId::Width, style.width),
-        given(StyleId::Height, style.height),
+        given(StyleId::Width, style.width.clone()),
+        given(StyleId::Height, style.height.clone()),
     );
     css.push_str("contain:size;");
     if !in_flow(node) || parent.is_none_or(|p| !aligns(p)) {
@@ -32,12 +32,14 @@ pub(super) fn canvas_css(node: &NodeFacts<'_>, parent: Option<&NodeFacts<'_>>, c
     if style.rare.aspect_ratio.defers_to_natural() {
         css.push_str("aspect-ratio:auto 2/1;");
     }
-    if !given(StyleId::MinHeight, style.min_height) {
-        css.push_str(if height || given(StyleId::MaxHeight, style.max_height) {
-            "min-height:0;"
-        } else {
-            "min-height:min-content;"
-        });
+    if !given(StyleId::MinHeight, style.min_height.clone()) {
+        css.push_str(
+            if height || given(StyleId::MaxHeight, style.max_height.clone()) {
+                "min-height:0;"
+            } else {
+                "min-height:min-content;"
+            },
+        );
     }
     if style.position_type == PositionType::Absolute {
         if !width {

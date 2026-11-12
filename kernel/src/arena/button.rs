@@ -1,4 +1,4 @@
-//! Semantic button faces, shared by host queries and layout.
+//! Semantic button faces, shared by host queries and layout. LLP 1069.011.001 D1–D3.
 use super::*;
 use crate::{ButtonFaceStyle, ButtonImagePlacement, ControlKind, PressFace};
 
@@ -7,7 +7,8 @@ pub(crate) struct ButtonInputs {
     env: crate::Env,
     neutral_tab_root: Option<f32>,
     neutral_role_floor: bool,
-    /// A list row's inset, which the face's padding takes.
+    segment: Option<crate::SegmentPlace>,
+    /// A list row's inset (LLP 1138), which the face's padding takes.
     row_inset: Option<[f32; 2]>,
     nodes: Vec<ButtonNode>,
 }
@@ -30,6 +31,7 @@ impl ButtonInputs {
         if self.env != *arena.env()
             || self.neutral_tab_root != arena.neutral_tab_root(slot)
             || self.neutral_role_floor != arena.neutral_role_floor(slot)
+            || self.segment != arena.segment_place(slot)
             || self.row_inset != crate::rows::row_inset(arena, slot)
         {
             return false;
@@ -143,7 +145,12 @@ impl NodeArena {
                         let mut runs = Vec::new();
                         self.text_runs(child, &mut runs);
                         let text: String = runs.iter().map(|r| &*r.text).collect();
-                        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let white_space = self
+                            .computed_source(child, StyleId::WhiteSpace)
+                            .white_space
+                            .model();
+                        let text = exact_textflow::collapse(&[text.as_str()], white_space)
+                            .map_or(text, |collapsed| collapsed.runs.concat());
                         let text = (!text.is_empty()).then_some(text);
                         if texts == 1 {
                             face.title = text;
@@ -194,6 +201,7 @@ impl NodeArena {
             env: self.env.clone(),
             neutral_tab_root: self.neutral_tab_root(slot),
             neutral_role_floor: self.neutral_role_floor(slot),
+            segment: self.segment_place(slot),
             row_inset: crate::rows::row_inset(self, slot),
             nodes: self
                 .subtree(slot)
@@ -235,7 +243,8 @@ impl NodeArena {
             let mut style = self.computed_rows(at, title_mask);
             // Non-inheriting rows (line-clamp) also map from button to title.
             for &row in TITLE_ROWS {
-                // A text style the title names gives its own.
+                // A text style the title names gives its own (LLP 1115.000
+                // D12.2).
                 if !self.style(at).mask.has(row)
                     && own.mask.has(row)
                     && self.text_style_source(at, row).is_none()
@@ -246,14 +255,14 @@ impl NodeArena {
                 }
             }
             style.mask = own.mask.union(self.style(at).mask).intersect(title_mask);
-            // A text style's weight and leading are the
+            // A text style's weight and leading (LLP 1115.000 D12.2) are the
             // title's as much as its own rows are.
             for row in [StyleId::FontWeight, StyleId::LineHeight] {
                 if title_mask.has(row) && self.text_style_source(at, row).is_some() {
                     style.mask.set(row);
                 }
             }
-            // Bold Text's step on the weight the title
+            // Bold Text's step (LLP 1115.000 D12.3) on the weight the title
             // has, the button's included, said so the host paints it.
             if self.bold_text {
                 let family = self.computed_source(at, StyleId::FontFamily).font_family;
@@ -311,7 +320,7 @@ impl NodeArena {
             StyleId::ColumnGap,
             StyleId::FlexDirection,
         ]));
-        // A list's row inset is the padding the host measures and
+        // A list's row inset (LLP 1138) is the padding the host measures and
         // places the title by, at an end its author wrote none of.
         if let Some([left, right]) = crate::rows::row_inset(self, slot) {
             for (id, length) in [(StyleId::PaddingLeft, left), (StyleId::PaddingRight, right)] {
@@ -347,6 +356,7 @@ impl NodeArena {
             symbol,
             button,
             image_gap: own.mask.has(gap_row).then_some(gap),
+            segment: self.segment_place(slot),
         })
     }
 }

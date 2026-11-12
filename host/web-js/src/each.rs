@@ -1,8 +1,9 @@
-//! A resource over a list: a
+//! A resource over a list (LLP 1017.000 P4c, amended 2026-11-04): a
 //! resource for each element, keyed (`each.js`), whose arguments read the
 //! element as `p0`; each shows its type's zero until it answers.
 
-use super::{type_code, zero};
+use super::pages::zero;
+use super::type_code;
 use crate::code::{self, Scope, Uses};
 use exact_plan::Plan;
 
@@ -36,4 +37,32 @@ pub(super) fn resource(
         serde_json::to_string(&type_code(plan, elem)).unwrap(),
         zero(plan, elem),
     )))
+}
+
+/// A resource's arguments as `res()` takes them: a function, with its `with`
+/// context count and its `when` (LLP 1161.002) when it has them.
+pub(super) fn arguments(
+    plan: &Plan,
+    r: &exact_plan::ResourcesRow,
+    args: &[String],
+    top: &Scope,
+    uses: &mut Uses,
+) -> Result<String, String> {
+    let mut props = Vec::new();
+    if r.context > 0 {
+        props.push(format!("context:{}", r.context));
+    }
+    if let Some(gate) = r.gate.iter().next() {
+        let g = code::expression(plan, plan.code(plan.arg(gate).expr), top, uses)
+            .map_err(|e| format!("resource {}: {e}", plan.str(r.name)))?;
+        props.push(format!("gate:()=>{g}"));
+    }
+    Ok(match props.is_empty() {
+        true => format!("()=>[{}]", args.join(",")),
+        false => format!(
+            "Object.assign(()=>[{}],{{{}}})",
+            args.join(","),
+            props.join(",")
+        ),
+    })
 }

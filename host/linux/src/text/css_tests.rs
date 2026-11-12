@@ -1,4 +1,4 @@
-//! CSS white space, `nowrap`, `pre-line`, `text-overflow`,
+//! @ref LLP 1053 §0 G4, G5 — CSS white space, `nowrap`, `pre-line`, `text-overflow`,
 //! tabular figures and inline backgrounds, with the browser as the oracle.
 use super::*;
 use exact_kernel::{StyleProps, WhiteSpace};
@@ -148,7 +148,7 @@ fn pre_line_keeps_line_feeds_wraps_and_sizes_by_forced_lines() {
 
 #[test]
 fn pre_keeps_spaces_and_tabs_and_breaks_only_at_line_feeds() {
-    // Chrome 154's widths at 16px DejaVu Sans (the
+    // @ref LLP 1053 G5 — Chrome 154's widths at 16px DejaVu Sans (the
     // pinned face, as a web font): kept spaces, trailing ones included,
     // tab stops every eight spaces from the line's start, and lines only
     // at line feeds.
@@ -191,7 +191,7 @@ fn content_ending_within_a_64th_of_a_pixel_past_the_width_fits() {
     // Blink decides fit in LayoutUnits (1/64 px), and content may end one
     // unit past the available width: Chrome keeps a message line it measures
     // at exactly 200.00 px on one line where the float advances sum a few
-    // thousandths over.
+    // thousandths over (LLP 1085.000 host parity).
     let mut e = engine(INTER, "Inter");
     let s = spec("fits within a unit", WhiteSpace::Normal);
     let full = e
@@ -209,7 +209,7 @@ fn content_ending_within_a_64th_of_a_pixel_past_the_width_fits() {
 fn pre_wrap_min_content_hangs_a_tab_that_ends_a_segment() {
     // Chrome hangs a preserved tab at a line's end under `pre-wrap`, as it
     // hangs a space: "\tend\t" is as narrow as "end" (28.77 px in Chrome's
-    // Noto Sans at 16 px).
+    // Noto Sans at 16 px; LLP 1085.000 host parity).
     let mut e = engine(INTER, "Inter");
     let end = e.measure(&spec("end", WhiteSpace::PreWrap), AxisOffer::MaxContent);
     let tabs = spec("\tend\t", WhiteSpace::PreWrap);
@@ -315,8 +315,8 @@ fn a_clamped_line_keeps_its_alignment_and_its_ellipsis_follows_it() {
 
 #[test]
 fn an_ltr_line_of_rtl_text_is_cut_at_its_right_end() {
-    // Under `ltr` the first strong character sets the bidi base,
-    // but "…" takes the line box's CSS end edge, as in Chrome: Hebrew
+    // Under `ltr` the first strong character sets the bidi base (LLP 1001
+    // §1), but "…" takes the line box's CSS end edge, as in Chrome: Hebrew
     // in an `ltr` box starts at the left with its logical end, and its
     // logical start is cut at the right.
     let mut e = engine(DEJAVU, "DejaVu Sans");
@@ -388,6 +388,71 @@ fn font_variant_ligatures_turns_the_faces_ligatures_off() {
     assert!(!Rc::ptr_eq(&e.paragraph(&a, None), &e.paragraph(&b, None)));
 }
 
+fn featured(
+    e: &mut TextEngine,
+    text: &str,
+    numeric: u8,
+    ligatures: &str,
+    settings: &str,
+) -> Vec<u32> {
+    let mut s = spec(text, WhiteSpace::Normal);
+    s.runs[0].font_variant_numeric = numeric;
+    s.runs[0].font_variant_ligatures = exact_kernel::FontVariantLigatures::bits(ligatures).unwrap();
+    s.runs[0].font_features = exact_kernel::style::FontFeatures::parse(settings).unwrap();
+    let p = e.paragraph(&s, None);
+    p.layout_runs()
+        .flat_map(|r| r.glyphs.iter().map(|g| g.glyph_id).collect::<Vec<_>>())
+        .collect()
+}
+
+/// CSS Fonts 4 §6.12: `font-feature-settings` turns the face's features on
+/// by tag, after `font-variant-numeric` and `font-variant-ligatures`, and
+/// wins for a feature either names (§7.2).
+#[test]
+fn font_feature_settings_set_the_faces_features_and_win() {
+    let mut e = engine(INTER, "Inter");
+    // Inter's `cv05` gives `l` a tail, `cv08` gives `I` serifs, `zero` slashes 0.
+    let plain = featured(&mut e, "Il1 0", 0, "normal", "normal");
+    let set = featured(
+        &mut e,
+        "Il1 0",
+        0,
+        "normal",
+        r#""cv05", "cv08" 1, "zero" on"#,
+    );
+    assert_eq!(plain.len(), set.len());
+    assert_ne!(set[0], plain[0], "I takes cv08's form");
+    assert_ne!(set[1], plain[1], "l takes cv05's form");
+    assert_eq!(set[2], plain[2], "1 has no form in these features");
+    assert_ne!(set[4], plain[4], "0 is slashed");
+    assert_eq!(featured(&mut e, "Il1 0", 0, "normal", r#""cv05" 0"#), plain);
+    // `tnum` set by `tabular-nums` and turned off by the settings: the
+    // settings win, so the figures are proportional again.
+    let width = |e: &mut TextEngine, text: &str, settings: &str| {
+        let mut s = spec(text, WhiteSpace::Normal);
+        s.runs[0].font_variant_numeric = 1;
+        s.runs[0].font_features = exact_kernel::style::FontFeatures::parse(settings).unwrap();
+        e.measure(&s, AxisOffer::MaxContent).width
+    };
+    assert_eq!(
+        width(&mut e, "111", "normal"),
+        width(&mut e, "888", "normal")
+    );
+    assert!(width(&mut e, "111", r#""tnum" 0"#) < width(&mut e, "888", r#""tnum" 0"#));
+    // `common-ligatures` turned off by `"liga" 0`, on DejaVu, which joins fi.
+    let mut e = engine(DEJAVU, "DejaVu Sans");
+    assert!(featured(&mut e, "fi", 0, "common-ligatures", "normal").len() < 2);
+    assert_eq!(
+        featured(&mut e, "fi", 0, "common-ligatures", r#""liga" 0, "clig" 0"#).len(),
+        2
+    );
+    // A distinct shape identity: the cache never answers one with the other.
+    let a = spec("Il1", WhiteSpace::Normal);
+    let mut b = a.clone();
+    b.runs[0].font_features = exact_kernel::style::FontFeatures::parse(r#""cv05""#).unwrap();
+    assert!(!Rc::ptr_eq(&e.paragraph(&a, None), &e.paragraph(&b, None)));
+}
+
 #[test]
 fn tabular_nums_is_a_distinct_shape_identity() {
     let mut e = engine(INTER, "Inter");
@@ -447,7 +512,7 @@ fn document_language_replaces_the_shaping_catalog_and_cached_paragraphs() {
     assert_eq!(shared.borrow().catalog.borrow().locale, "en");
 }
 
-/// Book typography: a line broken at a soft hyphen shows one (the face's
+/// The reader diary: a line broken at a soft hyphen shows one (the face's
 /// own `-`, its advance part of the line), as Chrome does, and breaks there
 /// only if the hyphen fits too; one not chosen stays invisible.
 #[test]
@@ -549,7 +614,7 @@ fn text_indent_insets_the_first_line_only() {
     );
 }
 
-/// A Markdown list item's lines all start at its level's
+/// LLP 1045 D4: a Markdown list item's lines all start at its level's
 /// indent (the browser's `padding-inline-start: 40px` per `<ul>`/`<ol>`),
 /// its marker hung before the first, ending at the indent, so ordered
 /// numbers right-align as the browser's outside markers do; the measured
@@ -630,8 +695,8 @@ fn a_markdown_list_items_lines_start_at_its_indent() {
 fn a_common_character_after_a_cjk_bracket_is_shaped_in_the_brackets_run() {
     // Chrome itemizes a Common character by its Script_Extensions: `「`
     // (Han, Kana, …) after Latin starts a run that `“` joins, so `“` is not
-    // kerned with the Latin letter after it (without
-    // this the mixed paragraph's max-content is 0.97 px narrow). Inter kerns `“A`.
+    // kerned with the Latin letter after it (LLP 1085.000 host parity: the
+    // mixed paragraph's max-content was 0.97 px narrow). Inter kerns `“A`.
     let mut e = engine(INTER, "Inter");
     let quote = |e: &mut TextEngine, t: &str| {
         let p = e.paragraph(&spec(t, WhiteSpace::Normal), None);

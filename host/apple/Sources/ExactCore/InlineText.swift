@@ -1,4 +1,4 @@
-// Textual descendants are paragraph values.
+// @ref LLP 1044.000 §6 S1 — textual descendants are paragraph values.
 import Foundation
 import CoreText
 
@@ -18,28 +18,31 @@ package struct InlineText {
 
     package let handlers: Set<String>
     package let paints: Bool
+    /// Its presented `opacity` times its enclosing runs': it has no layer,
+    /// so its paint is drawn at this alpha (CSS Color 3 §3.2).
+    package let opacity: Double
     /// CSS `user-select: all` on the run: a selection that takes part of its
     /// text takes all of it (`TextSelection.atom`).
     package let selectsAll: Bool
-    /// CSS `outline: none` on the run: a focused link or
+    /// CSS `outline: none` on the run (LLP 1104 D6): a focused link or
     /// `tabindex` run draws no ring.
     package let outlineNone: Bool
-    /// An image's box not `visibility: hidden`: its label is
+    /// An image's box (LLP 1011.002) with `visibility: visible`: its label is
     /// read. The box itself draws no ink either way.
     package let boxShown: Bool
-    /// Its computed `visibility: hidden`: its text is no target
+    /// Its computed `visibility` is not `visible`: its text is no target
     /// (`inlineTarget`), though it hears a visible run's click inside it.
     package var hidden: Bool { lightRun.hidden }
     package var range: NSRange = NSRange(location: 0, length: 0)
 
     package init(id: UInt32, parent: UInt32, props: [String: String], style: InlineStyle,
-         handlers: Set<String>, paints: Bool) {
+         handlers: Set<String>, paints: Bool, opacity: Double = 1) {
         self.id = id; self.parent = parent; self.props = props
         var value = style.run
         value.text = props["text"] ?? ""
         if value.background != nil || style.backgroundRef != nil { value.backgroundBox = id } else { value.backgroundRadii = [] }
         value.href = props["href"] ?? ""
-        // An image in the text is its box, with no ink or paint of its own.
+        // An image in the text is its box, with no ink or paint of its own (LLP 1011.002).
         boxShown = props["inlineBoxHidden"] != "true"
         if let box = InlineBox(prop: props["inlineBox"]) {
             value.box = box; value.hidden = true
@@ -55,7 +58,7 @@ package struct InlineText {
         hasSchemeColor = style.paired || style.paint.paired
         selectsAll = style.selectsAll
         outlineNone = style.outlineNone
-        self.handlers = handlers; self.paints = paints
+        self.handlers = handlers; self.paints = paints; self.opacity = opacity
     }
 
     package var text: String { lightRun.text }
@@ -87,7 +90,7 @@ package struct InlineRadius: Hashable {
     }
     package static func == (a: InlineRadius, b: InlineRadius) -> Bool { a.px == b.px && a.pct == b.pct && a.calc == b.calc }
     package func hash(into hasher: inout Hasher) {
-        hasher.combine(px); hasher.combine(pct); hasher.combine(calc?.handle); hasher.combine(calc?.environment)
+        hasher.combine(px); hasher.combine(pct); hasher.combine(calc?.expression); hasher.combine(calc?.environment)
     }
 }
 
@@ -97,12 +100,12 @@ package struct InlineStyle {
     package var run = Run(text: "", size: 16, weight: 400, family: 0, italic: false, lineHeight: nil, letterSpacing: 0)
     package var darkColor: [Double]?
     package var darkBackground: [Double]?
-    /// A platform colour by name, resolved when the run is read.
+    /// A platform colour by name, resolved when the run is read (LLP 1095 D5).
     package var colorRef: BatchValue?
     package var backgroundRef: BatchValue?
     /// Whether `color` is one its author fixed, not a platform colour by name.
     package var fixedInk = false
-    /// `text-shadow` and `-webkit-text-stroke`, computed for the run.
+    /// `text-shadow` and `-webkit-text-stroke`, computed for the run (LLP 1077).
     package var paint = RunPaintRows()
     package var paired = false
     /// `user-select: all` (`InlineText.selectsAll`).

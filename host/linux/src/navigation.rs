@@ -1,6 +1,6 @@
-//! The browser's route visibility rule, without a view mirror.
+//! @ref LLP 1038 D6 — the browser's route visibility rule, without a view mirror.
 use exact_kernel::invocation::Action;
-use exact_kernel::{Kernel, PropId, ViewId};
+use exact_kernel::{Kernel, NodeRef, PropId, StyleId, ViewId};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const POPOVER_UNSUPPORTED: &str = "Linux does not support popover presentation";
@@ -17,7 +17,7 @@ pub(crate) fn popover_invoker(kernel: &Kernel, id: ViewId) -> bool {
             return false;
         }
         // A native button is a button: a press on it is its own, not an
-        // enclosing invoker's (it invokes no menu).
+        // enclosing invoker's (LLP 1069.011.000 D9; it invokes no menu).
         if node.node_type == exact_kernel::NodeType::Pressable
             || exact_kernel::ControlKind::of(node.node_type, node.props)
                 == Some(exact_kernel::ControlKind::Button)
@@ -39,7 +39,7 @@ fn dialog_command(action: Action) -> bool {
     matches!(action, Action::ShowModal | Action::Close)
 }
 
-/// When the root's key matches no route: the stack is left
+/// LLP 1035.001 D1, when the root's key matches no route: the stack is left
 /// alone, less the routes that have left the tree. The deepest route of the
 /// stack last shown (its keys through its selected route) that is still
 /// declared is the selected one, so a closed sheet or a popped screen never
@@ -48,20 +48,34 @@ pub fn survivor(shown: &[String], declared: impl Fn(&str) -> bool) -> Option<Str
     shown.iter().rev().find(|key| declared(key)).cloned()
 }
 
-/// Hidden and inert, respectively, for each direct route child, `sheets`
-/// saying which routes are sheets. A sheet shows what it sits over: the page
-/// (the last route beneath it that is not a sheet) and every sheet between,
+/// A full-screen route's authored background composites over the page,
+/// including while its colour animates toward transparent (Charlie, 2026-11-10).
+pub(crate) fn over_page(node: &NodeRef<'_>) -> bool {
+    match node.props.str(PropId::NavigationPresentation) {
+        Some("modal") => true,
+        Some("fullscreen") => {
+            node.style.written.has(StyleId::BackgroundColor)
+                || node.style.written.has(StyleId::BackgroundImage)
+        }
+        _ => false,
+    }
+}
+
+/// Hidden and inert, respectively, for each direct route child, `overlays`
+/// saying which routes show what they sit over: a modal or a full-screen
+/// route with an authored background. These keep the page (the last route
+/// beneath them that is not an overlay) and every overlay between visible,
 /// as navigation.js `covered` does. An unmatched selection leaves the
 /// previously projected state alone.
 pub fn route_visibility(
     keys: &[&str],
     selected: &str,
-    sheets: &[bool],
+    overlays: &[bool],
 ) -> Option<Vec<(bool, bool)>> {
     let selected = keys.iter().position(|key| *key == selected)?;
-    let sheet = |i: usize| sheets.get(i).copied().unwrap_or(false);
-    let page = (0..selected).rev().find(|i| !sheet(*i)).unwrap_or(0);
-    let covered = |i: usize| sheet(selected) && (page..selected).contains(&i);
+    let overlay = |i: usize| overlays.get(i).copied().unwrap_or(false);
+    let page = (0..selected).rev().find(|i| !overlay(*i)).unwrap_or(0);
+    let covered = |i: usize| overlay(selected) && (page..selected).contains(&i);
     Some(
         (0..keys.len())
             .map(|index| {
@@ -72,8 +86,8 @@ pub fn route_visibility(
     )
 }
 
-/// A navigation root's stacks: with tabs (the kernel's
-/// rule, which every host with a tab bar reads) each
+/// A navigation root's stacks (LLP 1075.003 §3.7): with tabs (the kernel's
+/// rule, which every host with a tab bar reads, LLP 1115.001 D11) each
 /// panel is one, its children that carry a `navigationKey`; with none, the
 /// root's own such children are the one stack.
 pub(crate) fn stacks(
@@ -103,21 +117,22 @@ pub(crate) fn stacks(
 pub(crate) struct Navigation {
     pub(crate) split: crate::presenter::split::State,
     routes: BTreeMap<ViewId, (bool, bool)>,
-    /// The tabpanels a root last hid or showed: one it stops naming shows again.
-    panels: BTreeSet<ViewId>,
+    /// Tabpanels and tablists last projected: one no longer owned by a root is released.
+    tab_containers: BTreeSet<ViewId>,
     refused: BTreeMap<ViewId, String>,
     /// Each root's stack as last shown, its keys through its selected route.
     shown: BTreeMap<ViewId, Vec<String>>,
-    /// The first root's stack as its key last named it: its routes through the
-    /// selected one. What the focus follows (`presenter/arrive.rs`); a key that
-    /// matches no route leaves it as it was.
+    /// The first root's stack as its key last named it: its routes through
+    /// the selected one. What the focus follows (`presenter/arrive.rs`; LLP
+    /// 1115.000 D4.2); a key that matches no route leaves it as it was.
     pub(crate) stack: Option<Vec<ViewId>>,
     popovers: bool,
     pub(crate) shown_popover: Option<ViewId>,
-    /// A shell presents the top layer (Android's reader, as windows): a press on an invoker is then
-    /// the presenter's to act on (`presenter/top.rs`), not refused here.
+    /// A shell presents the top layer (LLP 1115.001 D10: Android's reader,
+    /// as windows): a press on an invoker is then the presenter's to act on
+    /// (`presenter/top.rs`), not refused here.
     pub(crate) top_layer: bool,
-    /// What a shell's bars are made from (`bars.rs`),
+    /// What a shell's bars are made from (LLP 1115.001 D11; `bars.rs`),
     /// and the nodes a bar stands for: a header its top bar replaces, a
     /// tablist its navigation bar replaces. Those are neither painted nor
     /// hit, as iOS hides the header its bar lifts.
@@ -138,7 +153,7 @@ pub struct RouteBar {
     pub shape: exact_kernel::HeaderShape<ViewId>,
 }
 
-/// The structure a shell's bars are made from, read
+/// The structure a shell's bars are made from (LLP 1115.001 D11), read
 /// from the first navigation root after each commit (`bars.rs`). Empty on a
 /// host whose shell has no bars: desktop Linux, a headless run.
 #[derive(Debug, Default)]
@@ -180,7 +195,7 @@ impl Navigation {
         self.refused.retain(|id, _| kernel.node(*id).is_some());
         self.shown.retain(|id, _| kernel.node(*id).is_some());
         let mut logs = Vec::new();
-        let before = std::mem::take(&mut self.panels);
+        let before = std::mem::take(&mut self.tab_containers);
         self.popovers = false;
         let mut first = true;
         for id in order {
@@ -192,10 +207,12 @@ impl Navigation {
                 continue;
             }
             let first = std::mem::take(&mut first);
-            // With tabs, each panel is a stack.
+            // @ref LLP 1075.003 §3.7 — with tabs, each panel is a stack.
             let (tabs, stacks) = stacks(kernel, *id);
-            let panels = tabs.map_or(Vec::new(), |tabs| tabs.panels);
-            self.panels.extend(panels.iter().copied());
+            let panels = tabs.as_ref().map_or(&[][..], |tabs| tabs.panels.as_slice());
+            self.tab_containers.extend(panels.iter().copied());
+            self.tab_containers
+                .extend(tabs.as_ref().map(|tabs| tabs.tablist));
             let key = |id: &ViewId| {
                 kernel
                     .node(*id)
@@ -245,32 +262,60 @@ impl Navigation {
                 };
                 if stack == at {
                     let through = keys.iter().position(|k| *k == shown).map_or(0, |i| i + 1);
+                    if let Some(tabs) = &tabs {
+                        // A sheet covers the root's tab bar too (LLP 1115.000 D4.5).
+                        let inert = matches!(
+                            kernel
+                                .node(routes[through - 1])
+                                .and_then(|n| n.props.str(PropId::NavigationPresentation)),
+                            Some("modal" | "fullscreen")
+                        );
+                        self.routes.insert(tabs.tablist, (false, inert));
+                    }
                     self.shown
                         .insert(*id, keys[..through].iter().map(|k| k.to_string()).collect());
                     if first && matched {
                         self.stack = Some(routes[..through].to_vec());
                     }
                 }
-                let sheets: Vec<bool> = routes
+                let overlays: Vec<bool> = routes
                     .iter()
-                    .map(|r| {
-                        kernel
-                            .node(*r)
-                            .and_then(|n| n.props.str(PropId::NavigationPresentation))
-                            == Some("modal")
-                    })
+                    .map(|r| kernel.node(*r).is_some_and(|n| over_page(&n)))
                     .collect();
-                if let Some(visibility) = route_visibility(&keys, shown, &sheets) {
+                if let Some(visibility) = route_visibility(&keys, shown, &overlays) {
                     for (route, state) in routes.iter().zip(visibility) {
                         self.routes.insert(*route, state);
                     }
                 }
             }
         }
-        for panel in before.difference(&self.panels) {
-            self.routes.remove(panel);
+        for container in before.difference(&self.tab_containers) {
+            self.routes.remove(container);
         }
         logs
+    }
+
+    /// Committed stacks through their selected routes, including an unmatched
+    /// selection's surviving stack. Hidden navigation roots contribute nothing.
+    pub(crate) fn shown_stacks(&self, kernel: &Kernel) -> Vec<Vec<ViewId>> {
+        self.shown
+            .iter()
+            .filter_map(|(root, keys)| {
+                if self.visibility_of(kernel, *root, false).0 {
+                    return None;
+                }
+                let (_, stacks) = stacks(kernel, *root);
+                stacks.into_iter().find_map(|stack| {
+                    let selected = keys.last()?;
+                    let last = stack.iter().position(|id| {
+                        kernel.node(*id).is_some_and(|n| {
+                            n.props.str(PropId::NavigationKey) == Some(selected.as_str())
+                        })
+                    })?;
+                    Some(stack[..=last].to_vec())
+                })
+            })
+            .collect()
     }
 
     pub fn visibility(&self, kernel: &Kernel, id: ViewId) -> (bool, bool) {
@@ -377,8 +422,8 @@ mod tests {
         assert_eq!(route_visibility(&[], "missing", &[]), None);
     }
 
-    /// A sheet over a sheet shows both the sheet beneath it and the page,
-    /// as navigation.js `covered` does; a page pushed
+    /// A sheet over a sheet shows both the sheet beneath it and the page
+    /// (LLP 1133.029 D3), as navigation.js `covered` does; a page pushed
     /// beneath the first sheet hides the route it was pushed over.
     #[test]
     fn a_sheet_over_a_sheet_shows_the_page_and_the_sheets_between() {
@@ -403,7 +448,7 @@ mod tests {
         );
     }
 
-    /// A root whose key names no route (visit "0" over a
+    /// LLP 1035.001 D1: a root whose key names no route (visit "0" over a
     /// route keyed "rooms") keeps what is left of the stack it showed: the
     /// sheet closed, the route beneath it is selected, live again.
     #[test]

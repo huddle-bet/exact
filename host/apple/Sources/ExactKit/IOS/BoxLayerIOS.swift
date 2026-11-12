@@ -16,7 +16,72 @@ import UIKit
 
 /// Every node view's layer. `display` decides whether UIKit allocates a
 /// backing store and calls `draw(_:)` at all.
+extension CALayer {
+    /// The mask its box asks for: a node's own (`NodeLayer.ownMask`), not
+    /// the empty one that hides a placed canvas child.
+    var boxMask: CALayer? { (self as? NodeLayer).map(\.ownMask) ?? mask }
+    /// Its opacity as it shows on screen: 0 for a placed canvas child, which
+    /// its surface draws and UIKit does not, as alpha 0 once said.
+    var shownOpacity: Float { (self as? NodeLayer)?.drawnElsewhere == true ? 0 : opacity }
+}
+
 final class NodeLayer: CALayer {
+    /// A canvas child its surface places and draws (LLP 1014 D5): Core
+    /// Animation draws nothing of it, its descendants and shadow included,
+    /// through an empty mask, and its opacity stays 1. Below a view at alpha
+    /// 0 UIKit stops applying its accessibility rules (the snapshot XCUITest
+    /// reads lists a leaf that is no element) and VoiceOver goes no deeper
+    /// than one that is not an element, so neither alpha 0 hides it nor an
+    /// author's `opacity: 0` (or a fade reaching it) may put it there. The
+    /// mask and opacity its writers ask for (`applyBoxMask`, its border's
+    /// clip, a filter's hide; the author's opacity, a press, a fade) are kept
+    /// aside, `ownMask` and `ownOpacity`, and are back when it is no longer
+    /// placed. The surface composites the child as captured, at opacity 1.
+    var drawnElsewhere = false {
+        didSet {
+            guard drawnElsewhere != oldValue else { return }
+            super.mask = drawnElsewhere ? CALayer() : keptMask
+            super.opacity = drawnElsewhere ? 1 : keptOpacity
+        }
+    }
+    private var keptMask: CALayer?
+    private var keptOpacity: Float = 1
+    /// The mask its writers asked for, whether or not it is drawn elsewhere.
+    var ownMask: CALayer? { drawnElsewhere ? keptMask : super.mask }
+    /// The opacity its writers asked for.
+    var ownOpacity: Float { drawnElsewhere ? keptOpacity : super.opacity }
+    override var mask: CALayer? {
+        get { super.mask }
+        set { keptMask = newValue; if !drawnElsewhere { super.mask = newValue } }
+    }
+    override var opacity: Float {
+        get { super.opacity }
+        set {
+            let was = keptOpacity
+            keptOpacity = newValue
+            if !drawnElsewhere { super.opacity = newValue }
+            if !passingWrites, (was < 0.01) != (newValue < 0.01) { (delegate as? NodeView)?.transparencyChanged() }
+        }
+    }
+    private var passingWrites = false
+    /// `body`'s writes to the layer's opacity as passing ones, put back by
+    /// the time it returns (a capture's or a filter's raise to 1): none asks
+    /// its canvas to list its children again, as an author's change does
+    /// (`transparencyChanged`), which would capture again, and again.
+    func passing(_ body: () -> Void) {
+        let was = passingWrites
+        passingWrites = true
+        body()
+        passingWrites = was
+    }
+    /// `body` with the layer as its writers asked for it: a render of the
+    /// child itself (its capture, its filter's input), not of the screen.
+    func asAsked(_ body: () -> Void) {
+        guard drawnElsewhere else { body(); return }
+        drawnElsewhere = false
+        body()
+        drawnElsewhere = true
+    }
     override func display() {
         guard let node = delegate as? NodeView else { super.display(); return }
         node.applyBoxLayer()
@@ -26,7 +91,9 @@ final class NodeLayer: CALayer {
         if node.drawsPaint { super.display(); return }
         contents = nil
         if node.isParagraph {
-            // Text's pixels are the raster layer's; this one keeps none.
+            // Text's pixels are the raster layer's; this one keeps none, and
+            // the Numerals capability, which drew it on one line, lets go.
+            if node.hasContentTransition { NumeralLink.installed?.hide(node) }
             node.presenter?.textRasters.ensure(node, urgent: node.presenter?.textIsVisible(node) == true)
             if node.textRasterFailed { super.display(); return }
         }
@@ -68,7 +135,7 @@ extension NodeView {
     /// rounded the bitmap’s pixel dimensions. The clip carries a radius only
     /// when it is the whole content and border box, or no corner is rounded.
     ///
-    /// A `-exact-tint-color` draws: a mask layer would say it, but a
+    /// A `-exact-tint-color` draws (LLP 1011 §4): a mask layer would say it, but a
     /// canvas's capture (`render(in:)`) drops masks and would show the tint's
     /// whole rectangle, so the template is `draw(_:)`'s, from the same pixels.
     func applyImageLayer() {
@@ -76,7 +143,7 @@ extension NodeView {
             imageLayer?.removeFromSuperlayer(); imageLayer = nil; return
         }
         if let look = flightLook {
-            // Flying: the whole image where the flight
+            // Flying (LLP 1013.000 D4): the whole image where the flight
             // puts it; the view's own bounds and radius clip it.
             CATransaction.begin(); CATransaction.setDisableActions(true)
             defer { CATransaction.commit() }
@@ -102,7 +169,7 @@ extension NodeView {
         let radius = radii.max() ?? 0
         let oneRadius = cornerSizes(in: bounds).allSatisfy { abs($0.width - $0.height) < 0.01 } && radii.allSatisfy { $0 == 0 || abs($0 - radius) < 0.01 }
             && radius <= min(bounds.width, bounds.height) / 2 + 0.01
-        // A shape the layer's radius cannot say draws.
+        // A shape the layer's radius cannot say draws (LLP 1077 D1).
         let shape = CornerShape(style["corner_shape"])
         // The content box is the whole box: no border or padding. Laid out,
         // not drawn: the drawn bounds are on the pixel grid, and an image
@@ -153,7 +220,7 @@ extension NodeView {
         if !l.masksToBounds { l.masksToBounds = true }
     }
 
-    /// A `background-image` gradient as a sublayer under
+    /// A `background-image` gradient (LLP 1066) as a sublayer under
     /// everything else the layer holds — over the box's fill, under its
     /// border and children — clipped to its corners. A view that paints through
     /// `draw(_:)` paints the gradient there instead, in the same place —
@@ -191,7 +258,7 @@ extension NodeView {
         if fixed { presenter?.fixedGradients.add(self) } else { presenter?.fixedGradients.remove(self) }
     }
 
-    /// `background-attachment: fixed` on iOS is always the
+    /// `background-attachment: fixed` (LLP 1066 D7) on iOS is always the
     /// gradient layer: anything above the node scrolling re-aims it
     /// (`reaimFixedGradient`), a few points set on a layer, where a drawn
     /// gradient would repaint the box every frame. Over a box painted by
@@ -257,7 +324,7 @@ extension NodeView {
         let oneRadius = cornerSizes(in: bounds).allSatisfy { abs($0.width - $0.height) < 0.01 } && radii.allSatisfy { $0 == 0 || abs($0 - radius) < 0.01 }
             && radius <= min(bounds.width, bounds.height) / 2 + 0.01
         let gradient = style["background_image"] != nil
-        // A `corner-shape` the layer cannot say draws; Apple's
+        // A `corner-shape` the layer cannot say draws (LLP 1077 D1); Apple's
         // continuous curve over one radius is the layer's `cornerCurve`.
         let shape = CornerShape(style["corner_shape"])
         let continuous = shape?.isAppleContinuous == true && oneRadius
@@ -299,7 +366,7 @@ extension NodeView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
         if let box = clipBox {
-            box.layer.cornerRadius = cornerRadius
+            box.layer.cornerRadius = clipsOneAxis ? 0 : cornerRadius
             box.layer.maskedCorners = corners
             box.layer.cornerCurve = curve
         }
@@ -309,7 +376,7 @@ extension NodeView {
         applyCornerFill(shapedRadii ? bg : nil)
         let layerFill = shapedRadii ? nil : bg
         if layer.backgroundColor != layerFill { layer.backgroundColor = layerFill }
-        // A flight interpolates the radius itself.
+        // A flight interpolates the radius itself (LLP 1013.000 D4).
         if flightLook == nil, layer.cornerRadius != cornerRadius { layer.cornerRadius = cornerRadius }
         if let v = vibrancyView, !isParagraph {
             v.layer.cornerRadius = cornerRadius

@@ -1,22 +1,22 @@
-// @exact/recording on Android: a track `@exact/media-capture` opened, reached
+// @exact/recording on Android (LLP 1133.009 D1, D2, D6, D8, §10): a track `@exact/media-capture` opened, reached
 // through the session's track table, recorded to a file and metered.
 //
 // - A recorder is a consumer of its stream's audio track, so it holds the track's lease while it is not `inactive`;
-//   its start is a start. A level reader is a consumer too, and never a start.
-// - `audio/mp4` (the unsaid default) is AAC from `MediaCodec` in an MP4 from `MediaMuxer`, whose index is
-//   written at `stop()`, so a take whose process ended is unreadable (the recipe says so); `audio/wav` is 16-bit
+//   its start is a start (D6). A level reader is a consumer too, and never a start.
+// - `audio/mp4` (the unsaid default, D2) is AAC from `MediaCodec` in an MP4 from `MediaMuxer`, whose index is
+//   written at `stop()`, so a take whose process ended is unreadable (D6: the recipe says so); `audio/wav` is 16-bit
 //   PCM, readable up to what was written. Where `device.microphone-background` is granted the process can outlive
 //   the screen and be stopped from the Task Manager, so the AAC goes to an ADTS part made an MP4 at stop, or at the
-//   next process's first call (Parts.kt). From API 29 `audio/ogg` and `audio/webm` are Opus, which
-//   `MediaMuxer` writes page by page, so a take whose process ended is readable up to its last page;
-//   `android.outputFormat` and `android.audioEncoder` beat the type's container and codec.
+//   next process's first call (Parts.kt, LLP 1133.033 D5). From API 29 `audio/ogg` and `audio/webm` are Opus, which
+//   `MediaMuxer` writes page by page, so a take whose process ended is readable up to its last page (D6);
+//   `android.outputFormat` and `android.audioEncoder` beat the type's container and codec (D4).
 // - Reads arrive on the capture's thread; each recorder copies what it takes and encodes on a thread of its own. A
-//   writer two seconds behind stops its recorder with `error` "the writer fell behind".
-// - An interruption, the capture policy's silencing or the background pauses a recording recorder; a track that
+//   writer two seconds behind stops its recorder with `error` "the writer fell behind" (D6).
+// - An interruption, the capture policy's silencing or the background pauses a recording recorder (D8); a track that
 //   ends stops it (`track-ended`).
-// - `audioLevel`: the RMS of each `interval`, computed on the capture's thread; an answer covers every interval
+// - `audioLevel` (D1): the RMS of each `interval`, computed on the capture's thread; an answer covers every interval
 //   since the last.
-// - Under the agent nothing records: the level is the synthetic signal on the session clock, and a stopped
+// - Under the agent (§10) nothing records: the level is the synthetic signal on the session clock, and a stopped
 //   recorder's file is WAV of a tone that follows it, answered as `audio/wav`.
 package exact.recording
 
@@ -49,7 +49,7 @@ import kotlin.math.sqrt
 
 class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
     companion object {
-        /** The synthetic signal at step [i] (one step a 50 ms of the session clock): the recorder's formula. */
+        /** The synthetic signal at step [i] (one step a 50 ms of the session clock): the recorder's formula (§10). */
         fun synthetic(i: Int): Double {
             val x = i.toDouble()
             return minOf(1.0, 0.12 + 0.75 * kotlin.math.abs(sin(x * 0.37)) * (0.55 + 0.45 * sin(x * 0.05)))
@@ -60,7 +60,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
     private val recorders = LinkedHashMap<String, Recorder>()
     private val meters = HashMap<String, Meter>()
     private var next = 0
-    /** A take may outlive the screen: the app's lines declare the `capture` service. */
+    /** A take may outlive the screen: the app's lines declare the `capture` service (LLP 1133.033 D5). */
     private val outlives = !context.agent && context.foregroundService.declared("capture", "microphone")
 
     init {
@@ -149,7 +149,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
         meters.clear()
     }
 
-    /** `<audio-waveform>`: the track's levels as bars, newest at the right, drawn each frame from a meter of its
+    /** `<audio-waveform>` (D13): the track's levels as bars, newest at the right, drawn each frame from a meter of its
      * own, so no level crosses into Contract; a reader of the track that never starts it. */
     override fun view(tag: String, session: String, id: String, context: Context, props: JSONObject, emit: (String, String) -> Unit): View {
         require(tag == "audio-waveform") { "no view $tag" }
@@ -218,6 +218,9 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
         var reason: String? = null
         var error: String? = null
         var result: JSONObject? = null
+        /** What every stop is answered once it has finished: [result], or the error that kept the file from being
+         * written. */
+        private var answer: JSONObject? = null
         var leave: (() -> Unit)? = null
         private var recorded = 0.0
         private var since: Double? = context.now()
@@ -266,7 +269,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
             }
             untap = source.tap { samples, n ->
                 if (!taking) return@tap
-                // Nothing waits here: a writer two seconds behind stops the recorder.
+                // Nothing waits here: a writer two seconds behind stops the recorder (D6).
                 if (pending.addAndGet(n) > limit) { main.post { finish("error", "the writer fell behind") {} }; return@tap }
                 val copy = samples.copyOf(n)
                 writer.post { encoder?.write(copy); pending.addAndGet(-n) }
@@ -286,7 +289,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
         override fun ended() = finish("track-ended", null) {}
 
         fun finish(why: String, failure: String?, done: (JSONObject) -> Unit) {
-            result?.let { return done(it) }
+            answer?.let { return done(it) }
             waiting += done
             if (state == "inactive") return
             recorded = duration; since = null; taking = false
@@ -296,13 +299,21 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
             announce()
             val duration = recorded
             writer.post {
-                if (context.agent) { file.parentFile?.mkdirs(); file.writeBytes(tone(spans)) }
+                val unwritten = if (!context.agent) null else try {
+                    file.parentFile?.mkdirs(); dev.exact.canvas.Files.write(file, tone(spans)); null
+                } catch (e: java.io.IOException) { "the file was not written: $e" }
                 encoder?.finish()
                 main.post {
                     leave?.invoke(); leave = null
-                    val out = JSONObject().put("path", path).put("mimeType", type).put("duration", duration).put("size", file.length())
-                    result = out
-                    context.log("recording: $id stopped ($why), $path, ${file.length()} bytes")
+                    val out = if (unwritten != null) {
+                        reason = "error"; error = unwritten
+                        context.log("recording: $id stopped ($why), $path not written: $unwritten")
+                        JSONObject().put("error", "UnknownError").put("message", unwritten)
+                    } else {
+                        context.log("recording: $id stopped ($why), $path, ${file.length()} bytes")
+                        JSONObject().put("path", path).put("mimeType", type).put("duration", duration).put("size", file.length()).also { result = it }
+                    }
+                    answer = out
                     announce()
                     waiting.forEach { it(out) }
                     waiting.clear()
@@ -428,7 +439,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
         }
     }
 
-    /** A level on one track with one argument group. */
+    /** A level on one track with one argument group (D1). */
     private inner class Meter(val interval: Double, val history: Int, var at: Double) : TrackConsumer {
         var leave: (() -> Unit)? = null
         private var untap: (() -> Unit)? = null
@@ -487,7 +498,7 @@ class RecordingModule(context: ExtensionContext) : ExactExtension(context) {
 private val TYPES = listOf("audio/mp4", "audio/wav") + if (android.os.Build.VERSION.SDK_INT >= 29) listOf("audio/ogg", "audio/webm") else emptyList()
 private val OPUS_RATES = setOf(8000, 12000, 16000, 24000, 48000)
 
-/** A take's container and codec: the type's, or the platform's words. Null for what this API cannot write. */
+/** A take's container and codec: the type's (D2), or the platform's words (D4). Null for what this API cannot write. */
 private data class Form(val container: Int, val codec: String, val profile: Int?) {
     companion object {
         val WAV = Form(-1, "audio/raw", null)
@@ -528,7 +539,7 @@ private fun header(length: Int, rate: Int): ByteArray {
     return b.array()
 }
 
-/** The agent's take: WAV at 8 kHz of a 440 Hz tone whose amplitude follows the signal over its spans. */
+/** The agent's take: WAV at 8 kHz of a 440 Hz tone whose amplitude follows the signal over its spans (§10). */
 private fun tone(spans: List<DoubleArray>, rate: Int = 8000): ByteArray {
     val samples = ArrayList<Short>()
     for (span in spans) {

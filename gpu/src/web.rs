@@ -1,5 +1,5 @@
 //! The web ABI: wasm-bindgen exports the glue calls after the module's
-//! wasm is fetched on demand.
+//! wasm is fetched on demand (LLP 1009 D2).
 
 use crate::{json, Frame, Module, Registry, SurfaceRef};
 use std::cell::RefCell;
@@ -159,7 +159,7 @@ pub fn create(name: &str, canvas: web_sys::HtmlCanvasElement, width: u32, height
     .unwrap_or(0)
 }
 
-/// Register the text of shader `name`: validated, its
+/// Register the text of shader `name` (LLP 1030 D8): validated, its
 /// interface checked against the one this module's Rust binds. `true` on
 /// success; the refusal is [`error`]'s.
 pub fn shader(name: &str, text: &str) -> bool {
@@ -213,14 +213,24 @@ pub fn shaders_clear() {
 /// — what the glue fetches (`./shaders/<name>.wgsl`) and registers before a
 /// surface is created. `[]` before the module is loaded.
 pub fn shader_names() -> String {
-    let names = with(|m| m.shader_names()).unwrap_or_default();
+    json_names(&with(|m| m.shader_names()).unwrap_or_default())
+}
+
+/// The registry's surfaces, as a JSON list of names: what the web build
+/// compiles to this module rather than to Canvas 2D. Needs no load.
+pub fn surface_names(registry: &Registry) -> String {
+    let names: Vec<&str> = registry.surfaces.iter().map(|(n, _, _)| *n).collect();
+    json_names(&names)
+}
+
+fn json_names(names: &[impl AsRef<str>]) -> String {
     let mut s = String::from("[");
     for (i, n) in names.iter().enumerate() {
         if i > 0 {
             s.push(',');
         }
         s.push('"');
-        s.push_str(n);
+        s.push_str(n.as_ref());
         s.push('"');
     }
     s.push(']');
@@ -260,7 +270,7 @@ pub fn render(id: u32, width: f32, height: f32, scale: f32, now_ms: f64) -> u32 
     .unwrap_or(2)
 }
 
-/// Submit the frame the canvases recorded, once: before the
+/// Submit the frame the canvases recorded, once (LLP 1009 D7): before the
 /// task that rendered them ends, which is when the browser presents.
 /// `true` on success; a surface's failure is [`error`]'s.
 pub fn flush() -> bool {
@@ -300,12 +310,12 @@ pub fn wants_input(id: u32) -> bool {
     with(|m| m.wants_input(id)).unwrap_or(false)
 }
 
-/// Whether a canvas draws above SDR white.
+/// Whether a canvas draws above SDR white (LLP 1100 D12b).
 pub fn high_dynamic_range(id: u32) -> bool {
     with(|m| m.high_dynamic_range(id)).unwrap_or(false)
 }
 
-/// The headroom an HDR canvas draws its next frames to.
+/// The headroom an HDR canvas draws its next frames to (LLP 1100 D12b).
 pub fn headroom(id: u32, headroom: f32) {
     with(|m| m.set_headroom(id, headroom));
 }
@@ -361,6 +371,23 @@ pub fn period(period_ms: f64) {
     with(|m| m.set_period(period_ms));
 }
 
+/// The host's display callback for the frames after: its raw timestamp, when
+/// it began to run and the display's fastest period, in milliseconds on the
+/// frame clock, and the thermal state's code ([`crate::ThermalState`]).
+pub fn host_frame(raw_ms: f64, callback_ms: f64, fastest_period_ms: f64, thermal: u32) {
+    let host = crate::HostTiming {
+        raw_ms,
+        callback_ms,
+        fastest_period_ms,
+    };
+    with(|m| m.set_host_timing(host, crate::ThermalState::from_code(thermal)));
+}
+
+/// Whether a canvas's next frame is due at `now_ms` under its cap ([`crate::Module::due`]).
+pub fn due(id: u32, now_ms: f64) -> bool {
+    with(|m| m.due(id, now_ms)).unwrap_or(true)
+}
+
 /// Whether a canvas has unrendered inputs.
 pub fn dirty(id: u32) -> bool {
     with(|m| m.dirty(id)).unwrap_or(false)
@@ -403,7 +430,7 @@ pub fn error() -> String {
     with(|m| m.take_error()).unwrap_or_default()
 }
 
-/// The exports for one app's registry, wasm-bindgen.
+/// The exports for one app's registry, wasm-bindgen (see LLP 1009 D2).
 #[macro_export]
 macro_rules! module {
     ($registry:expr) => {
@@ -433,7 +460,7 @@ macro_rules! module {
             $crate::web::create(name, canvas, width, height)
         }
 
-        /// Register a shader's text. `true` on success.
+        /// Register a shader's text (LLP 1030 D8). `true` on success.
         #[::wasm_bindgen::prelude::wasm_bindgen]
         pub fn gpu_shader(name: &str, text: &str) -> bool {
             $crate::web::shader(name, text)
@@ -449,6 +476,12 @@ macro_rules! module {
         #[::wasm_bindgen::prelude::wasm_bindgen]
         pub fn gpu_shaders_clear() {
             $crate::web::shaders_clear()
+        }
+
+        /// The registry's surfaces, as a JSON list of names (the web build reads it).
+        #[::wasm_bindgen::prelude::wasm_bindgen]
+        pub fn gpu_surfaces() -> String {
+            $crate::web::surface_names(&$registry)
         }
 
         /// The shaders to register, as a JSON list of names.
@@ -516,7 +549,7 @@ macro_rules! module {
             $crate::web::wants_input(id)
         }
 
-        /// Whether a canvas draws above SDR white.
+        /// Whether a canvas draws above SDR white (LLP 1100 D12b).
         #[::wasm_bindgen::prelude::wasm_bindgen]
         pub fn gpu_high_dynamic_range(id: u32) -> bool {
             $crate::web::high_dynamic_range(id)
@@ -601,6 +634,18 @@ macro_rules! module {
         #[::wasm_bindgen::prelude::wasm_bindgen]
         pub fn gpu_period(period_ms: f64) {
             $crate::web::period(period_ms)
+        }
+
+        /// The page's frame callback, on the frame clock, and the thermal state's code (0 unknown).
+        #[::wasm_bindgen::prelude::wasm_bindgen]
+        pub fn gpu_host_frame(raw_ms: f64, callback_ms: f64, fastest_period_ms: f64, thermal: u32) {
+            $crate::web::host_frame(raw_ms, callback_ms, fastest_period_ms, thermal)
+        }
+
+        /// Whether a canvas's next frame is due at `now_ms` under its frame-rate cap.
+        #[::wasm_bindgen::prelude::wasm_bindgen]
+        pub fn gpu_due(id: u32, now_ms: f64) -> bool {
+            $crate::web::due(id, now_ms)
         }
 
         /// The page's GPU tier, told before `gpu_load` (`GpuTier::code`: 0

@@ -21,7 +21,7 @@ pub(super) const MAX_LEVELS: usize = 2 * super::MAX_DEPTH + 2;
 /// codec's string (a `u32` length and UTF-8 bytes); a tree node by node,
 /// each a tag (0 a value, 1 `env()`, 2 a sum, 3 a product, 4 a negation, 5
 /// an inversion, 6 min, 7 max, 8 clamp), then a value's `f64` and unit (0 a
-/// number, 1 a percentage, 2 px, 3–12 a viewport unit); an `env()`'s tag
+/// number, 1 a percentage, 2 px, 3–12 a viewport unit, 128 rem); an `env()`'s tag
 /// (0–3 an inset's edge, 8–13 a segment's variable, then its two indices,
 /// 16–35 a layout region's inset, 36–39 a title-bar area variable);
 /// a list's `u8` count; clamp's three presence bytes, each before its
@@ -62,7 +62,7 @@ fn node_out(n: &Node, w: &mut Writer) {
                     w.u8(*x);
                     w.u8(*y);
                 }
-                // A layout region's inset: 16 + region × 4 + edge
+                // A layout region's inset (LLP 1123 D10): 16 + region × 4 + edge
                 EnvTerm::Region(region, edge) => w.u8(16 + *region as u8 * 4 + *edge as u8),
                 EnvTerm::TitleBar(var) => w.u8(36 + *var as u8),
             }

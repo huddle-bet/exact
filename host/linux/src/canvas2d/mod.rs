@@ -1,4 +1,4 @@
-//! Canvas 2D on Linux: the recorded lists replayed into a
+//! Canvas 2D on Linux (LLP 1056 D7): the recorded lists replayed into a
 //! tiny-skia pixmap, the canvas's kept bitmap, under both painters. The
 //! painters composite each canvas's latest snapshot in its content box; the
 //! GPU painter uploads it as an image, keyed by the snapshot's identity, so a
@@ -98,7 +98,7 @@ enum Object {
     Image(String),
 }
 
-/// The decoded image handles, shared by every replayer.
+/// The decoded image handles, shared by every replayer (LLP 1056 D9).
 pub(crate) type ImageCache = HashMap<String, Arc<Pixmap>>;
 
 /// One canvas's replayer: its bitmap and the state the lists build on.
@@ -187,21 +187,14 @@ impl Replayer {
         self.base.pre_concat(self.state.author)
     }
 
-    fn stroke_style(&self) -> Option<Stroke> {
-        let mut stroke = Stroke {
+    fn stroke_style(&self) -> Stroke {
+        Stroke {
             width: self.state.width,
             miter_limit: self.state.miter,
             line_cap: self.state.cap,
             line_join: self.state.join,
-            dash: None,
-        };
-        if !self.state.dash.is_empty() {
-            if self.state.dash.iter().all(|v| *v == 0.0) {
-                return None;
-            }
-            stroke.dash = StrokeDash::new(self.state.dash.clone(), self.state.dash_offset);
+            dash: StrokeDash::new(self.state.dash.clone(), self.state.dash_offset),
         }
-        Some(stroke)
     }
 
     /// Fill a path in canvas coordinates with the fill style.
@@ -223,9 +216,7 @@ impl Replayer {
     }
 
     fn stroke_user_path(&mut self, user: &Path, env: &Env<'_>) {
-        let Some(stroke) = self.stroke_style() else {
-            return;
-        };
+        let stroke = self.stroke_style();
         let ts = self.device();
         let source = self.source(self.state.stroke, env);
         self.draw(Geom::Stroke(user, stroke, ts), source);
@@ -283,7 +274,8 @@ impl Replayer {
         if fill {
             let source = self.source(self.state.fill, env);
             self.draw(Geom::Fill(&path, FillRule::Winding, ts), source);
-        } else if let Some(stroke) = self.stroke_style() {
+        } else {
+            let stroke = self.stroke_style();
             let source = self.source(self.state.stroke, env);
             self.draw(Geom::Stroke(&path, stroke, ts), source);
         }
@@ -483,7 +475,7 @@ impl Replayer {
 }
 
 /// A whole recording replayed into a fresh bitmap of `size` points at
-/// `scale` (a hatch's overlay): nothing is
+/// `scale` (a hatch's overlay, LLP 1075.003.000.001 §2.2.1): nothing is
 /// carried from an earlier one. `None` for a box with no area.
 pub(crate) fn replay(
     lists: &[Vec<u8>],
@@ -516,7 +508,7 @@ pub(crate) struct Canvases {
 }
 
 impl Canvases {
-    /// Apply the runner's stamped lists in order. A fresh one
+    /// Apply the runner's stamped lists in order (LLP 1056 D4). A fresh one
     /// allocates the generation's bitmap, cleared; a zero size is none.
     pub(crate) fn apply(&mut self, lists: Vec<CanvasList>) -> Vec<String> {
         let mut errors = Vec::new();

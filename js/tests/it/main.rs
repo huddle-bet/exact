@@ -3,6 +3,7 @@
 
 mod abort;
 mod admission;
+mod arguments;
 mod background;
 mod body_from;
 mod body_to;
@@ -19,18 +20,24 @@ mod inputs;
 mod interrupt;
 mod kept_json;
 mod listen;
+mod mapper;
 mod native_later;
 mod native_storage;
+mod network;
 mod no_store;
+mod nul;
 mod outlive;
 mod overlay;
 mod overrun;
+mod parallel;
 mod pinned_engines;
 mod presence;
 mod process;
 mod pure;
 mod render;
+mod request_sets;
 mod secrets;
+mod shim;
 mod snapshot;
 mod socket;
 mod storage;
@@ -38,12 +45,14 @@ mod superseded;
 mod timers;
 mod turn_budget;
 mod upload;
+mod waiters;
 mod walk;
 mod watch;
 mod windows_lean;
+mod wrappers;
 
 /// What a host runs for `dispatch`: its work, or for a re-ask
-/// (`Dispatch::Again`) the empty success a host settles it
+/// (`Dispatch::Again`, LLP 1041 §8.4) the empty success a host settles it
 /// with, as a harness standing in for a host's executor needs. These
 /// harnesses test the module, not admission: a re-ask's place in a native
 /// executor is tested through the real one (`admission.rs`, and the core's

@@ -1,4 +1,4 @@
-// One list's rows in a real, view-based
+// @ref LLP 1115.002 D5 — one list's rows in a real, view-based
 // `NSTableView`, fed by the runner (`TableHost` says which lists; this is
 // one list's feed). The runner still owns which rows are mounted and layout
 // still owns every size; the table owns its cells, its selection and its
@@ -10,7 +10,7 @@
 // stay the runner's, and the table is put where its rows that show are
 // where layout has them.
 //
-// What keeps the feed's cost a frame down (measured):
+// What the feed costs a frame is what stage 3b cut (measured, D5):
 // - A mounted row of a list the runner windows goes straight into its cell
 //   and stays there until the runner destroys it. The table keeps a row
 //   view for every row of the mounted run the port is in, not only for the
@@ -314,9 +314,9 @@ final class TableFeed: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     /// changed none of it.
     private var stamp: [UInt64] = []
     var dirty = true
-    /// The selected row's item while its row is mounted: its key in a list
-    /// the runner windows, its view in any other. The selection follows the
-    /// item when rows before it come and go.
+    /// The selected item's key in a list the runner windows, its view in
+    /// any other. The selection follows the item when rows before it come
+    /// and go.
     private(set) var selectedKey: String?
     private var selectedNode: UInt32?
     /// A row selected before the runner had made it (a key that jumps to
@@ -475,7 +475,7 @@ final class TableFeed: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // none (`display: none`) is no row, and neither is a positioned
         // one, which stays in the document as the presenter has it. The
         // host is not told a child's `position`. It is told its paint rank
-        // among its siblings: none for a plain box in the flow,
+        // among its siblings (LLP 1083): none for a plain box in the flow,
         // some for a positioned box and for a scroller in the flow (a row
         // that swipes). So a ranked child is a row where it stands in the
         // flow: after the row before it and before the next plain box.
@@ -566,6 +566,10 @@ final class TableFeed: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             }
         } else {
             selected = selectedNode.flatMap { node in next.first { $0.node.id == node }?.index }
+            if let node = selectedNode, selected == nil {
+                if presenter.views[node] == nil { selectedNode = nil }
+                disappeared = true
+            }
         }
 
         syncing = true
@@ -822,23 +826,26 @@ final class TableFeed: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // is the mouse's alone, and so is every other row's press here.
         if let mounted, table.keying, navigates(mounted) { pressRow(row) }
         // The person took the selection off its row (a Command-click): a
-        // split's pane then shows nothing (SplitMac.swift).
+        // split's pane then shows nothing (LLP 1115.002 D4, SplitMac.swift).
         if row < 0 { presenter?.navigation.split.deselected(id) }
     }
-    /// The split's word on the selection (SplitMac.swift): the row whose
-    /// press shows the detail beside the list is the selected one, and with
+    /// The split's word on the selection (SplitMac.swift): the owning row,
+    /// else the current row for a detail no row owns, is selected, and with
     /// no detail none is. A row that is not mounted leaves what is selected.
     /// True when the table shows it.
     @discardableResult func show(selected press: UInt32?) -> Bool {
-        let index = press.flatMap { id in rows.first { pressing($0)?.id == id }?.index }
+        let index = press.flatMap { id in
+            let node = presenter?.views[id]
+            return rows.first { pressing($0)?.id == id || node?.isDescendant(of: $0.node) == true }?.index
+        }
         guard press == nil || index != nil else { return false }
         let want = index.map { IndexSet(integer: $0) } ?? IndexSet()
+        remember(index.flatMap { row(at: $0) })
         guard table.selectedRowIndexes != want else { return true }
         let was = syncing
         syncing = true
         defer { syncing = was }
         table.selectRowIndexes(want, byExtendingSelection: false)
-        remember(index.flatMap { row(at: $0) })
         return true
     }
     /// A click on a row, when the mouse comes up in it: the table's action.

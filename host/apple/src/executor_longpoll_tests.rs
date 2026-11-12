@@ -1,4 +1,4 @@
-//! A long poll through the executor: a scripted
+//! A long poll through the executor (LLP 1016.000 D8): a scripted
 //! transport answers each request from the test's queue and records the
 //! URL it was asked with, so every cursor, heartbeat, retry and end is the
 //! test's to make.
@@ -117,6 +117,7 @@ fn poll(ticket: u64, same_cursor_event: bool, ceiling: u32) -> RequestOut {
         p.same_cursor_event = same_cursor_event;
     }
     RequestOut {
+        class: exact_runner::RequestClass::Ordered,
         ticket,
         target: "live".into(),
         request,
@@ -436,6 +437,7 @@ fn a_long_poll_that_is_not_a_bodiless_http_get_is_refused() {
         // Refused at admission, before any path (the host settles it as an admission refusal).
         let refused = core.run_owned(
             RequestOut {
+                class: exact_runner::RequestClass::Ordered,
                 ticket: 1,
                 target: "live".into(),
                 request,
@@ -509,11 +511,11 @@ fn a_cursor_no_host_can_carry_ends_the_stream() {
     }
 }
 
-/// A real local long-poll server on the platform transport (Darwin on Apple,
-/// the Linux host's own otherwise): it answers an event, a heartbeat (204), a
-/// 503 with `Retry-After: 0`, a second event, then holds the next request until
-/// the client goes, which it reports on `gone`. Every request it saw, in order,
-/// on `asked`.
+/// A real local long-poll server on the platform transport (Darwin on
+/// Apple, the Linux host's own otherwise; theme2's 07:51 ruling): it answers
+/// an event, a heartbeat (204), a 503 with `Retry-After: 0`, a second event,
+/// then holds the next request until the client goes, which it reports on
+/// `gone`. Every request it saw, in order, on `asked`.
 fn server() -> (u16, Arc<Mutex<Vec<String>>>, Receiver<()>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -552,7 +554,7 @@ fn server() -> (u16, Arc<Mutex<Vec<String>>>, Receiver<()>) {
 }
 
 #[test]
-#[ignore = "a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; `cargo test -- --ignored` runs it"]
+#[ignore = "async lane: a real socket under the platform transport (URLSession), timing-sensitive on a loaded machine; bun scripts/async.mjs runs it"]
 fn a_long_poll_on_a_real_connection_asks_with_each_cursor_and_closes_when_dropped() {
     let (port, asked, gone) = server();
     let (wake, woke) = channel();
@@ -614,6 +616,7 @@ fn a_long_poll_on_other_work_is_refused_at_admission_and_fences_ordered_work() {
         let (core, script, _woke) = setup(vec![Reply::Is(200, vec![JSON], r#"{"other":1}"#)]);
         let ordered = request.is_ordered();
         let first = RequestOut {
+            class: exact_runner::RequestClass::Ordered,
             ticket: 1,
             target: "live".into(),
             request,
@@ -629,6 +632,7 @@ fn a_long_poll_on_other_work_is_refused_at_admission_and_fences_ordered_work() {
         let next = Request::get("https://example.test/changes?since=0")
             .header("accept", "application/json");
         let second = RequestOut {
+            class: exact_runner::RequestClass::Ordered,
             ticket: 2,
             target: "read".into(),
             request: next,
