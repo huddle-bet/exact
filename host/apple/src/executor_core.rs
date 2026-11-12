@@ -19,7 +19,6 @@ const INDEPENDENT: usize = build_number(option_env!("EXACT_HTTP_WORKERS"), 6);
 const WORKERS: usize = 1 + INDEPENDENT;
 /// Sixteen cores' workers; includes retired workers until they actually exit.
 const MAX_WORKERS: usize = 16 * WORKERS;
-static LIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const COUNTS: [usize; 2] = [16, 128];
 const ORDERED_READS: usize = 128;
 /// Re-ask markers in the ordered sequence at once (LLP 1041 §8.4, amended
@@ -64,6 +63,8 @@ struct Running {
     started: std::time::Instant,
     ticket: u64,
     lane: usize,
+    /// The machine's transport; delivery and bytes stay on `lane` (LLP 1162 D1).
+    transport_lane: usize,
     charge: usize,
     limit: usize,
     /// A safe read's own abort, which forgetting fires; other work has none.
@@ -192,6 +193,8 @@ struct Shared {
     /// Notifications issued by the executor, independent of wait scheduling.
     #[cfg(test)]
     worker_notifications: AtomicUsize,
+    #[cfg(test)]
+    queued_deadlines: Arc<AtomicUsize>,
     abort: AbortController,
     /// Where the app's files are, as the host names them; unset on a host or
     /// drive that has none.
@@ -327,6 +330,8 @@ impl Core {
             ready: Condvar::new(),
             #[cfg(test)]
             worker_notifications: AtomicUsize::new(0),
+            #[cfg(test)]
+            queued_deadlines: Arc::default(),
             abort: AbortController::new(),
             root_paths: std::sync::OnceLock::new(),
             roots: std::sync::OnceLock::new(),
@@ -341,27 +346,12 @@ impl Core {
         } else {
             owners.len()
         };
-        let reserve = || {
-            LIVE_WORKERS
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                    (n + count <= MAX_WORKERS).then_some(n + count)
-                })
-                .is_ok()
-        };
-        let mut reserved = reserve();
-        // Every test in the binary shares the process's bound: a test waits for a slot (`WAIT_FOR_SLOT`: its own
-        // tests, render's and Linux's `test-wait`), polling, 30 s by the clock as a loaded suite's slots sit in
-        // threads that exit late; the product never waits. One that waits it out says so, its core refusing all.
-        if super::WAIT_FOR_SLOT {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while !reserved && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                reserved = reserve();
-            }
-            if !reserved {
-                eprintln!("exact test executor: no {count} worker slots within 30 s: this core refuses every request");
-            }
-        }
+        let budget = worker_budget();
+        let reserved = budget
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n + count <= MAX_WORKERS).then_some(n + count)
+            })
+            .is_ok();
         let machine = lanes.map(|lanes| {
             asynch::Machine::new(shared.clone(), owners.clone(), grants, host.clone(), &lanes)
         });
@@ -376,7 +366,7 @@ impl Core {
             owners
                 .into_iter()
                 .enumerate()
-                .map(|(index, bindings)| (index, bindings, WorkerSlot))
+                .map(|(index, bindings)| (index, bindings, WorkerSlot(budget.clone())))
                 .collect()
         });
         Self {
@@ -521,13 +511,15 @@ impl Core {
                 .as_millis()
                 .min(u128::from(u64::MAX)) as u64,
         };
-        drained(&mut state, done.ticket);
+        let release_count = drained(&mut state, done.ticket);
         if lane == 0 {
             state.ordered.pop_front();
         }
         state.next = 1 - lane;
         if !done.message {
-            state.counts[lane] -= 1;
+            if release_count {
+                state.counts[lane] -= 1;
+            }
             state.light -= usize::from(done.light);
             state.agains -= usize::from(done.again);
             state.streams -= usize::from(done.stream);
@@ -619,8 +611,12 @@ impl Core {
             state.wake = None;
             // Queued closures are destroyed by their executor owner. Doing
             // it here could run an arbitrary destructor on the UI thread.
-            for queue in &mut state.completed {
-                queue.clear();
+            if self.machine.is_none() {
+                for queue in &mut state.completed {
+                    queue.clear();
+                }
+            } else if let Some(machine) = &self.machine {
+                machine.stop(&mut state);
             }
             state.waiting.clear();
             state.waiting_set.clear();
@@ -632,6 +628,7 @@ impl Core {
         self.shared.ready.notify_all();
         if let Some(machine) = &self.machine {
             machine.retire();
+            self.idle.lock().unwrap().take();
         }
         let _ = stream::close_sockets(&self.shared, None);
         process::quit(&self.shared);
@@ -647,10 +644,25 @@ impl Drop for Core {
 }
 /// A worker to start: its index, its owner's bindings, its reserved slot.
 type Starter = (usize, Option<ibex2::host::Bindings>, WorkerSlot);
-struct WorkerSlot;
+struct WorkerSlot(Arc<AtomicUsize>);
 impl Drop for WorkerSlot {
     fn drop(&mut self) {
-        LIVE_WORKERS.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn worker_budget() -> Arc<AtomicUsize> {
+    if super::ISOLATE_WORKER_BUDGET {
+        // Cores created by one test share a bound. Slots retain that budget
+        // when their workers outlive the test thread or retire elsewhere.
+        thread_local! {
+            static BUDGET: Arc<AtomicUsize> = Arc::default();
+        }
+        BUDGET.with(Arc::clone)
+    } else {
+        static BUDGET: std::sync::LazyLock<Arc<AtomicUsize>> =
+            std::sync::LazyLock::new(Arc::default);
+        Arc::clone(&BUDGET)
     }
 }
 
@@ -765,6 +777,9 @@ fn complete(shared: &Shared, ticket: u64, outcome: Outcome) {
     let finished_at = std::time::Instant::now();
     let mut state = shared.state.lock().unwrap();
     if state.retired {
+        if state.book.retiring {
+            asynch::external_end(shared, &mut state, ticket);
+        }
         return;
     }
     let Some(at) = state.running.iter().position(|run| run.ticket == ticket) else {

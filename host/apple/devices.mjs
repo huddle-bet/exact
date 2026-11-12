@@ -721,9 +721,11 @@ export const lacks = (p, required = []) => required.filter((name) => !allowsEnti
  * signing entitlements, LLP 1069.008.000 D4). */
 export const allows = (p, required = []) => !!p && lacks(p, required).length === 0;
 
-/** What a profile that lacks a grant's entitlement needs, said once. */
+/** What a profile that lacks a required entitlement needs, said once. */
 const missing = (bundle, required, why) => new Error(required.includes('com.apple.developer.web-browser')
   ? `browser-device-profile: ${required.join(', ')} required by ${bundle}, and ${why}. Request Apple's managed default-browser approval, enable it for this App ID, then install a profile that grants it (or name it with EXACT_PROFILE).`
+  : required.includes('com.apple.developer.kernel.increased-memory-limit')
+  ? `memory-device-profile: ${required.join(', ')} required by ${bundle} (app.json's host.ios.increasedMemoryLimit${required.length > 1 ? ' and its grants' : ''}), and ${why}. In the Apple Developer portal, enable Increased Memory Limit${required.length > 1 ? ' and the grants\' capabilities' : ''} for the App ID ${bundle}, then install a profile that grants ${required.length > 1 ? 'them' : 'it'} (or name it with EXACT_PROFILE).`
   : `grant-device-profile: ${required.join(', ')} ${required.length > 1 ? 'are' : 'is'} needed by this app's grants, and ${why} (a team wildcard never allows HealthKit). In the Apple Developer portal, register the App ID ${bundle} with that capability, make a development profile for it that includes this phone, and install it (or name it with EXACT_PROFILE).`);
 
 /** A development profile on this Mac covering the phone and the bundle id (the team's wildcard or the id itself, under the profile's App ID prefix, which an older team's App IDs keep apart from its team id), unexpired; DEVELOPMENT_TEAM restricts the team, and EXACT_PROFILE overrides that choice.
@@ -788,13 +790,16 @@ export function profileMisfit(p, udid, like = null) {
 /** Every `.mobileprovision` or `.provisionprofile` Xcode or a download installed, decoded once per process (a hundred of them is two seconds). */
 let decoded = null;
 export function installedProfiles() {
-  const dirs = ['Library/Developer/Xcode/UserData/Provisioning Profiles', 'Library/MobileDevice/Provisioning Profiles'].map((d) => resolve(homedir(), d)).filter(existsSync);
+  const dirs = [...(process.env.EXACT_PROFILE_DIR ? [resolve(process.env.EXACT_PROFILE_DIR)] : []), ...['Library/Developer/Xcode/UserData/Provisioning Profiles', 'Library/MobileDevice/Provisioning Profiles'].map((d) => resolve(homedir(), d))].filter(existsSync);
   return decoded ??= dirs.flatMap((d) => readdirSync(d).filter((f) => /\.(mobileprovision|provisionprofile)$/.test(f)).map((f) => decodeProfile(resolve(d, f))));
 }
 
 /** The fields of a `.mobileprovision` this script reads (it is a CMS-signed XML plist). */
-export function decodeProfile(path) {
-  const xml = read('security', ['cms', '-D', '-i', path]).stdout ?? '';
+export function decodeProfile(path, os = process.platform) {
+  const result = os === 'linux' ? read('openssl', ['smime', '-verify', '-inform', 'DER', '-in', path, '-noverify'])
+    : read('security', ['cms', '-D', '-i', path]);
+  if (os === 'linux' && result.status !== 0) throw new Error(`host/apple: cannot decode provisioning profile ${path}: ${result.stderr || result.error?.message}`);
+  const xml = result.stdout ?? '';
   const str = (key) => new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(xml)?.[1];
   const strings = (key) => [...(new RegExp(`<key>${key}</key>\\s*<array>([\\s\\S]*?)</array>`).exec(xml)?.[1] ?? '').matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
   const team = /<key>TeamIdentifier<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(xml)?.[1];

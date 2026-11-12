@@ -107,6 +107,7 @@ routes nav
   recipeSnapbackAuth "/recipes/snapback-auth" render=build activate=idle
   recipeSnapbackTests "/recipes/snapback-tests" render=build activate=idle
   recipeSnapback "/recipes/snapback" render=build activate=idle
+  recipeSocketTicket "/recipes/socket-ticket" render=build activate=idle
   recipeSymbols "/recipes/symbols" render=build activate=idle
   recipeTabs "/recipes/tabs" render=build activate=idle
   recipeTamber "/recipes/tamber" render=build activate=idle
@@ -132,7 +133,7 @@ routes nav
   referenceContractGrammarHostCommands "/reference/contract-grammar/host-commands" render=build activate=idle
   referenceContractGrammarSemanticRestrictions "/reference/contract-grammar/semantic-restrictions" render=build activate=idle
   reference "/reference/developer" render=build activate=idle
-  referenceDeveloperWhatExists "/reference/developer/what-exists" render=build activate=idle
+  referenceDeveloperRuntimeFontFamiliesAndAriaDisabled "/reference/developer/runtime-font-families-and-aria-disabled" render=build activate=idle
   referenceDeveloperServeRealworld "/reference/developer/serve-realworld" render=build activate=idle
   referenceDeveloperInspectAndFormatContract "/reference/developer/inspect-and-format-contract" render=build activate=idle
   referenceDeveloperRunATerminalApp "/reference/developer/run-a-terminal-app" render=build activate=idle
