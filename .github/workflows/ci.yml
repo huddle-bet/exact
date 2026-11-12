@@ -1,9 +1,9 @@
-# What a push or pull request waits for: fmt, caps, boot, the workspace check and
-# clippy on Linux, and the workspace check on macOS, where host/apple's Rust
-# only builds. No test runs here. rules/RULES.md blocks on nothing slower than
-# 60 seconds, and a hosted runner takes over an hour for the tests, so they are
-# tests.yml's. Apple app builds, XCTests, simulator drives, Android and Windows
-# builds are not part of CI.
+# The six checks AGENTS.md names, plus the script tests, on every push and pull request.
+#
+# Linux runs everything that does not need Apple's toolchains. macOS runs the
+# same Cargo tests, because host/apple's Rust tests and the Swift package
+# (ExactKit) only build there. Apple app builds, XCTests, simulator drives,
+# Android and Windows builds are not part of CI.
 name: ci
 
 on:
@@ -11,11 +11,9 @@ on:
     branches: [main]
   pull_request:
 
-# Every push to main gets its own result. A pull request's newer push replaces
-# the run of the one before it.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,7 +22,7 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -44,9 +42,6 @@ jobs:
           bun-version: 1.4.2
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          # A failed check still leaves what it compiled for the next run.
-          cache-on-failure: true
 
       - name: Hermes bundle
         # Ordinary builds are offline (.cargo/config.toml); the installer fetches and
@@ -58,37 +53,39 @@ jobs:
 
       - name: Cargo dependencies
         # caps's wasm check lists and checks the web crates offline, so the registry
-        # must already hold every crate, and nothing before this step fetches them.
-        id: deps
+        # must already hold every crate: nothing before this step fetches them, and the
+        # Rust cache is only saved by a job that passed.
         run: cargo fetch --locked
 
-      # Each check runs once the setup above succeeded, whether or not a check before
-      # it failed, so one run reports every failing check (rules/RULES.md bans
-      # fail-fast), and the job fails if any did. A step's default condition,
-      # `success()`, would skip it after any failure.
       - name: fmt
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: cargo fmt --all -- --check
 
       - name: caps
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: bun scripts/caps.mjs
 
       - name: boot
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: bun scripts/boot.mjs
 
       - name: workspace check
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: cargo check --workspace --all-targets --keep-going
 
       - name: clippy
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: cargo clippy --all-targets --keep-going -- -D warnings
+
+      - name: test
+        run: cargo test --tests --no-fail-fast
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+
+      - name: script tests
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: bun test scripts
 
   macos:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -100,8 +97,6 @@ jobs:
           bun-version: 1.4.2
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
 
       - name: Hermes bundle
         run: cargo run --manifest-path vendor/ibex/crates/hermes-lean-sys-installer/Cargo.toml -- --target aarch64-apple-darwin
@@ -111,3 +106,6 @@ jobs:
 
       - name: workspace check
         run: cargo check --workspace --all-targets --keep-going
+
+      - name: test
+        run: cargo test --tests --no-fail-fast
