@@ -195,3 +195,51 @@ strip = false
 # The wildcard excludes workspace members; this runtime is one in the root.
 [profile.gpu-dev.package.exact-gpu]
 opt-level = 3
+
+[profile.dev.package.contract]
+opt-level = 3
+
+[profile.dev.package.contract-analyze]
+opt-level = 3
+
+[profile.dev.package.contract-lower]
+opt-level = 3
+
+[profile.dev.package.contract-syntax]
+opt-level = 3
+
+[profile.dev.package.contract-types]
+opt-level = 3
+
+[profile.dev.package.exact-canvas]
+opt-level = 3
+
+[profile.dev.package.exact-color]
+opt-level = 3
+
+[profile.dev.package.exact-grants]
+opt-level = 3
+
+[profile.dev.package.exact-js-value]
+opt-level = 3
+
+[profile.dev.package.exact-kernel]
+opt-level = 3
+
+[profile.dev.package.exact-motion]
+opt-level = 3
+
+[profile.dev.package.exact-plan]
+opt-level = 3
+
+[profile.dev.package.exact-runner]
+opt-level = 3
+
+[profile.dev.package.exact-svg-filter]
+opt-level = 3
+
+[profile.dev.package.exact-textflow]
+opt-level = 3
+
+[profile.dev.package.taffy]
+opt-level = 3
