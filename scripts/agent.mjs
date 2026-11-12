@@ -1343,6 +1343,21 @@ export async function open({onProcess, host = 'web', browser, plan, world, size,
 }
 export { runTests, textOf } from './agent-test.mjs';
 export { Cdp, browserDiagnosticNoise };
+export function fileWords(line, secrets) {
+  return line.replace(/@file:(\S+)/g, (_, path) => {
+    const value = readFileSync(path, 'utf8').trim();
+    if (!value) throw new Error(`@file:${path} is empty`);
+    secrets.push(value);
+    return value;
+  });
+}
+
+export function masked(text, secrets) {
+  let out = String(text);
+  for (const v of secrets) out = out.split(v).join('@file').split(encodeURIComponent(v)).join('@file');
+  return out;
+}
+
 export async function main(argv, injected = {}) {
   const { flags, rest } = parseFlags(argv);
   guardFlags(flags.test ? 'test' : 'agent', rest, { parsed: true }); // --help, or a flag parseFlags left (never an op)
@@ -1457,6 +1472,7 @@ export async function main(argv, injected = {}) {
       return [op, r, how];
   };
   // The drive, against the build it used (`bun scripts/evidence.mjs`).
+  const secrets = [];
   const recordDrive = async (result) => (await import('./evidence.mjs')).recordRun(flags.app, { host, what: `drive ${ops.join(' · ').slice(0, 300)}`, result, timing: flags.timing ?? 'agent', touch: flags.touch, device: flags.device || flags.phone, sim: flags.sim, webDist: flags.webDist });
   // What the replies leave out, on stderr, which a --json reader's stdout never carries (agent-test.mjs `driveNotes`).
   const notes = driveNotes(s, { host, storage: flags.storage, origins: flags.url ? [] : loopbackOrigins(resolve(flags.webDist ?? defaultWebDist())) });
@@ -1464,8 +1480,8 @@ export async function main(argv, injected = {}) {
     await launchEntries(s, flags); // `--notification '<entry>'`
     for (const [k, line] of ops.entries()) {
       at = k + 1;
-      const done = await step(line);
-      for (const [op, r, how] of [...(s.heldReads?.splice(0) ?? []), ...(done ? [done] : [])]) { console.log(flags.json ? JSON.stringify(r) : render(op, r, how)); await notes(op, r); }
+      const done = await step(fileWords(line, secrets));
+      for (const [op, r, how] of [...(s.heldReads?.splice(0) ?? []), ...(done ? [done] : [])]) { console.log(masked(flags.json ? JSON.stringify(r) : render(op, r, how), secrets)); await notes(op, r); }
     }
     if (s.contact?.whole?.queue.some((q) => q.line)) throw new Error('the steps after tap <target> down run inside the touch at its tap up, and the drive ended before it');
     await notes('end');
@@ -1474,8 +1490,8 @@ export async function main(argv, injected = {}) {
   } catch (e) {
     // A drive that fails (an `expect`, a refused op) is where a missing store or a failed resource is found: say it first.
     await notes('end');
-    await recordDrive({ ok: false, error: `op ${at}: ${String(e.message).split('\n')[0].slice(0, 200)}` });
-    e.message = `op ${at}/${ops.length} \`${ops[at - 1]?.trim()}\`: ${e.message}`;
+    await recordDrive({ ok: false, error: masked(`op ${at}: ${String(e.message).split('\n')[0].slice(0, 200)}`, secrets) });
+    e.message = masked(`op ${at}/${ops.length} \`${ops[at - 1]?.trim()}\`: ${e.message}`, secrets);
     throw e;
   } finally {
     await s.close(); await served?.stop();
