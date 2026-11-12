@@ -489,7 +489,7 @@ impl Translator<'_> {
                             }
                         }
                         self.out.push_str(&format!(
-                            "if(($s+={list}.length)>65536){t}(\"IterationLimit\",{pc});{list}={join}({list},{sep},{pc});",
+                            "if(($s+={list}.length)>4194304){t}(\"IterationLimit\",{pc});{list}={join}({list},{sep},{pc});",
                             pc = x.pc
                         ));
                         self.push(list);
@@ -743,7 +743,7 @@ impl Translator<'_> {
         let add = format!(
             "if(typeof $v===\"string\"){{$c++;$b+=$e?{u}($v):3*$v.length}}else if(typeof $v===\"object\"&&$v!==null){{$c+={p}($v,$e);$b+={eb}}}else $c++;if($c>16777216||$b>67108864&&($e||($e=1,$b={q}($o,{kept}))>67108864)){t}(\"ValueTooLarge\",{pc})"
         );
-        let step = format!("if(++$s>65536){t}(\"IterationLimit\",{pc});");
+        let step = format!("if(++$s>4194304){t}(\"IterationLimit\",{pc});");
         let each = if map {
             format!("const $v=$f($a[$k],$k);$o[$k]=$v;{add}")
         } else {

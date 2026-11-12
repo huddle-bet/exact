@@ -97,7 +97,7 @@ export function K(a, pc) {
 // and `indexOf` take no step.
 /** The list steps the last of them took. */
 export let ST = 0;
-const step = (s, n, pc) => { ST = n; if (s + n > 65536) throw new Trap("IterationLimit", pc); };
+const step = (s, n, pc) => { ST = n; if (s + n > 4194304) throw new Trap("IterationLimit", pc); };
 /** `concat(xs, ys)`: one step an item. */
 export function x_concat(a, b, s, pc) { step(s, a.length + b.length, pc); return K(a.concat(b), pc); }
 /** `slice(v, start, end?)`: the compiler writes an omitted `end` as `Number.MAX_VALUE`, which clamps as `undefined`

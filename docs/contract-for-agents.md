@@ -332,7 +332,7 @@ what to write. Nothing runs because a value changed (no `useEffect` or watch).
 | A stored number is finite: a commit that would put `NaN` or `Infinity` in a state or derive is refused, and the write that caused it does not land | every host can carry it |
 | `toFixed` and the format functions print `""` for a non-finite number | one rule for every format |
 | Names hold hyphens, so subtraction takes spaces (`a - b`) | CSS's names |
-| A binding's list work is bounded (65,536 steps); a row's own binding has its own bound, so a row that searches another table costs rows × items (`lower-row-lookup`), and one that walks its own `for`'s list grows with it until the binding is unset (`lower-row-own-list`) | determinism on every host |
+| A binding's list work is bounded (4,194,304 steps); a row's own binding has its own bound, so a row that searches another table costs rows × items (`lower-row-lookup`), and one that walks its own `for`'s list grows with it until the binding is unset (`lower-row-own-list`) | determinism on every host |
 | No comparator sort: `sortBy(xs, x => key)` orders by one number or string key, stably (`"desc"` third; a second key is an earlier `sortBy`). Grouping, joining, aggregates and a stored or locale order are the data module's; the view names an order it relies on where it reads it (`loadTasksByDueDate()`) | a view computes what it shows, the same on every host |
 
 - Types are `number`, `string`, `bool`, declared shapes, `option<T>`, `T[]`,
@@ -368,7 +368,7 @@ what to write. Nothing runs because a value changed (no `useEffect` or watch).
   field. A type nests at most 64 deep, through shapes, lists and options
   (`type-too-deep`).
 - One evaluation (an action body, a derive, a binding, a key, an argument)
-  takes at most 65,536 list steps (each `map`/`filter` body run, each item
+  takes at most 4,194,304 list steps (each `map`/`filter` body run, each item
   `join` prints or `concat`/`slice`/`split` keep, each item `includes` or
   `indexOf` scans), builds strings of at most 64 MiB of UTF-8, and values of at
   most 2²⁴ values and 64 MiB of string bytes. Every target refuses the same

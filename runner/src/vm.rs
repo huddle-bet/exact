@@ -50,7 +50,7 @@ pub const MAX_VALUE_DEPTH: u32 = 64;
 /// `map` or `filter` callback body is a step, nested runs each counted, and
 /// each item `join` prints is a step. A body is straight-line code with
 /// forward jumps, so this bounds how many instructions an evaluation runs.
-pub const MAX_LIST_STEPS: u32 = 1 << 16;
+pub const MAX_LIST_STEPS: u32 = 1 << 22;
 
 /// Only extents at least this large are remembered: smaller ones cost less
 /// to walk again than to look up.
@@ -1300,20 +1300,20 @@ mod tests {
         run(body)
     }
 
-    /// 256 outer runs of 255 inner are 65,536 runs, which
+    /// 2,048 outer runs of 2,047 inner are 4,194,304 runs, which
     /// fit; one more run anywhere in the evaluation is `IterationLimit`.
     #[test]
     fn callback_runs_are_counted_across_nesting_and_capped() {
-        let Value::List(outer) = nested(256, 255, false).unwrap().value else {
+        let Value::List(outer) = nested(2048, 2047, false).unwrap().value else {
             panic!("a list")
         };
-        assert_eq!(outer.len(), 256);
-        assert!(matches!(&outer[0], Value::List(inner) if inner.len() == 255));
+        assert_eq!(outer.len(), 2048);
+        assert!(matches!(&outer[0], Value::List(inner) if inner.len() == 2047));
         assert!(matches!(
-            nested(256, 255, true),
+            nested(2048, 2047, true),
             Err(Trap::IterationLimit { .. })
         ));
-        assert!(nested(255, 255, true).is_ok());
+        assert!(nested(2047, 2047, true).is_ok());
     }
 
     #[test]

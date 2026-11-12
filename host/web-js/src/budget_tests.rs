@@ -56,10 +56,10 @@ fn a_metered_body_declares_one_counter_and_join_steps_at_its_call() {
     let (_, js) = js(&format!("{CARD}component App\n  resource cards = cards(3) as shape Card[]\n  derive nested = cards.map(a => cards.map(b => b.n))\n  derive labels = cards.map(c => c.label).join(\",\")\n  view\n    column\n      text labels\n      text `${{cards.map(c => c.n).length}}`\n"));
     let nested = decl(&js, "d_0");
     assert_eq!(nested.matches("let $s=0").count(), 1, "{nested}");
-    assert_eq!(nested.matches("++$s>65536").count(), 2, "{nested}");
+    assert_eq!(nested.matches("++$s>4194304").count(), 2, "{nested}");
     let labels = decl(&js, "d_1");
     assert!(
-        labels.contains(".length)>65536)$T(\"IterationLimit\""),
+        labels.contains(".length)>4194304)$T(\"IterationLimit\""),
         "{labels}"
     );
     assert!(labels.contains("x_join("), "{labels}");

@@ -216,7 +216,7 @@ fn a_binding_that_traps_unsets_its_row_and_the_runner_goes_on() {
   state n = 1
   state ticks = 0
   action grow
-    n = 65537
+    n = 4194305
   action regrow
     n = n + 1
   action shrink
@@ -227,7 +227,7 @@ fn a_binding_that_traps_unsets_its_row_and_the_runner_goes_on() {
     every(1000, tick)
   view
     column
-      text range(n).map(i => \"x\").join(\",\") testId=\"names\" opacity=range(n).length / 65537
+      text range(n).map(i => \"x\").join(\",\") testId=\"names\" opacity=range(n).length / 4194305
       text `${ticks}` testId=\"ticks\"
 ";
     let mut r = Runner::boot(

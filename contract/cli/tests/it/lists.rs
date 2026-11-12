@@ -291,17 +291,17 @@ fn callback_runs_are_bounded_per_evaluation_and_the_trap_is_named() {
             Ok(numbers(&vec![1.0; self.0]))
         }
     }
-    // 255 outer runs, each 255 inner: 255 * 256 = 65,280 runs fit;
-    // 256 * 257 = 65,792 do not.
+    // 2,047 outer runs, each 2,047 inner: 2,047 * 2,048 = 4,192,256 runs fit;
+    // 2,048 * 2,049 = 4,196,352 do not.
     let plan = contract::compile(src).unwrap();
-    contract::bake(plan.clone(), Xs(255)).unwrap();
-    let error = contract::bake(plan.clone(), Xs(256)).unwrap_err();
+    contract::bake(plan.clone(), Xs(2047)).unwrap();
+    let error = contract::bake(plan.clone(), Xs(2048)).unwrap_err();
     assert!(format!("{error:?}").contains("IterationLimit"), "{error:?}");
     // At run time the binding's row is unset, the journal says why, and the
     // runner goes on.
     let r = Runner::boot(
         plan,
-        Xs(256),
+        Xs(2048),
         Kernel::with_monospace(),
         Default::default(),
         "/",
@@ -345,8 +345,8 @@ component A
     }
     let plan = contract::compile(src).unwrap();
     let r = Runner::boot(
-        contract::bake(plan.clone(), Xs(65_536)).unwrap(),
-        Xs(65_536),
+        contract::bake(plan.clone(), Xs(4_194_304)).unwrap(),
+        Xs(4_194_304),
         Kernel::with_monospace(),
         Default::default(),
         "/",
@@ -370,14 +370,14 @@ component A
     // ((0 + 0.1) + 0.2) + 0.3, as `reduce` adds; not `Math.sumPrecise`'s 0.6.
     assert_eq!(text("order"), "0.6000000000000001");
     assert_eq!(text("zero"), "0");
-    assert_eq!(text("big"), "65536");
+    assert_eq!(text("big"), "4194304");
     // `Math.sin(1)` and `Math.cos(1)` as JavaScriptCore and V8 print them.
     assert_eq!(
         text("trig"),
         "0 1 1000 -1000 0.8414709848078965 0.5403023058681398"
     );
     // One more item than the bound is refused whole, as `map` is.
-    let error = contract::bake(plan, Xs(65_537)).unwrap_err();
+    let error = contract::bake(plan, Xs(4_194_305)).unwrap_err();
     assert!(format!("{error:?}").contains("IterationLimit"), "{error:?}");
     // `sum` takes numbers only.
     let e = contract::compile(
@@ -428,7 +428,7 @@ fn pow_is_maths_pow() {
 /// `sortBy`: a stable sort by one number or string key,
 /// equal keys in input order in both directions; NaN, -0 and +0 tie;
 /// strings by UTF-16 code unit. Its list steps are its `Map`'s, one an
-/// item, so 5,000 rows filtered then sorted take 10,000 of the 65,536.
+/// item, so 5,000 rows filtered then sorted take 10,000 of the 4,194,304.
 #[test]
 fn sort_by_is_stable_by_one_key_and_steps_once_an_item() {
     let src = r#"shape Row
@@ -485,9 +485,9 @@ component A
     assert_eq!(text("units"), ",a,a,ab,😀,～");
     assert_eq!(text("big"), "5000");
     assert_eq!(text("empty"), "0");
-    // 32,768 filtered and sorted is 65,536 steps; one more is refused.
-    contract::bake(plan.clone(), Xs(32_768)).unwrap();
-    let error = contract::bake(plan, Xs(32_769)).unwrap_err();
+    // 2,097,152 filtered and sorted is 4,194,304 steps; one more is refused.
+    contract::bake(plan.clone(), Xs(2_097_152)).unwrap();
+    let error = contract::bake(plan, Xs(2_097_153)).unwrap_err();
     assert!(format!("{error:?}").contains("IterationLimit"), "{error:?}");
     for (body, id) in [
         ("sortBy(rows, r => r)", "type-argument"),
@@ -576,8 +576,8 @@ fn range_counts_from_zero_on_the_budget_and_refuses_what_is_no_count() {
         .unwrap_or_else(|| panic!("{bad} booted"));
         assert!(format!("{e:?}").contains("RangeCount"), "{bad}: {e:?}");
     }
-    r.act("set", vec![Value::Number(65_536.0)]).unwrap();
-    let e = r.act("set", vec![Value::Number(65_537.0)]).unwrap_err();
+    r.act("set", vec![Value::Number(4_194_304.0)]).unwrap();
+    let e = r.act("set", vec![Value::Number(4_194_305.0)]).unwrap_err();
     assert!(format!("{e:?}").contains("IterationLimit"), "{e:?}");
     let e = r.act("set", vec![Value::Number(1e300)]).unwrap_err();
     assert!(format!("{e:?}").contains("IterationLimit"), "{e:?}");
@@ -627,8 +627,8 @@ component A
     }
     let plan = contract::compile(src).unwrap();
     let r = Runner::boot(
-        contract::bake(plan.clone(), Xss(32_768)).unwrap(),
-        Xss(32_768),
+        contract::bake(plan.clone(), Xss(2_097_152)).unwrap(),
+        Xss(2_097_152),
         Kernel::with_monospace(),
         Default::default(),
         "/",
@@ -649,8 +649,8 @@ component A
     assert_eq!(text("hits"), "0,4,2");
     assert_eq!(text("lit"), "abc");
     assert_eq!(text("deep"), "3");
-    assert_eq!(text("big"), "32768");
-    let error = contract::bake(plan, Xss(32_769)).unwrap_err();
+    assert_eq!(text("big"), "2097152");
+    let error = contract::bake(plan, Xss(2_097_153)).unwrap_err();
     assert!(format!("{error:?}").contains("IterationLimit"), "{error:?}");
     for (call, id, says) in [
         (
@@ -1360,14 +1360,14 @@ fn concat_slice_and_includes_take_list_steps_and_build_bounded_lists() {
         "/",
     )
     .unwrap();
-    // 32,768 rows: `concat` keeps 65,536 items, at the bound; `includes`
-    // scans them after `map`'s 32,768 steps, 65,536 in all.
-    r.act("go", vec![Value::Number(32768.0), Value::Number(0.0)])
+    // 2,097,152 rows: `concat` keeps 4,194,304 items, at the bound; `includes`
+    // scans them after `map`'s 2,097,152 steps, 4,194,304 in all.
+    r.act("go", vec![Value::Number(2097152.0), Value::Number(0.0)])
         .unwrap();
-    assert_eq!(shown(&r, "t"), "65536 32767 false 0");
+    assert_eq!(shown(&r, "t"), "4194304 2097151 false 0");
     let trap = |e: &RunnerError| format!("{e:?}");
     let e = r
-        .act("go", vec![Value::Number(32769.0), Value::Number(0.0)])
+        .act("go", vec![Value::Number(2097153.0), Value::Number(0.0)])
         .unwrap_err();
     assert!(trap(&e).contains("IterationLimit"), "{e:?}");
     // 1,024 strings of 32 KiB twice: 64 MiB of bytes is the bound; one
@@ -1381,7 +1381,7 @@ fn concat_slice_and_includes_take_list_steps_and_build_bounded_lists() {
 }
 
 /// `indexOf` steps as `includes` does, and `split` a step a piece, counted
-/// before the pieces are built: 65,536 pieces of `long(n)`'s text are the
+/// before the pieces are built: 4,194,304 pieces of `long(n)`'s text are the
 /// bound, one more past it.
 #[test]
 fn index_of_and_split_take_list_steps() {
@@ -1394,11 +1394,11 @@ fn index_of_and_split_take_list_steps() {
         "/",
     )
     .unwrap();
-    r.act("go", vec![Value::Number(32768.0), Value::Number(65535.0)])
+    r.act("go", vec![Value::Number(2097152.0), Value::Number(4194303.0)])
         .unwrap();
-    assert_eq!(shown(&r, "t"), "-1 65535 65536");
+    assert_eq!(shown(&r, "t"), "-1 4194303 4194304");
     let trap = |e: &RunnerError| format!("{e:?}");
-    for (k, b) in [(32769.0, 0.0), (0.0, 65536.0)] {
+    for (k, b) in [(2097153.0, 0.0), (0.0, 4194304.0)] {
         let e = r
             .act("go", vec![Value::Number(k), Value::Number(b)])
             .unwrap_err();

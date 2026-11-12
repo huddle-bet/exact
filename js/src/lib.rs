@@ -120,7 +120,7 @@ pub const DEFAULT_BUDGET_MS: f64 = 100.0;
 /// catalog built at the top level took 314 ms, all of it after first pixel.
 const SLOW_LOAD_MS: f64 = 50.0;
 /// The runtime's heap ceiling, unless the host says otherwise.
-pub const DEFAULT_MAX_HEAP: u32 = 64 << 20;
+pub const DEFAULT_MAX_HEAP: u32 = 256 << 20;
 
 /// Bytecode the binary holds, aligned so Hermes reads it in place (the shim
 /// copies a buffer that is not).
