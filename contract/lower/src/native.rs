@@ -248,7 +248,7 @@ impl Lowerer<'_> {
         let mut keyed: std::collections::BTreeMap<&str, &Attr> = Default::default();
         for a in leftovers {
             match view.events.get(&a.name) {
-                Some(args) => self.view_event(tag, args, a, handlers)?,
+                Some(args) => self.view_event(tag, args, a, scope, locals, handlers)?,
                 None => {
                     keyed.insert(a.name.as_str(), a);
                 }

@@ -1245,6 +1245,15 @@ fn a_zero_minimum_scroller_can_shrink_under_a_bounded_column() {
 }
 
 #[test]
+fn a_scroller_pinned_by_its_insets_is_bounded() {
+    for pin in ["position=\"absolute\" inset=0", "position=\"absolute\" top=0 bottom=0"] {
+        contract::compile(&format!("component App\n  view\n    column height=400\n      scroll {pin}\n        box height=1000\n")).unwrap();
+    }
+    let e = contract::compile("component App\n  view\n    column\n      scroll position=\"absolute\" top=0\n").unwrap_err();
+    assert_eq!(e.id, "lower-scroll-unbounded");
+}
+
+#[test]
 fn viewport_units_are_admitted_on_dimension_rows() {
     for unit in exact_kernel::ViewportUnit::ALL {
         let r = boot(&format!(

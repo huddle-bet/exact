@@ -240,3 +240,41 @@ fn a_child_follows_the_screen_the_view_reports() {
     let (_, [x, y], _, turn, scale) = live(&r);
     assert_eq!((x, y, turn, scale), (-8.0, 4.0, -9.0, 0.4));
 }
+
+const CHILD: &str = r#"use ModelScreen from "@exact/model"
+
+component App
+  state seen = ""
+  view
+    column
+      Phone(tag="a")
+      Phone(tag="b")
+      text seen
+
+component Phone
+  props
+    tag: string
+  state last = ""
+  action placed(s: ModelScreen)
+    last = tag + s.rotate
+  view
+    exact-model testId=tag source="assets/phone.glb" screenNode="Screen" screen=placed width=100 height=100
+    column testId=(tag + "-last") display=(last == tag + (tag == "a" ? "1deg" : "2deg") ? "flex" : "none")
+"#;
+
+#[test]
+fn a_child_binds_a_view_event_to_its_own_action() {
+    let mut r = boot(&App::new("child", CHILD));
+    for (tag, rotate) in [("a", "1deg"), ("b", "2deg")] {
+        let key = r.kernel().find_by_test_id(tag)[0];
+        let id = r.kernel().node_by_key(key).unwrap().id;
+        let screen = json!({ "perspective": 1.0, "translate": "0px", "rotate": rotate, "scale": 1.0, "facing": true, "quad": [0, 0, 0, 0, 0, 0, 0, 0] });
+        let sent = json!({ "exact:event": "screen", "args": [screen] });
+        r.dispatch(id, Event::Message(sent.to_string())).unwrap();
+    }
+    for tag in ["a", "b"] {
+        let k = r.kernel().find_by_test_id(&format!("{tag}-last"))[0];
+        let shown = r.kernel().node_by_key(k).unwrap().style.display;
+        assert_eq!(shown, exact_kernel::Display::Flex, "{tag}");
+    }
+}

@@ -20,7 +20,7 @@
 
 use crate::{err, LowerError, Lowerer};
 use contract_syntax::{Attr, Expr};
-use contract_types::Ty;
+use contract_types::{Scope, Ty};
 use exact_plan::{ActionsId, Code, EventKind};
 use serde_json::{json, Value as Json};
 use std::cell::RefCell;
@@ -132,22 +132,31 @@ impl Lowerer<'_> {
     }
 
     /// `event=action` on a view that declares `event` with `args`: a
-    /// `message` handler marked as the event's (module doc), the action's
-    /// parameters a prefix of the event's arguments, each typed as one.
+    /// `message` handler marked as the event's (module doc). A lifted
+    /// child action arrives as a call, its own arguments (the captures)
+    /// first; the parameters after them are a prefix of the event's
+    /// arguments, each typed as one.
     pub(crate) fn view_event(
         &mut self,
         tag: &str,
-        args: &[String],
+        event_args: &[String],
         a: &Attr,
+        scope: &Scope,
+        locals: u16,
         handlers: &mut Vec<(EventKind, ActionsId, Vec<Code>)>,
     ) -> Result<(), LowerError> {
+        let args = event_args;
         let event = a.name.as_str();
-        let Expr::Ident(name, _) = &a.value else {
-            return err(
-                "lower-handler",
-                format!("`{event}=` on `{tag}` names an action of the root: `{event}=moved`"),
-                a.span,
-            );
+        let (name, bound): (&String, &[Expr]) = match &a.value {
+            Expr::Ident(name, _) => (name, &[]),
+            Expr::Call(name, bound, _) => (name, bound),
+            _ => {
+                return err(
+                    "lower-handler",
+                    format!("`{event}=` on `{tag}` names an action of the root: `{event}=moved`"),
+                    a.span,
+                )
+            }
         };
         let Some(ai) = self.action_names.get(name.as_str()).copied() else {
             return err(
@@ -156,7 +165,15 @@ impl Lowerer<'_> {
                 a.span,
             );
         };
-        let params = &self.types.components[0].actions[ai];
+        let all = &self.types.components[0].actions[ai];
+        if all.len() < bound.len() {
+            return err(
+                "lower-handler-arity",
+                format!("`{name}` takes {} parameters, and is given {}", all.len(), bound.len()),
+                a.span,
+            );
+        }
+        let params = &all[bound.len()..];
         if params.len() > args.len() {
             return err(
                 "lower-handler-arity",
@@ -179,7 +196,11 @@ impl Lowerer<'_> {
             }
         }
         let marker = (self.b).constant(&exact_plan::Value::str(&format!("{EVENT_MARKER}{event}")));
-        handlers.push((EventKind::Message, self.actions[ai], vec![marker]));
+        let mut codes = vec![marker];
+        for arg in bound {
+            codes.push(self.expr_code(arg, scope, locals)?);
+        }
+        handlers.push((EventKind::Message, self.actions[ai], codes));
         Ok(())
     }
 }

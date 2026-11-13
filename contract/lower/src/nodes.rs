@@ -320,8 +320,12 @@ impl Lowerer<'_> {
         let clips_y = expanded.iter().any(|a| {
             a.name == "overflow-y" && matches!(&a.value, Expr::Str(v, _) if v == "hidden")
         });
+        let pinned = expanded.iter().any(|a| {
+            a.name == "position" && matches!(&a.value, Expr::Str(v, _) if v == "absolute")
+        }) && (has(&["inset"]) || has(&["top"]) && has(&["bottom"]));
         if tag == "scroll"
             && !clips_y
+            && !pinned
             && parent_stacks
             && !has(&["height", "max-height"])
             && !expanded

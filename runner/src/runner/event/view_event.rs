@@ -71,9 +71,16 @@ impl<D: DataSource> Runner<D> {
         };
         let action = self.plan.action(h.action).clone();
         let mut args = Vec::new();
-        for (i, p) in action.params.iter().enumerate() {
+        for a in h.args.iter().skip(1) {
+            match self.eval(self.plan.arg(a).expr, &[], frames) {
+                Ok(v) => args.push(v),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        let captured = args.len();
+        for (i, p) in action.params.iter().enumerate().skip(captured) {
             let ty = self.plan.param(p).ty;
-            let json = sent["args"].get(i).cloned().unwrap_or(Json::Null);
+            let json = sent["args"].get(i - captured).cloned().unwrap_or(Json::Null);
             match self.event_arg(ty, &json) {
                 Ok(v) => args.push(v),
                 Err(why) => {
